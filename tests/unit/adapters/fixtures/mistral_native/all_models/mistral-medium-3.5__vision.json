@@ -1,0 +1,45 @@
+{
+  "_model_id": "mistral-medium-3.5",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": true,
+    "completion_fim": false,
+    "fine_tuning": false,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "c837469f5b364db8a748aa5d9bd94d5b",
+    "object": "chat.completion",
+    "model": "mistral-medium-3.5",
+    "usage": {
+      "prompt_tokens": 23,
+      "completion_tokens": 40,
+      "total_tokens": 63,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985830,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "length",
+        "message": {
+          "role": "assistant",
+          "content": "The image you've provided is a solid green color with no other discernible features or objects. It appears to be a plain, uniform green background. There are no texts, shapes, or other elements",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "_model_id": "mistral.voxtral-small-24b-2507",
+  "_response": {
+    "metrics": {
+      "latencyMs": 697
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "Dolphins are highly intelligent marine mammals known for their complex communication system, playful behavior, and exceptional swimming skills."
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 9,
+      "outputTokens": 24,
+      "serverToolUsage": {},
+      "totalTokens": 33
+    }
+  }
+}

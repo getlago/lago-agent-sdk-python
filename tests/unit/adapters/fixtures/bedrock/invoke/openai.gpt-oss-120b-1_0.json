@@ -1,0 +1,27 @@
+{
+  "_model_id": "openai.gpt-oss-120b-1:0",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "length",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "<reasoning>The user asks: \"One sentence about dolphins.\" Provide a single sentence about dolphins. Should be concise. Provide a fact or description. Ensure it's one sentence.</reasoning>",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395337,
+    "id": "chatcmpl-45d0b931-b7d6-4be4-8464-a9f40214e1b2",
+    "model": "openai.gpt-oss-120b-1:0",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 40,
+      "prompt_tokens": 72,
+      "total_tokens": 112
+    }
+  }
+}

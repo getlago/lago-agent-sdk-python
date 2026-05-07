@@ -1,0 +1,11 @@
+{
+  "_model_id": "mistral.mixtral-8x7b-instruct-v0:1",
+  "_response": {
+    "outputs": [
+      {
+        "text": " Dolphins are highly intelligent and social marine mammals known for their playful behavior, complex communication skills, and ability to perform acrobatic displays in the water.",
+        "stop_reason": "stop"
+      }
+    ]
+  }
+}

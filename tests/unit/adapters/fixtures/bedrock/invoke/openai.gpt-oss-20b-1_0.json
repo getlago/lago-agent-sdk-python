@@ -1,0 +1,27 @@
+{
+  "_model_id": "openai.gpt-oss-20b-1:0",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "length",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "<reasoning>User says: \"One sentence about dolphins.\" That's all. They want a single sentence about dolphins. Probably a concise sentence. Should we provide a fact? Maybe an interesting fact about dolphins</reasoning>",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395338,
+    "id": "chatcmpl-42ae4378-9abd-43a0-ab11-beda14e6dbfb",
+    "model": "openai.gpt-oss-20b-1:0",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 40,
+      "prompt_tokens": 72,
+      "total_tokens": 112
+    }
+  }
+}

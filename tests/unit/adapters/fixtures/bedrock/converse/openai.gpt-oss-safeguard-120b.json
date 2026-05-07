@@ -1,0 +1,29 @@
+{
+  "_model_id": "openai.gpt-oss-safeguard-120b",
+  "_response": {
+    "metrics": {
+      "latencyMs": 305
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "reasoningContent": {
+              "reasoningText": {
+                "text": "The task: The user says \"One sentence about dolphins.\" So produce a single sentence about dolphins. That's straightforward. Just a sentence. Could be interesting. Provide a sentence.\n\nMake sure"
+              }
+            }
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "max_tokens",
+    "usage": {
+      "inputTokens": 72,
+      "outputTokens": 40,
+      "serverToolUsage": {},
+      "totalTokens": 112
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "_model_id": "openai.gpt-oss-120b-1:0",
+  "_response": {
+    "metrics": {
+      "latencyMs": 524
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "reasoningContent": {
+              "reasoningText": {
+                "text": "The user asks: \"One sentence about dolphins.\" So just one sentence. Need to respond concisely with a single sentence about dolphins. Could be factual. Provide a single sentence."
+              }
+            }
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "max_tokens",
+    "usage": {
+      "inputTokens": 72,
+      "outputTokens": 40,
+      "serverToolUsage": {},
+      "totalTokens": 112
+    }
+  }
+}

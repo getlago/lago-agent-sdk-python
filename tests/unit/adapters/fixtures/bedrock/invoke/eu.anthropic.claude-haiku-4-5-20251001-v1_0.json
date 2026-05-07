@@ -1,0 +1,27 @@
+{
+  "_model_id": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "_response": {
+    "model": "claude-haiku-4-5-20251001",
+    "id": "msg_bdrk_01JL3rpyU2r2cCoVr7PoNKvF",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "Dolphins are highly intelligent marine mammals known for their playful behavior, complex communication, and remarkable ability to navigate using echolocation."
+      }
+    ],
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 12,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 0
+      },
+      "output_tokens": 30
+    }
+  }
+}

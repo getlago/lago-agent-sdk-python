@@ -1,0 +1,45 @@
+{
+  "_model_id": "ministral-8b-latest",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "058bee50b17f40ffb0998f86615c1a9e",
+    "object": "chat.completion",
+    "model": "ministral-8b-latest",
+    "usage": {
+      "prompt_tokens": 11,
+      "completion_tokens": 34,
+      "total_tokens": 45,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985824,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "This image is completely blank\u2014it is a solid, uniform color with no visible objects, text, or patterns. There is nothing to describe in terms of content.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

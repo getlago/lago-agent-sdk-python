@@ -1,0 +1,29 @@
+{
+  "_model_id": "minimax.minimax-m2.1",
+  "_response": {
+    "metrics": {
+      "latencyMs": 519
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "reasoningContent": {
+              "reasoningText": {
+                "text": "The user is asking for a single sentence about dolphins. This is a very simple, straightforward request that doesn't require any complex formatting or extensive content. I should provide a concise, informative sentence about dolphins.\n"
+              }
+            }
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "max_tokens",
+    "usage": {
+      "inputTokens": 43,
+      "outputTokens": 40,
+      "serverToolUsage": {},
+      "totalTokens": 83
+    }
+  }
+}

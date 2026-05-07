@@ -1,0 +1,25 @@
+{
+  "_model_id": "google.gemma-3-12b-it",
+  "_response": {
+    "metrics": {
+      "latencyMs": 544
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "Dolphins are highly intelligent marine mammals known for their playful behavior and complex communication skills. \n\n\n\n"
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 14,
+      "outputTokens": 21,
+      "serverToolUsage": {},
+      "totalTokens": 35
+    }
+  }
+}

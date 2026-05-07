@@ -1,0 +1,45 @@
+{
+  "_model_id": "pixtral-large-latest",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": false,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "e8eb5b43558b4a31adb0de78d7c188b9",
+    "object": "chat.completion",
+    "model": "pixtral-large-latest",
+    "usage": {
+      "prompt_tokens": 11,
+      "completion_tokens": 40,
+      "total_tokens": 51,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985851,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "length",
+        "message": {
+          "role": "assistant",
+          "content": "The image appears to be a low-resolution or highly compressed graphic, making it difficult to discern specific details. It looks like a small, blurry icon or logo, potentially representing a",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

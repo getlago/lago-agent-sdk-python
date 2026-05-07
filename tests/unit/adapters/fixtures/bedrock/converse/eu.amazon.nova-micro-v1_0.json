@@ -1,0 +1,25 @@
+{
+  "_model_id": "eu.amazon.nova-micro-v1:0",
+  "_response": {
+    "metrics": {
+      "latencyMs": 609
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "Dolphins are intelligent marine mammals known for their playful behavior and complex social structures, often found in warm ocean waters around the world."
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 5,
+      "outputTokens": 26,
+      "serverToolUsage": {},
+      "totalTokens": 31
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "_model_id": "qwen.qwen3-coder-30b-a3b-v1:0",
+  "_response": {
+    "metrics": {
+      "latencyMs": 408
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "Dolphins are highly intelligent marine mammals known for their complex social structures, echolocation abilities, and playful behavior."
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 13,
+      "outputTokens": 24,
+      "serverToolUsage": {},
+      "totalTokens": 37
+    }
+  }
+}

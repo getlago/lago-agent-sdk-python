@@ -1,0 +1,29 @@
+{
+  "_model_id": "minimax.minimax-m2",
+  "_response": {
+    "metrics": {
+      "latencyMs": 409
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "reasoningContent": {
+              "reasoningText": {
+                "text": "The user explicitly requests \"One sentence about dolphins.\" I need to comply and keep it concise, so I'll deliver a single sentence. Options for this sentence could include:\n\n- \"Dolphins are highly"
+              }
+            }
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "max_tokens",
+    "usage": {
+      "inputTokens": 27,
+      "outputTokens": 40,
+      "serverToolUsage": {},
+      "totalTokens": 67
+    }
+  }
+}

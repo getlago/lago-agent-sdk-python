@@ -1,0 +1,23 @@
+{
+  "_model_id": "eu.amazon.nova-pro-v1:0",
+  "_response": {
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "Dolphins are highly intelligent marine mammals known for their playful behavior and complex social structures."
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 5,
+      "outputTokens": 17,
+      "totalTokens": 22,
+      "cacheReadInputTokenCount": 0,
+      "cacheWriteInputTokenCount": 0
+    }
+  }
+}

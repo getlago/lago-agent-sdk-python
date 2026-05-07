@@ -1,0 +1,29 @@
+{
+  "_model_id": "openai.gpt-oss-20b-1:0",
+  "_response": {
+    "metrics": {
+      "latencyMs": 479
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "reasoningContent": {
+              "reasoningText": {
+                "text": "The user requests: \"One sentence about dolphins.\" Just produce a single sentence. Probably something like \"Dolphins are intelligent marine mammals known for their playful behavior and social complexity.\" Should"
+              }
+            }
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "max_tokens",
+    "usage": {
+      "inputTokens": 72,
+      "outputTokens": 40,
+      "serverToolUsage": {},
+      "totalTokens": 112
+    }
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "_model_id": "ministral-14b-latest",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "b8358a64ac524e10a2d470ef89c64aad",
+    "object": "chat.completion",
+    "model": "ministral-14b-latest",
+    "usage": {
+      "prompt_tokens": 11,
+      "completion_tokens": 40,
+      "total_tokens": 51,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985826,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "length",
+        "message": {
+          "role": "assistant",
+          "content": "The image you provided appears to be completely blank, showing only a solid white or light-colored background with no visible objects, text, or details. There is nothing identifiable or discernible in it.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

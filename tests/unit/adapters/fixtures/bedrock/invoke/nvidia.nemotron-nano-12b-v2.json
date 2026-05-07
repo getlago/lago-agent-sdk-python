@@ -1,0 +1,27 @@
+{
+  "_model_id": "nvidia.nemotron-nano-12b-v2",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "Dolphins are highly intelligent marine mammals known for their complex social behaviors and communication through clicks and whistles.\n",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395275,
+    "id": "chatcmpl-a2e788c2-7765-4bd4-8718-bba18d1d7120",
+    "model": "nvidia.nemotron-nano-12b-v2",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 24,
+      "prompt_tokens": 21,
+      "total_tokens": 45
+    }
+  }
+}

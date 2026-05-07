@@ -1,0 +1,45 @@
+{
+  "_model_id": "mistral-small-latest",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": true,
+    "completion_fim": false,
+    "fine_tuning": false,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "3738d838d2594cfb81af2743ba8feb5f",
+    "object": "chat.completion",
+    "model": "mistral-small-latest",
+    "usage": {
+      "prompt_tokens": 23,
+      "completion_tokens": 28,
+      "total_tokens": 51,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985808,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "The image appears to be a blank or empty image. There are no discernible objects, text, or figures present in the frame.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

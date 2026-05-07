@@ -1,0 +1,44 @@
+{
+  "_model_id": "ministral-8b-latest",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_response": {
+    "id": "d3e2d2dd8f3e472ab1155c2ca38a7f33",
+    "object": "chat.completion",
+    "model": "ministral-8b-latest",
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 24,
+      "total_tokens": 34,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985824,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "Dolphins are highly intelligent marine mammals known for their playful behavior, complex social structures, and remarkable communication skills.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

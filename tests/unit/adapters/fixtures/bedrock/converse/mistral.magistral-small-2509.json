@@ -1,0 +1,25 @@
+{
+  "_model_id": "mistral.magistral-small-2509",
+  "_response": {
+    "metrics": {
+      "latencyMs": 709
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "\"Dolphins are highly intelligent marine mammals known for their playful behavior, sophisticated communication, and strong social bonds.\""
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 9,
+      "outputTokens": 24,
+      "serverToolUsage": {},
+      "totalTokens": 33
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "_model_id": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  "_response": {
+    "metrics": {
+      "latencyMs": 1627
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "Dolphins are highly intelligent marine mammals known for their playful behavior, complex social structures, and remarkable ability to communicate using clicks, whistles, and body language."
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "cacheReadInputTokenCount": 0,
+      "cacheReadInputTokens": 0,
+      "cacheWriteInputTokenCount": 0,
+      "cacheWriteInputTokens": 0,
+      "inputTokens": 12,
+      "outputTokens": 36,
+      "serverToolUsage": {},
+      "totalTokens": 48
+    }
+  }
+}

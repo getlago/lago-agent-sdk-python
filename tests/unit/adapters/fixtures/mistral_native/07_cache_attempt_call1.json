@@ -1,0 +1,29 @@
+{
+  "_model_id": "mistral-large-latest",
+  "_response": {
+    "id": "07503bc413a14ca99ba9baf600787a12",
+    "object": "chat.completion",
+    "model": "mistral-large-latest",
+    "usage": {
+      "prompt_tokens": 1210,
+      "completion_tokens": 14,
+      "total_tokens": 1224,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985037,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "The sum of **1 + 1** is **2**.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

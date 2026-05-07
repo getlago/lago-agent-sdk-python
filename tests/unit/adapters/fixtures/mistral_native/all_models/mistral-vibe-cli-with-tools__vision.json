@@ -1,0 +1,45 @@
+{
+  "_model_id": "mistral-vibe-cli-with-tools",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "4f9eeff578394201b56e9d6b6297c9ec",
+    "object": "chat.completion",
+    "model": "mistral-vibe-cli-with-tools",
+    "usage": {
+      "prompt_tokens": 11,
+      "completion_tokens": 27,
+      "total_tokens": 38,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985800,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "This image appears to be completely blank, showing only a solid light blue color with no other visible elements, objects, or details.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

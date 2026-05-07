@@ -1,0 +1,29 @@
+{
+  "_model_id": "mistral-large-latest",
+  "_response": {
+    "id": "3906eb5bc6b946ca90a7bc5e4ed46a85",
+    "object": "chat.completion",
+    "model": "mistral-large-latest",
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 19,
+      "total_tokens": 29,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985032,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "Dolphins are highly intelligent marine mammals known for their playful behavior and complex social structures.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

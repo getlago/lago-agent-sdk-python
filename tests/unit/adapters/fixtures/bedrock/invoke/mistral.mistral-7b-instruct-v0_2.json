@@ -1,0 +1,11 @@
+{
+  "_model_id": "mistral.mistral-7b-instruct-v0:2",
+  "_response": {
+    "outputs": [
+      {
+        "text": " Dolphins are highly intelligent, social marine mammals known for their acrobatic displays and echolocation abilities, which they use for communication and hunting.",
+        "stop_reason": "stop"
+      }
+    ]
+  }
+}

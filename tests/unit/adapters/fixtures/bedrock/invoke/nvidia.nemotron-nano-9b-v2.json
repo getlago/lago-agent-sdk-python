@@ -1,0 +1,27 @@
+{
+  "_model_id": "nvidia.nemotron-nano-9b-v2",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "length",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "Okay, the user wants one sentence about dolphins. Let me start by thinking about the key points related to dolphins. They are marine mammals, right? So maybe mention their habitat. Also,",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395276,
+    "id": "chatcmpl-e143d94c-ea90-47f3-a26e-e85af62d5fee",
+    "model": "nvidia.nemotron-nano-9b-v2",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 40,
+      "prompt_tokens": 18,
+      "total_tokens": 58
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "_model_id": "open-mistral-nemo",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": false,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_response": {
+    "id": "128efcfe9ea2497bab12496c519eaff5",
+    "object": "chat.completion",
+    "model": "open-mistral-nemo",
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 23,
+      "total_tokens": 33,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985801,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "Dolphins, known for their intelligence and playful nature, are the most socially complex marine mammals after humans.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

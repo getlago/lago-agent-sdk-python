@@ -1,0 +1,29 @@
+{
+  "_model_id": "openai.gpt-oss-safeguard-20b",
+  "_response": {
+    "metrics": {
+      "latencyMs": 502
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "reasoningContent": {
+              "reasoningText": {
+                "text": "The user asks: \"One sentence about dolphins.\" Likely they want a single sentence about dolphins. Probably something like: \"Dolphins are highly intelligent marine mammals known for their playful"
+              }
+            }
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "max_tokens",
+    "usage": {
+      "inputTokens": 72,
+      "outputTokens": 40,
+      "serverToolUsage": {},
+      "totalTokens": 112
+    }
+  }
+}

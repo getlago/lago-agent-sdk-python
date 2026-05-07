@@ -1,0 +1,55 @@
+{
+  "_model_id": "magistral-medium-latest",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": true,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_response": {
+    "id": "d3564afe820340acba2a282db61ed58c",
+    "object": "chat.completion",
+    "model": "magistral-medium-latest",
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 40,
+      "total_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985814,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "length",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "thinking": [
+                {
+                  "text": "Okay, I know that dolphins are marine mammals known for their intelligence and playful behavior. Let me draft a sentence that captures this. \"Dolphins are highly intelligent marine mammals known for their",
+                  "type": "text"
+                }
+              ],
+              "type": "thinking",
+              "closed": true
+            }
+          ],
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

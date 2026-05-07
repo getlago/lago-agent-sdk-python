@@ -1,0 +1,45 @@
+{
+  "_model_id": "mistral-large-latest",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "6690b9da0c19479196004a6b6a0204a8",
+    "object": "chat.completion",
+    "model": "mistral-large-latest",
+    "usage": {
+      "prompt_tokens": 11,
+      "completion_tokens": 38,
+      "total_tokens": 49,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985820,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "The image is a plain white square with no visible content or features. There are no objects, text, or discernible patterns present. It appears to be a blank or empty image.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

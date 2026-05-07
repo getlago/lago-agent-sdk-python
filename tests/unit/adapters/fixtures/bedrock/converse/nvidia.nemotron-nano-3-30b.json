@@ -1,0 +1,25 @@
+{
+  "_model_id": "nvidia.nemotron-nano-3-30b",
+  "_response": {
+    "metrics": {
+      "latencyMs": 418
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "Dolphins are highly intelligent marine mammals that use echolocation and complex vocalizations to communicate and hunt."
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 22,
+      "outputTokens": 22,
+      "serverToolUsage": {},
+      "totalTokens": 44
+    }
+  }
+}

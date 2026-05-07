@@ -1,0 +1,31 @@
+{
+  "_model_id": "openai.gpt-oss-safeguard-20b",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "length",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "<reasoning>User says: \"One sentence about dolphins.\" We need to output a single sentence about dolphins. Just do that. Probably keep it interesting. Do it.</reasoning>",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395340,
+    "id": "chatcmpl-04361834-c241-4bc3-bd8b-6a3b7e2cd235",
+    "model": "openai.gpt-oss-safeguard-20b",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 40,
+      "prompt_tokens": 72,
+      "prompt_tokens_details": {
+        "audio_tokens": 0,
+        "cached_tokens": 48
+      },
+      "total_tokens": 112
+    }
+  }
+}

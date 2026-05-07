@@ -1,0 +1,23 @@
+{
+  "_model_id": "eu.amazon.nova-micro-v1:0",
+  "_response": {
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "Dolphins are intelligent marine mammals known for their playful behavior, complex social structures, and remarkable ability to communicate using a variety of vocalizations."
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 5,
+      "outputTokens": 29,
+      "totalTokens": 34,
+      "cacheReadInputTokenCount": 0,
+      "cacheWriteInputTokenCount": 0
+    }
+  }
+}

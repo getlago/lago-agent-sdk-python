@@ -1,0 +1,27 @@
+{
+  "_model_id": "nvidia.nemotron-nano-3-30b",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "Dolphins are highly social, intelligent marine mammals that communicate through clicks, whistles, and body language.",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395276,
+    "id": "chatcmpl-40b86f35-0b35-4b50-9a29-193b9057a037",
+    "model": "nvidia.nemotron-nano-3-30b",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 24,
+      "prompt_tokens": 22,
+      "total_tokens": 46
+    }
+  }
+}

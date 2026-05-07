@@ -1,0 +1,186 @@
+{
+  "_model_id": "mistral-small-latest",
+  "_response": {
+    "chunks": [
+      {
+        "data": {
+          "id": "c16c7be4a8104784aa4c16265a5aa416",
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ""
+              },
+              "finish_reason": null
+            }
+          ],
+          "object": "chat.completion.chunk",
+          "created": 1777985036
+        }
+      },
+      {
+        "data": {
+          "id": "c16c7be4a8104784aa4c16265a5aa416",
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": "D"
+              },
+              "finish_reason": null
+            }
+          ],
+          "object": "chat.completion.chunk",
+          "created": 1777985036
+        }
+      },
+      {
+        "data": {
+          "id": "c16c7be4a8104784aa4c16265a5aa416",
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": "olphins are highly"
+              },
+              "finish_reason": null
+            }
+          ],
+          "object": "chat.completion.chunk",
+          "created": 1777985036
+        }
+      },
+      {
+        "data": {
+          "id": "c16c7be4a8104784aa4c16265a5aa416",
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": " intelligent marine mammals known"
+              },
+              "finish_reason": null
+            }
+          ],
+          "object": "chat.completion.chunk",
+          "created": 1777985036
+        }
+      },
+      {
+        "data": {
+          "id": "c16c7be4a8104784aa4c16265a5aa416",
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": " for their playful"
+              },
+              "finish_reason": null
+            }
+          ],
+          "object": "chat.completion.chunk",
+          "created": 1777985036
+        }
+      },
+      {
+        "data": {
+          "id": "c16c7be4a8104784aa4c16265a5aa416",
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": " behavior"
+              },
+              "finish_reason": null
+            }
+          ],
+          "object": "chat.completion.chunk",
+          "created": 1777985036
+        }
+      },
+      {
+        "data": {
+          "id": "c16c7be4a8104784aa4c16265a5aa416",
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": " and complex"
+              },
+              "finish_reason": null
+            }
+          ],
+          "object": "chat.completion.chunk",
+          "created": 1777985036
+        }
+      },
+      {
+        "data": {
+          "id": "c16c7be4a8104784aa4c16265a5aa416",
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": " social"
+              },
+              "finish_reason": null
+            }
+          ],
+          "object": "chat.completion.chunk",
+          "created": 1777985036
+        }
+      },
+      {
+        "data": {
+          "id": "c16c7be4a8104784aa4c16265a5aa416",
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": " structures"
+              },
+              "finish_reason": null
+            }
+          ],
+          "object": "chat.completion.chunk",
+          "created": 1777985036
+        }
+      },
+      {
+        "data": {
+          "id": "c16c7be4a8104784aa4c16265a5aa416",
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": "."
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "object": "chat.completion.chunk",
+          "created": 1777985036,
+          "usage": {
+            "prompt_tokens": 22,
+            "completion_tokens": 19,
+            "total_tokens": 41,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        }
+      }
+    ]
+  }
+}

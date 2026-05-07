@@ -1,0 +1,25 @@
+{
+  "_model_id": "zai.glm-4.7-flash",
+  "_response": {
+    "metrics": {
+      "latencyMs": 450
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "**Dolphins** are highly intelligent social marine mammals known for their complex communication, playful behavior, and remarkable echolocation abilities."
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 10,
+      "outputTokens": 27,
+      "serverToolUsage": {},
+      "totalTokens": 37
+    }
+  }
+}

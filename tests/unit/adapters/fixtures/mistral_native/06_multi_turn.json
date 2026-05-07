@@ -1,0 +1,29 @@
+{
+  "_model_id": "mistral-small-latest",
+  "_response": {
+    "id": "85301cac304e489db12772d361d0d421",
+    "object": "chat.completion",
+    "model": "mistral-small-latest",
+    "usage": {
+      "prompt_tokens": 37,
+      "completion_tokens": 18,
+      "total_tokens": 55,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985037,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "2 + 2 = 4\n4 \u00d7 3 = **12**",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

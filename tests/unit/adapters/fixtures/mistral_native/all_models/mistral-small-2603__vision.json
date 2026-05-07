@@ -1,0 +1,45 @@
+{
+  "_model_id": "mistral-small-2603",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": true,
+    "completion_fim": false,
+    "fine_tuning": false,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "aea707319e5048c6a706edf3d84d32fe",
+    "object": "chat.completion",
+    "model": "mistral-small-2603",
+    "usage": {
+      "prompt_tokens": 23,
+      "completion_tokens": 29,
+      "total_tokens": 52,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985807,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "The image appears to be a blank or empty white square. There are no discernible objects, text, or features present in the image.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

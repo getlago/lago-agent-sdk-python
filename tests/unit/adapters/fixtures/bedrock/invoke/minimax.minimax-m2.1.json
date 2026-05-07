@@ -1,0 +1,27 @@
+{
+  "_model_id": "minimax.minimax-m2.1",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "length",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "<reasoning>The user wants me to generate one sentence about dolphins. This is a very simple request for a short, factual or descriptive sentence about dolphins. I need to keep it concise and accurate.\n</reasoning>\n\nD",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395246,
+    "id": "chatcmpl-e0c46d58-fefe-4d4d-944a-1e82bbd966b0",
+    "model": "minimax.minimax-m2.1",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 40,
+      "prompt_tokens": 43,
+      "total_tokens": 83
+    }
+  }
+}

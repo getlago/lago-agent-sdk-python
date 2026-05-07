@@ -1,0 +1,27 @@
+{
+  "_model_id": "mistral.ministral-3-3b-instruct",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "Dolphins are intelligent, playful marine mammals known for their razor-sharp mental prowess, iconic playful behavior, and strong social bonds.",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395269,
+    "id": "chatcmpl-72f25314-ab13-4e05-9243-20181b0f385f",
+    "model": "mistral.ministral-3-3b-instruct",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 29,
+      "prompt_tokens": 9,
+      "total_tokens": 38
+    }
+  }
+}

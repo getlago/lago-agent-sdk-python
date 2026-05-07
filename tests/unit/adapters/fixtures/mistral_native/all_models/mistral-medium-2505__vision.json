@@ -1,0 +1,45 @@
+{
+  "_model_id": "mistral-medium-2505",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "5aed118415fb4d0a935497e7223d9561",
+    "object": "chat.completion",
+    "model": "mistral-medium-2505",
+    "usage": {
+      "prompt_tokens": 11,
+      "completion_tokens": 32,
+      "total_tokens": 43,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985789,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "The image you provided appears to be a plain white background with no discernible objects, text, or features. It is essentially an empty or blank image.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

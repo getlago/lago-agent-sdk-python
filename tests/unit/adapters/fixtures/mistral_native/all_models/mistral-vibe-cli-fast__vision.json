@@ -1,0 +1,45 @@
+{
+  "_model_id": "mistral-vibe-cli-fast",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": true,
+    "completion_fim": false,
+    "fine_tuning": false,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "891c55614b884b2d8bd27a83aae33dcd",
+    "object": "chat.completion",
+    "model": "mistral-vibe-cli-fast",
+    "usage": {
+      "prompt_tokens": 23,
+      "completion_tokens": 34,
+      "total_tokens": 57,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985810,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "The image appears to be a plain, solid white background with no discernible objects, text, or features. It's a simple and unadorned visual.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

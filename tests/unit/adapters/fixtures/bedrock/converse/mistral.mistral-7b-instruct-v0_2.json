@@ -1,0 +1,25 @@
+{
+  "_model_id": "mistral.mistral-7b-instruct-v0:2",
+  "_response": {
+    "metrics": {
+      "latencyMs": 469
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": " Dolphins are highly intelligent, social marine mammals known for their distinctive curved dorsal fins and playful behavior in the wild."
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 15,
+      "outputTokens": 30,
+      "serverToolUsage": {},
+      "totalTokens": 45
+    }
+  }
+}

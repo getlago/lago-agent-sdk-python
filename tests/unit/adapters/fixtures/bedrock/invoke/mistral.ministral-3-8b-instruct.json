@@ -1,0 +1,27 @@
+{
+  "_model_id": "mistral.ministral-3-8b-instruct",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "Dolphins, highly intelligent mammals, are known for their complex social behaviors, sonar-based echolocation, and cooperative hunting strategies in the ocean.",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395269,
+    "id": "chatcmpl-55ba26f7-e719-4069-8fd4-91d510b7fc81",
+    "model": "mistral.ministral-3-8b-instruct",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 30,
+      "prompt_tokens": 9,
+      "total_tokens": 39
+    }
+  }
+}

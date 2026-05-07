@@ -1,0 +1,29 @@
+{
+  "_model_id": "minimax.minimax-m2.5",
+  "_response": {
+    "metrics": {
+      "latencyMs": 30251
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "reasoningContent": {
+              "reasoningText": {
+                "text": "The user asked: \"One sentence about dolphins.\" This is a straightforward request. There's no policy conflict. I can comply by providing one sentence describing dolphins. Use proper grammar, keep to one sentence."
+              }
+            }
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "max_tokens",
+    "usage": {
+      "inputTokens": 43,
+      "outputTokens": 40,
+      "serverToolUsage": {},
+      "totalTokens": 83
+    }
+  }
+}

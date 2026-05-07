@@ -1,0 +1,27 @@
+{
+  "_model_id": "minimax.minimax-m2.5",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "length",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "<reasoning>We need to respond to the user: \"One sentence about dolphins.\" So just one sentence describing dolphins, perhaps something like: \"Dolphins are highly intelligent marine mammals known for their playful behavior,</reasoning>",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395248,
+    "id": "chatcmpl-ed00ef62-8104-4f49-847b-429e042f1dc2",
+    "model": "minimax.minimax-m2.5",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 40,
+      "prompt_tokens": 43,
+      "total_tokens": 83
+    }
+  }
+}

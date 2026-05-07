@@ -1,0 +1,45 @@
+{
+  "_model_id": "magistral-small-latest",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": true,
+    "completion_fim": false,
+    "fine_tuning": false,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "32e86e4313514a4f8241f6624bf86547",
+    "object": "chat.completion",
+    "model": "magistral-small-latest",
+    "usage": {
+      "prompt_tokens": 23,
+      "completion_tokens": 40,
+      "total_tokens": 63,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985811,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "length",
+        "message": {
+          "role": "assistant",
+          "content": "The image appears to be a close-up of a textured surface, possibly fabric or a woven material. The texture is characterized by a series of diagonal lines forming a diamond pattern, with a central point",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

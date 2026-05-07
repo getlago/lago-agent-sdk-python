@@ -1,0 +1,55 @@
+{
+  "_model_id": "magistral-medium-2509",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": true,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_response": {
+    "id": "c6145e661d53415396c5ee3928b9fe78",
+    "object": "chat.completion",
+    "model": "magistral-medium-2509",
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 40,
+      "total_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985811,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "length",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "thinking": [
+                {
+                  "text": "Okay, the user wants me to write one sentence about dolphins. I know that dolphins are marine mammals known for their intelligence and playful behavior. I should keep the sentence concise and informative.",
+                  "type": "text"
+                }
+              ],
+              "type": "thinking",
+              "closed": true
+            }
+          ],
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

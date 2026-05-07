@@ -1,0 +1,27 @@
+{
+  "_model_id": "minimax.minimax-m2",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "length",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "<reasoning>The user asks \"One sentence about dolphins.\" I need to produce one sentence describing dolphins. It needs to be concise. The user's request is straightforward. No disallowed content. So I'll output a sentence.</reasoning>",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395245,
+    "id": "chatcmpl-aee04882-5d78-4a5f-a71b-86141ec194b8",
+    "model": "minimax.minimax-m2",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 40,
+      "prompt_tokens": 27,
+      "total_tokens": 67
+    }
+  }
+}

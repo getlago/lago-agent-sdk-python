@@ -1,0 +1,45 @@
+{
+  "_model_id": "ministral-3b-2512",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "6dc816666a9842789e7f7d1468f61308",
+    "object": "chat.completion",
+    "model": "ministral-3b-2512",
+    "usage": {
+      "prompt_tokens": 11,
+      "completion_tokens": 40,
+      "total_tokens": 51,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985822,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "length",
+        "message": {
+          "role": "assistant",
+          "content": "The image you provided appears to be a blank or empty white square with no discernible content or objects.\n\nIf you are referring to a typical icon or symbol, it might be a placeholder or a generic",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

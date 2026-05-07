@@ -1,0 +1,45 @@
+{
+  "_model_id": "mistral-medium-3-5",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": true,
+    "completion_fim": false,
+    "fine_tuning": false,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "057355081e55407888136a84a81f403b",
+    "object": "chat.completion",
+    "model": "mistral-medium-3-5",
+    "usage": {
+      "prompt_tokens": 23,
+      "completion_tokens": 40,
+      "total_tokens": 63,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985827,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "length",
+        "message": {
+          "role": "assistant",
+          "content": "The image you've provided is a solid green square. There are no other objects, text, or discernible features within the image. It is a simple, uniform color with no additional details.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

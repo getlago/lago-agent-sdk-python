@@ -1,0 +1,44 @@
+{
+  "_model_id": "voxtral-mini-latest",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": false,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": false,
+    "vision": false,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": true,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_response": {
+    "id": "087d6af5e6274876992de81b70e1316b",
+    "object": "chat.completion",
+    "model": "voxtral-mini-latest",
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 17,
+      "total_tokens": 27,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985865,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "Dolphins are highly intelligent marine mammals known for their playful and social nature.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

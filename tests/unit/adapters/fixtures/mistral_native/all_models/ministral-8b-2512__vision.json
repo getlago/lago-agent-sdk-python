@@ -1,0 +1,45 @@
+{
+  "_model_id": "ministral-8b-2512",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "3ffa06ef59a940e69a57c88ce5108bfc",
+    "object": "chat.completion",
+    "model": "ministral-8b-2512",
+    "usage": {
+      "prompt_tokens": 11,
+      "completion_tokens": 40,
+      "total_tokens": 51,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985823,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "length",
+        "message": {
+          "role": "assistant",
+          "content": "The image you provided is completely blank\u2014it is a solid, uniform color with no visible objects, text, or patterns.\n\nIf you intended to upload something else, please double-check your upload. If",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

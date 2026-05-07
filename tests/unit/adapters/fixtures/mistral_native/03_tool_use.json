@@ -1,0 +1,38 @@
+{
+  "_model_id": "mistral-small-latest",
+  "_response": {
+    "id": "886d52677c2143e38323bce6083ddc52",
+    "object": "chat.completion",
+    "model": "mistral-small-latest",
+    "usage": {
+      "prompt_tokens": 83,
+      "completion_tokens": 23,
+      "total_tokens": 106,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985032,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "tool_calls",
+        "message": {
+          "role": "assistant",
+          "content": "I'll get the weather information for Tokyo for you.",
+          "tool_calls": [
+            {
+              "function": {
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Tokyo\"}"
+              },
+              "id": "zUYabOMJt",
+              "index": 0
+            }
+          ],
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

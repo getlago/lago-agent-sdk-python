@@ -1,0 +1,27 @@
+{
+  "_model_id": "openai.gpt-oss-safeguard-120b",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "length",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "<reasoning>The user wants one sentence about dolphins. So we provide a single sentence. It's straightforward. Should not be too long but one sentence. Possibly something like \"Dolphins are highly intelligent</reasoning>",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395339,
+    "id": "chatcmpl-a85c20f4-3a8f-41c7-b423-6af3cd3039d0",
+    "model": "openai.gpt-oss-safeguard-120b",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 40,
+      "prompt_tokens": 72,
+      "total_tokens": 112
+    }
+  }
+}

@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lago-agent-sdk"
+version = "0.1.0"
+description = "Instrument LLM clients and emit usage events to Lago."
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["lago", "billing", "llm", "metering", "bedrock", "mistral", "anthropic", "openai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+bedrock = ["boto3>=1.34"]
+mistral = ["mistralai>=2.0"]
+dev = [
+    "pytest>=7",
+    "pytest-asyncio>=0.23",
+    "boto3>=1.34",
+    "mistralai>=2.0",
+    "hypothesis>=6",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "types-requests>=2.31",
+]
+
+[project.urls]
+Homepage = "https://www.getlago.com"
+Repository = "https://github.com/getlago/lago-agent-sdk-python"
+Issues = "https://github.com/getlago/lago-agent-sdk-python/issues"
+Changelog = "https://github.com/getlago/lago-agent-sdk-python/blob/main/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "ASYNC",
+]
+ignore = [
+    "E501",  # line too long — handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B", "F841"]  # tests can be looser
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src/lago_agent_sdk"]
+
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*", "mistralai.*"]
+ignore_missing_imports = true

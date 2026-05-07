@@ -1,0 +1,27 @@
+{
+  "_model_id": "qwen.qwen3-next-80b-a3b",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "Dolphins are highly intelligent, social marine mammals known for their playful behavior, complex communication, and echolocation abilities.",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1777395342,
+    "id": "chatcmpl-0b9097ca-ca35-406d-9ae2-0fc0f4c2965c",
+    "model": "qwen.qwen3-next-80b-a3b",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 25,
+      "prompt_tokens": 13,
+      "total_tokens": 38
+    }
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "_model_id": "ministral-14b-2512",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": false,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_kind": "vision",
+  "_response": {
+    "id": "4ba747ac6eb246c28c436f946b185ce2",
+    "object": "chat.completion",
+    "model": "ministral-14b-2512",
+    "usage": {
+      "prompt_tokens": 11,
+      "completion_tokens": 35,
+      "total_tokens": 46,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985825,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "The image you provided appears to be completely blank or empty, showing no visible content or details. There are no objects, text, colors, or any other elements present.",
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

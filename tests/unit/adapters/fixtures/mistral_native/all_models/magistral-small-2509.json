@@ -1,0 +1,55 @@
+{
+  "_model_id": "magistral-small-2509",
+  "_capabilities": {
+    "completion_chat": true,
+    "function_calling": true,
+    "reasoning": true,
+    "completion_fim": false,
+    "fine_tuning": true,
+    "vision": true,
+    "ocr": false,
+    "classification": false,
+    "moderation": false,
+    "audio": false,
+    "audio_transcription": false,
+    "audio_transcription_realtime": false,
+    "audio_speech": false
+  },
+  "_response": {
+    "id": "12f41d9f385241f0b34d3749eabf2a5b",
+    "object": "chat.completion",
+    "model": "magistral-small-2509",
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 40,
+      "total_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "created": 1777985866,
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "length",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "thinking": [
+                {
+                  "text": "Alright, the user has asked to write one sentence about dolphins. Let me think about what interesting fact or description I can provide in a concise manner.\n\nDolphins are marine mammals known",
+                  "type": "text"
+                }
+              ],
+              "type": "thinking",
+              "closed": true
+            }
+          ],
+          "tool_calls": null,
+          "prefix": false
+        }
+      }
+    ]
+  }
+}

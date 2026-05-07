@@ -1,0 +1,25 @@
+{
+  "_model_id": "nvidia.nemotron-nano-9b-v2",
+  "_response": {
+    "metrics": {
+      "latencyMs": 425
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "Okay, the user wants a single sentence about dolphins. Let me start by thinking about what defines dolphins. They're marine mammals, right? So I should mention that. Also, they're"
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "max_tokens",
+    "usage": {
+      "inputTokens": 18,
+      "outputTokens": 40,
+      "serverToolUsage": {},
+      "totalTokens": 58
+    }
+  }
+}

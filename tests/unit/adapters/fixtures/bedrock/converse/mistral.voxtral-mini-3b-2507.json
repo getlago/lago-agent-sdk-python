@@ -1,0 +1,25 @@
+{
+  "_model_id": "mistral.voxtral-mini-3b-2507",
+  "_response": {
+    "metrics": {
+      "latencyMs": 170
+    },
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "They are declining due to stressors such as pollution, climate change, and entanglement."
+          }
+        ],
+        "role": "assistant"
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 9,
+      "outputTokens": 19,
+      "serverToolUsage": {},
+      "totalTokens": 28
+    }
+  }
+}
