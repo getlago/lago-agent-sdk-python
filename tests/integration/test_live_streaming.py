@@ -4,6 +4,7 @@ Skipped unless AWS_BEARER_TOKEN_BEDROCK is set. Drives real
 `converse_stream` and `invoke_model_with_response_stream` via the bearer
 REST surface, reshaped into the same flow our wrapper drains.
 """
+
 from __future__ import annotations
 
 import json
@@ -79,14 +80,14 @@ def test_live_invoke_model_stream_emits_events():
     try:
         sdk = LagoSDK(api_key="x", api_url=url, default_subscription_id="sub_int")
         client = _fresh_client(sdk)
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 40,
-            "messages": [{"role": "user", "content": PROMPT}],
-        })
-        resp = client.invoke_model_with_response_stream(
-            modelId="eu.anthropic.claude-sonnet-4-6", body=body
+        body = json.dumps(
+            {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 40,
+                "messages": [{"role": "user", "content": PROMPT}],
+            }
         )
+        resp = client.invoke_model_with_response_stream(modelId="eu.anthropic.claude-sonnet-4-6", body=body)
         for _event in resp["body"]:
             pass
         assert sdk.flush(timeout=10.0)

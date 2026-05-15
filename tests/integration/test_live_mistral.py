@@ -2,6 +2,7 @@
 
 Skipped unless MISTRAL_API_KEY is set.
 """
+
 from __future__ import annotations
 
 import json
@@ -42,6 +43,7 @@ def _spawn_lago():
 
 def test_live_mistral_chat_complete_emits_to_lago():
     from mistralai.client import Mistral
+
     server, url = _spawn_lago()
     try:
         sdk = LagoSDK(api_key="x", api_url=url, default_subscription_id="sub_int")
@@ -66,6 +68,7 @@ def test_live_mistral_chat_complete_emits_to_lago():
 
 def test_live_mistral_chat_stream_emits_to_lago():
     from mistralai.client import Mistral
+
     server, url = _spawn_lago()
     try:
         sdk = LagoSDK(api_key="x", api_url=url, default_subscription_id="sub_int")

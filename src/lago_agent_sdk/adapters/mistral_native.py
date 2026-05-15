@@ -5,6 +5,7 @@ Verified mappings:
     (NOT `usage.prompt_cache_hit_tokens` — that field does not exist)
   - Reasoning, cache_write, image_input, audio_input not exposed by Mistral.
 """
+
 from __future__ import annotations
 
 from typing import Any

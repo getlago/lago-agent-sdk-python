@@ -1,4 +1,5 @@
 """Buffer-overflow boundary — exactly at the cap, the OLDEST is dropped."""
+
 from __future__ import annotations
 
 import threading
@@ -15,8 +16,8 @@ def test_overflow_drops_oldest_at_exact_boundary():
 
     q = EventQueue(
         sender=slow_sender,
-        flush_interval=10.0,           # never timer-flush during the test
-        max_batch_size=10_000,         # match buffer so worker takes everything once unpaused
+        flush_interval=10.0,  # never timer-flush during the test
+        max_batch_size=10_000,  # match buffer so worker takes everything once unpaused
         max_buffer_size=10_000,
     )
     try:

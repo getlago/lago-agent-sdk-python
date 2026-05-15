@@ -1,4 +1,5 @@
 """Mistral native adapter — verified against real fixtures."""
+
 from __future__ import annotations
 
 import json
@@ -125,6 +126,7 @@ def test_no_usage_returns_zeros():
 
 def test_handles_pydantic_response_via_model_dump():
     """Real mistralai SDK returns pydantic objects — adapter should accept them."""
+
     class FakePydantic:
         def model_dump(self):
             return {

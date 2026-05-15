@@ -12,6 +12,7 @@ Dispatch by substring match on `modelId`. Verified against 39 models in eu-west-
   4.6.7 mistral_legacy             — Mistral 7B / Mixtral 8x7B / Mistral Large 24.02
                                      (no usage; emit WARN, return _no_usage extras)
 """
+
 from __future__ import annotations
 
 import logging
@@ -154,7 +155,9 @@ def _extract_anthropic(resp: dict[str, Any], model_id: str) -> CanonicalUsage:
     # Tool calls — count `type == "tool_use"` content blocks
     content = resp.get("content") if isinstance(resp, dict) else None
     tool_calls = (
-        sum(1 for b in content if isinstance(b, dict) and b.get("type") == "tool_use") if isinstance(content, list) else 0
+        sum(1 for b in content if isinstance(b, dict) and b.get("type") == "tool_use")
+        if isinstance(content, list)
+        else 0
     )
 
     for k, v in usage.items():

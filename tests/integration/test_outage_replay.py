@@ -1,4 +1,5 @@
 """Outage replay — Lago fails for N seconds; events buffer and arrive in order on recovery."""
+
 from __future__ import annotations
 
 import json

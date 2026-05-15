@@ -5,6 +5,7 @@ verify spec §4.3 mappings against reality before writing the adapter.
 
 Reads MISTRAL_API_KEY from env.
 """
+
 from __future__ import annotations
 
 import json
@@ -63,18 +64,20 @@ def main() -> int:
 
     # ----- 3. Tool use -----
     print("\n[3] tool use — mistral-small-latest with weather tool")
-    tools = [{
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "Get the weather for a city.",
-            "parameters": {
-                "type": "object",
-                "properties": {"city": {"type": "string"}},
-                "required": ["city"],
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the weather for a city.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
             },
-        },
-    }]
+        }
+    ]
     r = client.chat.complete(
         model="mistral-small-latest",
         messages=[{"role": "user", "content": "What's the weather in Tokyo?"}],
@@ -89,7 +92,12 @@ def main() -> int:
     try:
         r = client.chat.complete(
             model="magistral-small-latest",
-            messages=[{"role": "user", "content": "Solve: a train leaves Paris at 9am at 80km/h, another at 11am at 120km/h. When does the second catch up?"}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Solve: a train leaves Paris at 9am at 80km/h, another at 11am at 120km/h. When does the second catch up?",
+                }
+            ],
             max_tokens=600,
         )
         save("04_reasoning_magistral", "magistral-small-latest", to_dict(r))

@@ -7,6 +7,7 @@ Critically: `invoke_model` returns a single-use streaming body. We consume it
 once, parse JSON, extract usage, and **re-wrap** it as a fresh `StreamingBody`
 so customer code reading `response['body'].read()` works unchanged.
 """
+
 from __future__ import annotations
 
 import io
@@ -31,6 +32,7 @@ def _restream_body(body_bytes: bytes) -> Any:
     """Build a botocore StreamingBody equivalent so customer .read() still works."""
     try:
         from botocore.response import StreamingBody
+
         return StreamingBody(io.BytesIO(body_bytes), len(body_bytes))
     except Exception:  # noqa: BLE001
         return io.BytesIO(body_bytes)
@@ -159,8 +161,8 @@ def wrap_boto3_bedrock_client(
             # or OpenAI-compat shape on the final delta), and Bedrock's invocation
             # metrics on the very last `message_stop` chunk. We accumulate both
             # without overwriting and pick the richer one at the end.
-            usage_payload: dict[str, Any] = {}        # Anthropic / OpenAI-shape
-            bedrock_metrics: dict[str, Any] = {}      # amazon-bedrock-invocationMetrics
+            usage_payload: dict[str, Any] = {}  # Anthropic / OpenAI-shape
+            bedrock_metrics: dict[str, Any] = {}  # amazon-bedrock-invocationMetrics
             try:
                 for event in original_body:
                     if isinstance(event, dict) and "chunk" in event:

@@ -9,6 +9,7 @@ Skipped: pure embedding / OCR / audio-transcription / moderation models
 
 Reads MISTRAL_API_KEY from env.
 """
+
 from __future__ import annotations
 
 import json
@@ -78,7 +79,11 @@ def main() -> int:
                     max_tokens=40,
                 )
                 payload = to_dict(r)
-                path.write_text(json.dumps({"_model_id": mid, "_capabilities": cap, "_response": payload}, indent=2, default=str))
+                path.write_text(
+                    json.dumps(
+                        {"_model_id": mid, "_capabilities": cap, "_response": payload}, indent=2, default=str
+                    )
+                )
                 summary["text"] += 1
                 print(f"  [{i}/{len(queue)}] {mid}  ✓")
             except Exception as exc:  # noqa: BLE001
@@ -93,17 +98,28 @@ def main() -> int:
                 try:
                     r = client.chat.complete(
                         model=mid,
-                        messages=[{
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": "What is in this image?"},
-                                {"type": "image_url", "image_url": f"data:image/png;base64,{TINY_PNG_B64}"},
-                            ],
-                        }],
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "What is in this image?"},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": f"data:image/png;base64,{TINY_PNG_B64}",
+                                    },
+                                ],
+                            }
+                        ],
                         max_tokens=40,
                     )
                     payload = to_dict(r)
-                    vpath.write_text(json.dumps({"_model_id": mid, "_capabilities": cap, "_kind": "vision", "_response": payload}, indent=2, default=str))
+                    vpath.write_text(
+                        json.dumps(
+                            {"_model_id": mid, "_capabilities": cap, "_kind": "vision", "_response": payload},
+                            indent=2,
+                            default=str,
+                        )
+                    )
                     summary["vision"] += 1
                     print("           └─ vision  ✓")
                 except Exception as exc:  # noqa: BLE001

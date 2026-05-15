@@ -1,4 +1,5 @@
 """Wrap-overhead benchmark — fails if p99 > 5ms."""
+
 from __future__ import annotations
 
 import statistics
@@ -36,5 +37,7 @@ def test_wrap_overhead_p99_under_5ms():
     base_p99 = statistics.quantiles(baseline_durs, n=100)[98]
     wrap_p99 = statistics.quantiles(wrapped_durs, n=100)[98]
     overhead_ms = (wrap_p99 - base_p99) * 1000
-    print(f"\np99 baseline={base_p99*1000:.3f}ms wrapped={wrap_p99*1000:.3f}ms overhead={overhead_ms:.3f}ms")
+    print(
+        f"\np99 baseline={base_p99 * 1000:.3f}ms wrapped={wrap_p99 * 1000:.3f}ms overhead={overhead_ms:.3f}ms"
+    )
     assert overhead_ms < 5.0, f"p99 wrap overhead {overhead_ms:.2f}ms exceeds 5ms budget"

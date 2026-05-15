@@ -3,6 +3,7 @@
 Wraps `Mistral.chat.complete` and `.stream` in place — instrumentation never
 breaks the customer's call. Streaming captures usage from the final chunk.
 """
+
 from __future__ import annotations
 
 import logging

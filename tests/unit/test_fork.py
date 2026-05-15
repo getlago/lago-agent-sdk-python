@@ -3,6 +3,7 @@
 Without help, a daemon thread does not survive fork on POSIX. The SDK uses
 `os.register_at_fork` to recreate the queue thread in the child.
 """
+
 from __future__ import annotations
 
 import json

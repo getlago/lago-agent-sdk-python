@@ -1,4 +1,5 @@
 """asyncio context propagation — each task sees its own subscription, no cross-talk."""
+
 from __future__ import annotations
 
 import asyncio
@@ -56,4 +57,6 @@ async def test_concurrent_tasks_with_different_subs_do_not_leak():
     for e in flat:
         sub = e["external_subscription_id"]
         # The model field equals the sub_id we set just before emit
-        assert e["properties"]["model"] == sub, f"event for {sub} carries wrong model={e['properties']['model']}"
+        assert e["properties"]["model"] == sub, (
+            f"event for {sub} carries wrong model={e['properties']['model']}"
+        )

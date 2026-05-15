@@ -1,4 +1,5 @@
 """Event queue tests — batching, retry, backoff, flush, overflow."""
+
 from __future__ import annotations
 
 import threading

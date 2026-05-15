@@ -1,4 +1,5 @@
 """Drift detection — unknown fields land in extras, not in numeric counts."""
+
 from __future__ import annotations
 
 from lago_agent_sdk.adapters import (
@@ -52,7 +53,13 @@ def test_invoke_opus_4_7_service_tier_in_extras():
 def test_invoke_openai_compat_prompt_tokens_details_lands_in_extras():
     """Spec maps only completion_tokens_details.reasoning_tokens — anything in
     prompt_tokens_details is real drift signal we want to surface."""
-    resp = {"usage": {"prompt_tokens": 73, "completion_tokens": 80, "prompt_tokens_details": {"cached_tokens": 48}}}
+    resp = {
+        "usage": {
+            "prompt_tokens": 73,
+            "completion_tokens": 80,
+            "prompt_tokens_details": {"cached_tokens": 48},
+        }
+    }
     u = extract_bedrock_invoke(resp, model_id="openai.gpt-oss-safeguard-20b-1:0")
     assert "prompt_tokens_details" in u.extras
     assert u.extras["prompt_tokens_details"] == {"cached_tokens": 48}

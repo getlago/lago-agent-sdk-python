@@ -8,6 +8,7 @@ Families:
 - full-cache       : adds cacheReadInputTokens + cacheWriteInputTokens
                      (Claude Sonnet 4.5/4.6, Haiku 4.5, Opus 4.5/4.6).
 """
+
 from __future__ import annotations
 
 from typing import Any

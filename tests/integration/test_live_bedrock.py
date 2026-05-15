@@ -4,6 +4,7 @@ Skipped unless `AWS_BEARER_TOKEN_BEDROCK` is set. Mocks Lago so no real
 events are sent. Verifies that wrapping the bearer-token REST flow
 produces correctly-shaped events at the Lago HTTP boundary.
 """
+
 from __future__ import annotations
 
 import json

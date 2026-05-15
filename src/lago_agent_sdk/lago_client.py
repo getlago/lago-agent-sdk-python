@@ -1,4 +1,5 @@
 """Thin HTTP client to Lago."""
+
 from __future__ import annotations
 
 import json
@@ -14,6 +15,15 @@ class LagoClient:
         self.api_key = api_key
         self.api_url = api_url.rstrip("/")
         self.timeout = timeout
+
+    def __repr__(self) -> str:
+        if not self.api_key:
+            masked = "<unset>"
+        elif len(self.api_key) <= 8:
+            masked = "***"
+        else:
+            masked = f"***{self.api_key[-4:]}"
+        return f"LagoClient(api_key={masked!r}, api_url={self.api_url!r}, timeout={self.timeout})"
 
     def send_batch(self, events: list[dict[str, Any]]) -> None:
         if not events:
