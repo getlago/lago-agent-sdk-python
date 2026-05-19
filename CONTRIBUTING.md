@@ -2,33 +2,64 @@
 
 ## Development setup
 
+Recommended: [uv](https://docs.astral.sh/uv/) (10× faster installs, lockfile-driven reproducible envs):
+
 ```bash
 git clone https://github.com/getlago/lago-agent-sdk-python
 cd lago-agent-sdk-python
-python3.11 -m venv venv
-source venv/bin/activate
+uv sync --all-extras       # creates .venv, installs from uv.lock
+```
+
+Plain pip works too:
+
+```bash
+python3.11 -m venv venv && source venv/bin/activate
 pip install -e '.[dev]'
+```
+
+Common workflows are wired through the Makefile:
+
+```bash
+make sync     # install/sync deps from uv.lock
+make test     # unit tests
+make lint     # ruff check + ruff format --check + mypy
+make format   # auto-fix lint and format
+make check    # lint + test (what CI runs)
 ```
 
 ## Run tests
 
 ```bash
 # Unit tests (fast, no network)
-pytest tests/unit
+make test
+
+# Unit tests with coverage report
+uv run pytest tests/unit --cov=lago_agent_sdk --cov-report=term-missing
 
 # Integration tests (require credentials — see env vars in each test)
 AWS_BEARER_TOKEN_BEDROCK="..." \
 MISTRAL_API_KEY="..." \
 LAGO_API_URL="..." LAGO_API_KEY="..." LAGO_EXTERNAL_SUBSCRIPTION_ID="..." \
-pytest tests/integration
+uv run pytest tests/integration -q
 ```
 
 ## Linting and type checks
 
 ```bash
-ruff check src tests
-ruff format --check src tests
-mypy src
+make lint        # all three at once
+# or directly:
+uv run ruff check src tests
+uv run ruff format --check src tests
+uv run mypy src
+```
+
+CI gates on all of the above plus an 80% coverage floor. Raising the floor is encouraged as coverage improves.
+
+## Updating dependencies
+
+```bash
+uv lock --upgrade            # refresh the lockfile (commit the diff)
+uv lock --upgrade-package X  # bump a single package
 ```
 
 ## Where things live

@@ -10,6 +10,7 @@ Read by tests/unit/adapters/test_bedrock_*.py and test_all_models_sweep.py —
 proves the dispatch picks the right adapter for every model and the adapter
 handles its real shape.
 """
+
 from __future__ import annotations
 
 import json
@@ -30,10 +31,14 @@ def headers(api_key: str) -> dict[str, str]:
 
 
 def discover(api_key: str) -> tuple[list[dict], dict[str, str]]:
-    r = requests.get(f"https://bedrock.{REGION}.amazonaws.com/foundation-models", headers=headers(api_key), timeout=30)
+    r = requests.get(
+        f"https://bedrock.{REGION}.amazonaws.com/foundation-models", headers=headers(api_key), timeout=30
+    )
     r.raise_for_status()
     models = r.json().get("modelSummaries", [])
-    r = requests.get(f"https://bedrock.{REGION}.amazonaws.com/inference-profiles", headers=headers(api_key), timeout=30)
+    r = requests.get(
+        f"https://bedrock.{REGION}.amazonaws.com/inference-profiles", headers=headers(api_key), timeout=30
+    )
     r.raise_for_status()
     profiles = r.json().get("inferenceProfileSummaries", [])
     profile_by_arn: dict[str, str] = {}
@@ -65,9 +70,16 @@ def callable_for(model: dict, profile_by_arn: dict[str, str]) -> str | None:
 def make_invoke_body(mid: str, prompt: str, max_tokens: int) -> dict | None:
     m = mid.lower()
     if "anthropic" in m:
-        return {"anthropic_version": "bedrock-2023-05-31", "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]}
+        return {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
     if "nova" in m:
-        return {"messages": [{"role": "user", "content": [{"text": prompt}]}], "inferenceConfig": {"maxTokens": max_tokens}}
+        return {
+            "messages": [{"role": "user", "content": [{"text": prompt}]}],
+            "inferenceConfig": {"maxTokens": max_tokens},
+        }
     if "pixtral" in m:
         return {"messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens}
     if "mistral-large-2402" in m or "mistral-7b" in m or "mixtral-8x7b" in m:
@@ -108,7 +120,10 @@ def main() -> int:
             print(f"  [{i}/{len(callable_ids)}] {cid}  (cached)")
             continue
         url = f"https://bedrock-runtime.{REGION}.amazonaws.com/model/{cid}/converse"
-        body = {"messages": [{"role": "user", "content": [{"text": PROMPT}]}], "inferenceConfig": {"maxTokens": MAX_TOKENS}}
+        body = {
+            "messages": [{"role": "user", "content": [{"text": PROMPT}]}],
+            "inferenceConfig": {"maxTokens": MAX_TOKENS},
+        }
         try:
             r = requests.post(url, headers=headers(api_key), json=body, timeout=60)
             if r.status_code == 200:

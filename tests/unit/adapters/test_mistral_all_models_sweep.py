@@ -3,6 +3,7 @@
 Mirrors test_all_models_sweep.py for Bedrock. Run shared/fixtures/capture_mistral_all.py
 to refresh fixtures.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,7 +20,9 @@ def _all() -> list[pathlib.Path]:
     return sorted(ROOT.glob("*.json")) if ROOT.exists() else []
 
 
-@pytest.mark.skipif(not _all(), reason="Mistral fixtures not captured (run shared/fixtures/capture_mistral_all.py)")
+@pytest.mark.skipif(
+    not _all(), reason="Mistral fixtures not captured (run shared/fixtures/capture_mistral_all.py)"
+)
 @pytest.mark.parametrize("path", _all(), ids=lambda p: p.stem)
 def test_mistral_every_model(path: pathlib.Path):
     data = json.loads(path.read_text())

@@ -1,4 +1,5 @@
 """Sweep every captured Bedrock model — adapters never crash, dispatch is right."""
+
 from __future__ import annotations
 
 import json
@@ -33,7 +34,9 @@ def test_converse_every_model(path: pathlib.Path):
     assert u.api == "bedrock_converse"
 
 
-@pytest.mark.skipif(not _all(INV), reason="InvokeModel fixtures not captured (run shared/fixtures/capture.py)")
+@pytest.mark.skipif(
+    not _all(INV), reason="InvokeModel fixtures not captured (run shared/fixtures/capture.py)"
+)
 @pytest.mark.parametrize("path", _all(INV), ids=lambda p: p.stem)
 def test_invoke_every_model(path: pathlib.Path):
     data = json.loads(path.read_text())

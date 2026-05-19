@@ -1,4 +1,5 @@
 """Bedrock Converse adapter tests — one per shape family, against real fixtures."""
+
 from __future__ import annotations
 
 import json
@@ -10,9 +11,9 @@ FIX = pathlib.Path(__file__).parent / "fixtures" / "bedrock" / "converse"
 
 # One representative model per shape family.
 _FAMILY_FIXTURES = {
-    "standard":         "eu.amazon.nova-lite-v1_0.json",          # 33 models — non-Anthropic
-    "cache_read_only":  "eu.anthropic.claude-opus-4-7.json",      # Opus 4.7
-    "full_cache":       "eu.anthropic.claude-sonnet-4-6.json",    # Sonnet 4.5/4.6, Haiku 4.5, Opus 4.5/4.6
+    "standard": "eu.amazon.nova-lite-v1_0.json",  # 33 models — non-Anthropic
+    "cache_read_only": "eu.anthropic.claude-opus-4-7.json",  # Opus 4.7
+    "full_cache": "eu.anthropic.claude-sonnet-4-6.json",  # Sonnet 4.5/4.6, Haiku 4.5, Opus 4.5/4.6
 }
 
 
@@ -58,7 +59,14 @@ def test_full_cache_family_sonnet_4_6():
 
 def test_cachereadinputtokencount_alias_is_ignored():
     """Newer alias `cacheReadInputTokenCount` is a duplicate of `*Tokens` — must not double count."""
-    resp = {"usage": {"inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 100, "cacheReadInputTokenCount": 999}}
+    resp = {
+        "usage": {
+            "inputTokens": 10,
+            "outputTokens": 20,
+            "cacheReadInputTokens": 100,
+            "cacheReadInputTokenCount": 999,
+        }
+    }
     u = extract_bedrock_converse(resp, model_id="eu.anthropic.claude-opus-4-7")
     assert u.cache_read == 100
     # Alias should not pollute extras (it's a known field)

@@ -1,4 +1,5 @@
 """CanonicalUsage — normalized usage shape emitted to Lago."""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field

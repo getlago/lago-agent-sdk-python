@@ -1,4 +1,5 @@
 """Wrapper tests — return value preserved, body re-readable, idempotent, never raises."""
+
 from __future__ import annotations
 
 import io
@@ -58,10 +59,20 @@ class FakeBedrockClient:
         assert "extra_lago" not in kwargs
         chunks = [
             # delta chunks the customer iterates through
-            {"chunk": {"bytes": json.dumps({"type": "content_block_delta", "delta": {"text": "hi"}}).encode()}},
+            {
+                "chunk": {
+                    "bytes": json.dumps({"type": "content_block_delta", "delta": {"text": "hi"}}).encode()
+                }
+            },
             {"chunk": {"bytes": json.dumps({"type": "content_block_stop"}).encode()}},
             # final chunk carries Anthropic-style usage
-            {"chunk": {"bytes": json.dumps({"type": "message_delta", "usage": {"input_tokens": 9, "output_tokens": 14}}).encode()}},
+            {
+                "chunk": {
+                    "bytes": json.dumps(
+                        {"type": "message_delta", "usage": {"input_tokens": 9, "output_tokens": 14}}
+                    ).encode()
+                }
+            },
         ]
         return {"body": iter(chunks), "contentType": "application/json"}
 
@@ -174,9 +185,7 @@ def test_wrap_invoke_model_stream_captures_usage_from_final_chunk():
     sdk, received = _make_sdk()
     fake = FakeBedrockClient()
     client = sdk.wrap(fake)
-    resp = client.invoke_model_with_response_stream(
-        modelId="eu.anthropic.claude-sonnet-4-6", body=b"{}"
-    )
+    resp = client.invoke_model_with_response_stream(modelId="eu.anthropic.claude-sonnet-4-6", body=b"{}")
     # Customer drains the body iterator — wrapper extracts usage on completion.
     chunks = list(resp["body"])
     assert len(chunks) == 3

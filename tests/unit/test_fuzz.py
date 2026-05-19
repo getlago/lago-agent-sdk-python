@@ -1,4 +1,5 @@
 """Property-based fuzzing — adapters never crash and never produce negatives."""
+
 from __future__ import annotations
 
 from hypothesis import given, settings
@@ -26,19 +27,21 @@ _garbage = st.recursive(
     max_leaves=20,
 )
 
-_some_model_ids = st.sampled_from([
-    "eu.anthropic.claude-sonnet-4-6",
-    "eu.anthropic.claude-opus-4-7",
-    "eu.amazon.nova-lite-v1:0",
-    "openai.gpt-oss-20b-1:0",
-    "openai.gpt-oss-safeguard-20b-1:0",
-    "eu.mistral.pixtral-large-2502-v1:0",
-    "mistral.mistral-large-2402-v1:0",
-    "mistral.mistral-7b-instruct-v0:2",
-    "eu.minimax.minimax-m2-v1:0",
-    "eu.qwen.qwen3-235b-a22b-instruct-2507-v1:0",
-    "",  # also try an empty model id
-])
+_some_model_ids = st.sampled_from(
+    [
+        "eu.anthropic.claude-sonnet-4-6",
+        "eu.anthropic.claude-opus-4-7",
+        "eu.amazon.nova-lite-v1:0",
+        "openai.gpt-oss-20b-1:0",
+        "openai.gpt-oss-safeguard-20b-1:0",
+        "eu.mistral.pixtral-large-2502-v1:0",
+        "mistral.mistral-large-2402-v1:0",
+        "mistral.mistral-7b-instruct-v0:2",
+        "eu.minimax.minimax-m2-v1:0",
+        "eu.qwen.qwen3-235b-a22b-instruct-2507-v1:0",
+        "",  # also try an empty model id
+    ]
+)
 
 
 def _assert_canonical_invariants(u: CanonicalUsage) -> None:

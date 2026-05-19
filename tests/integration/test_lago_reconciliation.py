@@ -3,6 +3,7 @@
 Skipped unless LAGO_API_URL, LAGO_API_KEY, and LAGO_EXTERNAL_SUBSCRIPTION_ID
 are set. Requires `truststore` if Lago is on a self-signed dev cert.
 """
+
 from __future__ import annotations
 
 import os
@@ -15,6 +16,7 @@ from lago_agent_sdk import CanonicalUsage, LagoSDK
 
 try:
     import truststore
+
     truststore.inject_into_ssl()
 except Exception:  # noqa: BLE001
     pass

@@ -1,4 +1,5 @@
 """LagoSDK — primary entrypoint."""
+
 from __future__ import annotations
 
 import contextvars
@@ -70,13 +71,17 @@ class LagoSDK:
     # ------------------------------------------------------------------
     # Wrap()
     # ------------------------------------------------------------------
-    def wrap(self, client: Any, dimensions: dict[str, Any] | None = None, subscription: str | None = None) -> Any:
+    def wrap(
+        self, client: Any, dimensions: dict[str, Any] | None = None, subscription: str | None = None
+    ) -> Any:
         kind = detect_client_kind(client)
         if kind == "bedrock":
             from .wrappers.boto3_bedrock import wrap_boto3_bedrock_client
+
             return wrap_boto3_bedrock_client(self, client, dimensions=dimensions, subscription=subscription)
         if kind == "mistral":
             from .wrappers.mistral import wrap_mistral_client
+
             return wrap_mistral_client(self, client, dimensions=dimensions, subscription=subscription)
         if kind == "unknown":
             raise UnknownClientError(

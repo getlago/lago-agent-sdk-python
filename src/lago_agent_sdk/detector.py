@@ -1,4 +1,5 @@
 """Detect which client kind was passed to wrap()."""
+
 from __future__ import annotations
 
 from typing import Any

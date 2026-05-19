@@ -1,4 +1,5 @@
 """Lago Agent SDK — Python."""
+
 from .canonical import CanonicalUsage
 from .config import DEFAULT_METRIC_CODES, LagoConfig
 from .exceptions import (

@@ -163,3 +163,7 @@ pytest tests/integration
 ## Security
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT LICENSE](LICENSE).

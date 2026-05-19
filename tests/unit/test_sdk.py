@@ -1,4 +1,5 @@
 """LagoSDK tests — emit, subscription resolution, error policy."""
+
 from __future__ import annotations
 
 import pytest

@@ -1,4 +1,5 @@
 """Mistral wrapper tests — fake client, no live API."""
+
 from __future__ import annotations
 
 from lago_agent_sdk import LagoSDK
@@ -31,27 +32,34 @@ class FakeChat:
     def complete(self, **kwargs):
         self.complete_calls += 1
         assert "extra_lago" not in kwargs
-        return FakePydanticResponse({
-            "model": kwargs.get("model", "mistral-small-latest"),
-            "choices": [{"message": {"content": "hi", "tool_calls": None}}],
-            "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19},
-        })
+        return FakePydanticResponse(
+            {
+                "model": kwargs.get("model", "mistral-small-latest"),
+                "choices": [{"message": {"content": "hi", "tool_calls": None}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19},
+            }
+        )
 
     def stream(self, **kwargs):
         self.stream_calls += 1
         assert "extra_lago" not in kwargs
         chunks = [
             FakeStreamChunk({"data": {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]}}),
-            FakeStreamChunk({"data": {
-                "choices": [{"delta": {"content": "."}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
-            }}),
+            FakeStreamChunk(
+                {
+                    "data": {
+                        "choices": [{"delta": {"content": "."}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
+                    }
+                }
+            ),
         ]
         return iter(chunks)
 
 
 class FakeMistral:
     """Mimics `from mistralai.client import Mistral; Mistral(api_key=...)`."""
+
     __module__ = "mistralai.client.sdk"
 
     def __init__(self):
@@ -144,6 +152,7 @@ def test_wrap_instrumentation_failure_does_not_break_call():
 
     class BadFake:
         __module__ = "mistralai.client.sdk"
+
         def __init__(self):
             self.chat = BadChat()
 

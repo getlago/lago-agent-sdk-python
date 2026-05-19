@@ -5,6 +5,7 @@ seconds or immediately when buffer reaches `max_batch_size`. On send
 failure, re-prepends the batch and applies exponential backoff
 (1s, 2s, 4s, 8s, capped at 60s). Resets on next success.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -135,7 +136,9 @@ class EventQueue:
                             pass
                     logger.warning("lago send_batch failed: %s", exc)
                     self._backoff_seconds = (
-                        1.0 if self._backoff_seconds == 0 else min(self._backoff_seconds * 2, self._max_retry_seconds)
+                        1.0
+                        if self._backoff_seconds == 0
+                        else min(self._backoff_seconds * 2, self._max_retry_seconds)
                     )
                     break
         # drain on exit

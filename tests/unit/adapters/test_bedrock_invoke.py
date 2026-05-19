@@ -1,4 +1,5 @@
 """Bedrock InvokeModel adapter tests — one per shape family, against real fixtures."""
+
 from __future__ import annotations
 
 import json
@@ -12,13 +13,13 @@ FIX = pathlib.Path(__file__).parent / "fixtures" / "bedrock" / "invoke"
 
 # One representative model per InvokeModel shape family.
 _FAMILY_FIXTURES = {
-    "openai_compat_basic":          "openai.gpt-oss-20b-1_0.json",
-    "openai_compat_with_details":   "openai.gpt-oss-safeguard-20b.json",
-    "anthropic":                    "eu.anthropic.claude-sonnet-4-6.json",
-    "opus_4_7":                     "eu.anthropic.claude-opus-4-7.json",
-    "nova":                         "eu.amazon.nova-lite-v1_0.json",
-    "pixtral":                      "eu.mistral.pixtral-large-2502-v1_0.json",
-    "mistral_legacy":               "mistral.mistral-large-2402-v1_0.json",
+    "openai_compat_basic": "openai.gpt-oss-20b-1_0.json",
+    "openai_compat_with_details": "openai.gpt-oss-safeguard-20b.json",
+    "anthropic": "eu.anthropic.claude-sonnet-4-6.json",
+    "opus_4_7": "eu.anthropic.claude-opus-4-7.json",
+    "nova": "eu.amazon.nova-lite-v1_0.json",
+    "pixtral": "eu.mistral.pixtral-large-2502-v1_0.json",
+    "mistral_legacy": "mistral.mistral-large-2402-v1_0.json",
 }
 
 
@@ -76,7 +77,13 @@ def test_openai_compat_with_details_gpt_oss_safeguard():
 
 
 def test_openai_compat_with_details_extracts_reasoning_when_present():
-    resp = {"usage": {"prompt_tokens": 10, "completion_tokens": 50, "completion_tokens_details": {"reasoning_tokens": 12}}}
+    resp = {
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 50,
+            "completion_tokens_details": {"reasoning_tokens": 12},
+        }
+    }
     u = extract_bedrock_invoke(resp, model_id="openai.gpt-oss-safeguard-20b-1:0")
     assert u.reasoning == 12
 
