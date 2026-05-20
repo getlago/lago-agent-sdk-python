@@ -29,6 +29,7 @@ pip install lago-agent-sdk
 
 For Bedrock support: `pip install 'lago-agent-sdk[bedrock]'` (adds `boto3`).
 For Mistral support: `pip install 'lago-agent-sdk[mistral]'` (adds `mistralai`).
+For Anthropic native support: `pip install 'lago-agent-sdk[anthropic]'` (adds `anthropic`).
 
 ## Quickstart — Bedrock
 
@@ -51,6 +52,25 @@ sdk.flush()
 ```
 
 The wrapped client behaves identically to the original — same arguments, same return shape, same exceptions. The SDK adds an in-memory queue that batches events to Lago in the background.
+
+## Quickstart — Anthropic
+
+```python
+from anthropic import Anthropic
+from lago_agent_sdk import LagoSDK
+
+sdk = LagoSDK(api_key="...", default_subscription_id="sub_acme")
+client = sdk.wrap(Anthropic(api_key="..."))
+
+resp = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=200,
+    messages=[{"role": "user", "content": "Hello"}],
+)
+sdk.flush()
+```
+
+Works with `Anthropic` and `AsyncAnthropic`. Both `messages.create(..., stream=True)` and the `messages.stream(...)` context manager are instrumented — usage is captured from the final `message_delta` event in either case.
 
 ## Quickstart — Mistral
 
@@ -92,9 +112,9 @@ Backed by `contextvars` for safe propagation across `asyncio` tasks.
 |---|---|---|
 | AWS Bedrock | `Converse` (sync + stream) | ✓ |
 | AWS Bedrock | `InvokeModel` (sync + stream), 7 model families | ✓ |
+| Anthropic | native SDK (`messages.create` + `messages.stream`, sync + async) | ✓ |
 | Mistral | native SDK (`chat.complete` + `chat.stream`) | ✓ |
 | OpenAI | native SDK | Phase 2 |
-| Anthropic | native SDK | Phase 2 |
 | Google Gemini | native SDK | Phase 2 |
 | LiteLLM | callback bridge | Phase 4 |
 
@@ -102,16 +122,16 @@ Backed by `contextvars` for safe propagation across `asyncio` tasks.
 
 `CanonicalUsage` carries 10 numeric fields. Which ones populate depends on the provider:
 
-| Field | Lago metric code | Bedrock | Mistral native |
-|---|---|---|---|
-| input | `llm_input_tokens` | ✓ | ✓ |
-| output | `llm_output_tokens` | ✓ | ✓ |
-| cache_read | `llm_cached_input_tokens` | ✓ (Anthropic) | ✓ (when cache hits) |
-| cache_write | `llm_cache_creation_tokens` | ✓ (Anthropic) | ✗ |
-| cache_write_5m / 1h | `llm_cache_write_5m/1h_tokens` | ✓ (Anthropic InvokeModel) | ✗ |
-| reasoning | `llm_reasoning_tokens` | ✗ (folded into output) | ✗ (folded into output) |
-| tool_calls | `llm_tool_calls` | ✓ | ✓ |
-| image_input / audio_input | `llm_image/audio_input_tokens` | ✗ | ✗ |
+| Field | Lago metric code | Bedrock | Anthropic native | Mistral native |
+|---|---|---|---|---|
+| input | `llm_input_tokens` | ✓ | ✓ | ✓ |
+| output | `llm_output_tokens` | ✓ | ✓ | ✓ |
+| cache_read | `llm_cached_input_tokens` | ✓ (Anthropic) | ✓ | ✓ (when cache hits) |
+| cache_write | `llm_cache_creation_tokens` | ✓ (Anthropic) | ✓ | ✗ |
+| cache_write_5m / 1h | `llm_cache_write_5m/1h_tokens` | ✓ (Anthropic InvokeModel) | ✓ | ✗ |
+| reasoning | `llm_reasoning_tokens` | ✗ (folded into output) | ✗ (folded into output, even with extended thinking) | ✗ (folded into output) |
+| tool_calls | `llm_tool_calls` | ✓ | ✓ | ✓ |
+| image_input / audio_input | `llm_image/audio_input_tokens` | ✗ | ✗ | ✗ |
 
 Reasoning, image, and audio fields will populate when Phase 2 native OpenAI ships.
 

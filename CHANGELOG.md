@@ -4,6 +4,14 @@ All notable changes to this project will be documented here. Format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- Native `anthropic` SDK support. Wraps `Anthropic.messages.create` (including `stream=True`) and `Anthropic.messages.stream(...)` context manager. Same coverage on `AsyncAnthropic` (sync + async variants).
+- `extract_anthropic_native` adapter with the full Anthropic field map: `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `cache_creation.ephemeral_5m_input_tokens`, `cache_creation.ephemeral_1h_input_tokens`, `content[].type == "tool_use"`.
+- `anthropic` optional dependency group: `pip install 'lago-agent-sdk[anthropic]'`.
+- 19 new unit tests (adapter + wrapper) and 3 live integration tests (gated on `ANTHROPIC_API_KEY`). Total: 256 unit tests, ≥80% coverage maintained.
+- 9 captured response fixtures from the real Anthropic API (plain, tool use, 5m + 1h prompt caching, extended thinking, streaming, multi-turn).
+
+
 ## [0.1.0] — initial release
 
 ### Added

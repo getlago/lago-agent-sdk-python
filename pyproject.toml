@@ -37,6 +37,9 @@ dev = [
     "mypy>=1.10",
     "types-requests>=2.31",
 ]
+anthropic = [
+    "anthropic>=0.30",
+]
 
 [project.urls]
 Homepage = "https://www.getlago.com"
@@ -81,3 +84,8 @@ files = ["src/lago_agent_sdk"]
 [[tool.mypy.overrides]]
 module = ["boto3.*", "botocore.*", "mistralai.*"]
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "anthropic>=0.30",
+]
