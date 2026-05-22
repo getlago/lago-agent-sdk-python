@@ -45,7 +45,11 @@ def test_repeated_overflow_keeps_window_sliding():
     def slow_sender(batch):
         paused.wait(timeout=30.0)
 
-    q = EventQueue(sender=slow_sender, flush_interval=10.0, max_batch_size=100, max_buffer_size=100)
+    # max_batch_size > max_buffer_size keeps the background worker from ever
+    # being woken by push (buffer can't exceed max_batch_size). Combined with
+    # a long flush_interval, the test is deterministic — the worker only runs
+    # once shutdown() releases `paused` in the finally block.
+    q = EventQueue(sender=slow_sender, flush_interval=60.0, max_batch_size=10_000, max_buffer_size=100)
     try:
         for i in range(250):  # 150 events overflow
             q.push({"i": i})
