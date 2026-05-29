@@ -1,0 +1,42 @@
+{
+  "_model_id": "gpt-4o-mini",
+  "_response": {
+    "id": "chatcmpl-Dkn8uVrLuXJiU7Ef7z5Yix39CCOus",
+    "choices": [
+      {
+        "finish_reason": "length",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "3 + 3 = 6. \n\n**Reasoning:**\n1. Start with the number",
+          "refusal": null,
+          "role": "assistant",
+          "annotations": [],
+          "audio": null,
+          "function_call": null,
+          "tool_calls": null
+        }
+      }
+    ],
+    "created": 1780044364,
+    "model": "gpt-4o-mini-2024-07-18",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "system_fingerprint": "fp_196f526a25",
+    "usage": {
+      "completion_tokens": 20,
+      "prompt_tokens": 3819,
+      "total_tokens": 3839,
+      "completion_tokens_details": {
+        "accepted_prediction_tokens": 0,
+        "audio_tokens": 0,
+        "reasoning_tokens": 0,
+        "rejected_prediction_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "audio_tokens": 0,
+        "cached_tokens": 3712
+      }
+    }
+  }
+}

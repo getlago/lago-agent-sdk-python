@@ -40,6 +40,9 @@ dev = [
 anthropic = [
     "anthropic>=0.30",
 ]
+openai = [
+    "openai>=1.50",
+]
 
 [project.urls]
 Homepage = "https://www.getlago.com"
@@ -82,10 +85,11 @@ strict = true
 files = ["src/lago_agent_sdk"]
 
 [[tool.mypy.overrides]]
-module = ["boto3.*", "botocore.*", "mistralai.*"]
+module = ["boto3.*", "botocore.*", "mistralai.*", "openai.*"]
 ignore_missing_imports = true
 
 [dependency-groups]
 dev = [
     "anthropic>=0.30",
+    "openai>=1.50",
 ]

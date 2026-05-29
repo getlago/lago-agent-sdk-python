@@ -16,6 +16,7 @@ DEFAULT_METRIC_CODES: dict[str, str] = {
     "tool_calls": "llm_tool_calls",
     "image_input": "llm_image_input_tokens",
     "audio_input": "llm_audio_input_tokens",
+    "audio_output": "llm_audio_output_tokens",
 }
 
 
