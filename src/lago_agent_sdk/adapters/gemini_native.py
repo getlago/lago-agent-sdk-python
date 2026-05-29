@@ -74,9 +74,7 @@ def _to_dict(obj: Any) -> dict[str, Any]:
     return {}
 
 
-def _modality_token_count(
-    details: list[dict[str, Any]] | Any, modality: str
-) -> int:
+def _modality_token_count(details: list[dict[str, Any]] | Any, modality: str) -> int:
     """Sum token_count from a list of {modality, token_count} entries matching the given modality."""
     if not isinstance(details, list):
         return 0
@@ -128,7 +126,9 @@ def extract_gemini_native(response: Any, model_id: str = "") -> CanonicalUsage:
         audio_output=_modality_token_count(candidates_details, "AUDIO"),
         image_input=_modality_token_count(prompt_details, "IMAGE"),
         tool_calls=_count_tool_calls(resp),
-        model=model_id or (resp.get("model_version") if isinstance(resp.get("model_version"), str) else "") or "",
+        model=model_id
+        or (resp.get("model_version") if isinstance(resp.get("model_version"), str) else "")
+        or "",
         provider="gemini",
         api="native",
         extras=extras,

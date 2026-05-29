@@ -165,7 +165,9 @@ def wrap_openai_client(
         original_chat_create = getattr(completions, "create", None)
         if original_chat_create is not None:
             completions.create = (
-                _make_async_create(original_chat_create) if is_async else _make_sync_create(original_chat_create)
+                _make_async_create(original_chat_create)
+                if is_async
+                else _make_sync_create(original_chat_create)
             )
 
     # ------------------------------------------------------------------

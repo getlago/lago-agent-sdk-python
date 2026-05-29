@@ -160,9 +160,7 @@ def test_handles_pydantic_via_model_dump() -> None:
         def model_dump(self) -> dict:
             return {
                 "model_version": "gemini-2.5-flash",
-                "candidates": [
-                    {"content": {"parts": [{"function_call": {"name": "x"}}]}}
-                ],
+                "candidates": [{"content": {"parts": [{"function_call": {"name": "x"}}]}}],
                 "usage_metadata": {
                     "prompt_token_count": 10,
                     "candidates_token_count": 20,

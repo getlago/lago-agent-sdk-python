@@ -88,8 +88,7 @@ def main() -> int:
     # ----- 3. Cache hit attempt — long prompt sent twice (OpenAI auto-caches >1024 tokens) -----
     print("\n[3] cache attempt — long prompt, call 1 then call 2")
     long_prompt = (
-        "You are an extremely thorough expert tutor. Answer concisely and cite reasoning step by step. "
-        * 200
+        "You are an extremely thorough expert tutor. Answer concisely and cite reasoning step by step. " * 200
     )
     msgs = [
         {"role": "system", "content": long_prompt},

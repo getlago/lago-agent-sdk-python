@@ -37,9 +37,7 @@ class FakeModels:
         return FakePydanticResponse(
             {
                 "model_version": kwargs.get("model", "gemini-2.5-flash"),
-                "candidates": [
-                    {"content": {"parts": [{"text": "hi"}]}, "finish_reason": "STOP"}
-                ],
+                "candidates": [{"content": {"parts": [{"text": "hi"}]}, "finish_reason": "STOP"}],
                 "usage_metadata": {
                     "prompt_token_count": 7,
                     "candidates_token_count": 23,
