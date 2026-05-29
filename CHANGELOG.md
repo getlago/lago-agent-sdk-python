@@ -5,6 +5,15 @@ All notable changes to this project will be documented here. Format follows [Kee
 ## [Unreleased]
 
 ### Added
+- Native `google-genai` SDK support covering `client.models.generate_content` + `generate_content_stream`, sync + async (`client.aio.models`).
+- `extract_gemini_native` adapter maps `usage_metadata`: `prompt_token_count → input`, `candidates_token_count → output`, `cached_content_token_count → cache_read`, `thoughts_token_count → reasoning`, `prompt_tokens_details[modality=AUDIO/IMAGE] → audio_input/image_input`, `candidates_tokens_details[modality=AUDIO] → audio_output`, count of `candidates[0].content.parts[].function_call → tool_calls`.
+- **Gemini 2.5 surfaces reasoning tokens by default** (`thoughts_token_count`) — fires `llm_reasoning_tokens` automatically. Note the semantic difference vs OpenAI: Gemini's reasoning is ADDITIVE to output (`candidates + thoughts = total billable output`); OpenAI's reasoning is a SUBSET of `completion_tokens`. Documented in adapter docstring + README.
+- `gemini` optional dependency group: `pip install 'lago-agent-sdk[gemini]'`.
+- 21 new unit tests (15 adapter + 6 wrapper) and 4 live integration tests (gated on `GEMINI_API_KEY`). Total: 304 unit tests.
+- 5 captured response fixtures from the real Gemini API (plain, tool use, streaming, thinking, multi-turn).
+- Detector now returns `gemini` (was `google`) for `google-genai` clients.
+
+### Added (OpenAI — earlier in this branch)
 - Native `openai` SDK support covering both APIs: `chat.completions.create` and `responses.create`, each with sync + streaming. Same coverage on `AsyncOpenAI`.
 - `extract_openai_native` adapter handles both API shapes with auto-detection:
   - Chat Completions: `prompt_tokens`, `completion_tokens`, `prompt_tokens_details.{cached_tokens, audio_tokens}`, `completion_tokens_details.{reasoning_tokens, audio_tokens}`, count of `choices[0].message.tool_calls`.

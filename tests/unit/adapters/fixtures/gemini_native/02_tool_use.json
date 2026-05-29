@@ -1,0 +1,90 @@
+{
+  "_model_id": "gemini-2.5-flash",
+  "_response": {
+    "sdk_http_response": {
+      "headers": {
+        "x-gemini-service-tier": "standard",
+        "content-type": "application/json; charset=UTF-8",
+        "vary": "Origin, X-Origin, Referer",
+        "content-encoding": "gzip",
+        "date": "Fri, 29 May 2026 11:03:35 GMT",
+        "server": "scaffolding on HTTPServer2",
+        "x-xss-protection": "0",
+        "x-frame-options": "SAMEORIGIN",
+        "x-content-type-options": "nosniff",
+        "server-timing": "gfet4t7; dur=1142",
+        "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000",
+        "transfer-encoding": "chunked"
+      },
+      "body": null
+    },
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "media_resolution": null,
+              "code_execution_result": null,
+              "executable_code": null,
+              "file_data": null,
+              "function_call": {
+                "id": null,
+                "args": {
+                  "city": "Tokyo"
+                },
+                "name": "get_weather",
+                "partial_args": null,
+                "will_continue": null
+              },
+              "function_response": null,
+              "inline_data": null,
+              "text": null,
+              "thought": null,
+              "thought_signature": "b'\\n\\xba\\x02\\x01\\x0c9\\xd6\\xc7r\\xeb\\xe3\\x83E\\xad\\xbc\\xd82E\\x1c\\xb0*\\xcf\\xa6\\x07N\\xcc\\xd2\\xb4\\x14\\xa2\\x1f\\xda\\xc1\\xd8\\x01\\x16\\xba\\x15\\xf3f5\\x8c\\xdb\\n\\xc9\\xb47`\\xd8\\x05\\xc0\"x-\\x80\\xce\\x83\\xe1\\xb5h\\x9c\\xf5\\x95\\xce\\xc6\\xa2\\x0bX\\xe4r\\x82\\xcdGu\\xcc\\xf7\\x06\\x0f\\xb5?\\xe6k5n\\xfb\\\\\\x99-\\xa88\\xaat\\x00l\\x0e\\xdb\\xea\\x1b\\x0b\\x95gi\\xf3\\xc3\\xc9F\\x81\\x94\\x08\\xceE\\x13~:\\x827\\xebc\\xda\\xd3\\xd99IE\\xff\\xd8\\x8f\\x1e_+\\xf8\\xf77g\\xc3\\xa5\\xc3cHPf3\\xf0\\x8a\\xef\\x19M\\x0f\\xc5K\\x15\\x1c\\x86\\x95\\x00\\x1drB`\\xbc\\xcb\\xac\\xf5\\xde%\\xa6\\xfc<\\x8f\\x82.\\x029\\xab\\xa0\\xcdU\\x02\\xc5\\xb1[:\\x1b\\xc8\\xd8\\xbc\\xdc\\xcc\\x19m\\xe9\\xb5\\xb8\\xcf\\x9b\\xd0;\\xeb\\x8d \\x16,7\\x84\\xbeS\\xd3k\\x0f\\xa5\\xb62\\xddl\\xe6\\xdf\\xe1\\xda\\x7fnAa\\xb6\\x86 \\x97\\rE\\xac\\xac0\\xacaU\\xbc\\xbb|J\\xf0\\xe5o\\xd9YV\\xed\\xaa\\x01\\xd3\\x94x\\xe6\\xc3!\\xa4>\\x8dJ\\\\Q\\x86\\xcc\\xf6\\xb2\\'(\\\\>k\\xd6\\x10\\xb5\\xab\\x1b*\\xde\\t\\xea\\xc5\\xca\\x97\\xa0\\x18G\\xde\\xcdu\\xc1u\\xfc0yv\\xa4?3y\\x8b\\xd6\\xca>\\x90\\xe95\\x14\\x03U\\x12\\xdckW\\x00\\x9eL\\r\\x06\\x841'",
+              "video_metadata": null,
+              "tool_call": null,
+              "tool_response": null,
+              "part_metadata": null
+            }
+          ],
+          "role": "model"
+        },
+        "citation_metadata": null,
+        "finish_message": null,
+        "token_count": null,
+        "finish_reason": "STOP",
+        "grounding_metadata": null,
+        "avg_logprobs": null,
+        "index": 0,
+        "logprobs_result": null,
+        "safety_ratings": null,
+        "url_context_metadata": null
+      }
+    ],
+    "create_time": null,
+    "model_version": "gemini-2.5-flash",
+    "prompt_feedback": null,
+    "response_id": "hnIZauLSI77zxs0Pm_iDmQY",
+    "usage_metadata": {
+      "cache_tokens_details": null,
+      "cached_content_token_count": null,
+      "candidates_token_count": 15,
+      "candidates_tokens_details": null,
+      "prompt_token_count": 49,
+      "prompt_tokens_details": [
+        {
+          "modality": "TEXT",
+          "token_count": 49
+        }
+      ],
+      "thoughts_token_count": 69,
+      "tool_use_prompt_token_count": null,
+      "tool_use_prompt_tokens_details": null,
+      "total_token_count": 133,
+      "traffic_type": null
+    },
+    "model_status": null,
+    "automatic_function_calling_history": null,
+    "parsed": null
+  }
+}

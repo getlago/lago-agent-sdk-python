@@ -31,6 +31,7 @@ For Bedrock support: `pip install 'lago-agent-sdk[bedrock]'` (adds `boto3`).
 For Mistral support: `pip install 'lago-agent-sdk[mistral]'` (adds `mistralai`).
 For Anthropic native support: `pip install 'lago-agent-sdk[anthropic]'` (adds `anthropic`).
 For OpenAI native support: `pip install 'lago-agent-sdk[openai]'` (adds `openai`).
+For Gemini native support: `pip install 'lago-agent-sdk[gemini]'` (adds `google-genai`).
 
 ## Quickstart — Bedrock
 
@@ -110,6 +111,28 @@ Works with `OpenAI` and `AsyncOpenAI`. Covers both **Chat Completions** (`client
 
 **Reasoning tokens** (`llm_reasoning_tokens`) populate automatically when you call an o-series model (`o4-mini`, `o1`, etc.) — OpenAI is the first provider to expose this metric separately.
 
+## Quickstart — Gemini
+
+```python
+from google import genai
+from lago_agent_sdk import LagoSDK
+
+sdk = LagoSDK(api_key="...", default_subscription_id="sub_acme")
+client = sdk.wrap(genai.Client(api_key="..."))
+
+resp = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="Hello",
+)
+sdk.flush()
+```
+
+Wraps the modern `google-genai` SDK (`from google import genai`). Covers `client.models.generate_content` + `generate_content_stream`, sync + async (via `client.aio.models`).
+
+**Reasoning tokens** populate automatically on Gemini 2.5 — the model reasons internally by default and surfaces `thoughts_token_count`. Note the semantic difference vs OpenAI:
+- **OpenAI:** `reasoning_tokens` is a *subset* of `completion_tokens` (already counted in output)
+- **Gemini:** `thoughts_token_count` is *additive* to `candidates_token_count` (total Google bill = output + reasoning)
+
 ## Multi-tenant — pick a subscription per call
 
 Three ways to set the `external_subscription_id`, in priority order:
@@ -137,25 +160,29 @@ Backed by `contextvars` for safe propagation across `asyncio` tasks.
 | Anthropic | native SDK (`messages.create` + `messages.stream`, sync + async) | ✓ |
 | Mistral | native SDK (`chat.complete` + `chat.stream`) | ✓ |
 | OpenAI | native SDK (`chat.completions.create` + `responses.create`, sync + async + stream) | ✓ |
-| Google Gemini | native SDK | Phase 3 |
+| Google Gemini | native SDK (`google-genai`: `models.generate_content` + `generate_content_stream`, sync + async) | ✓ |
 | LiteLLM | callback bridge | Phase 4 |
 
 ## Token dimensions captured
 
 `CanonicalUsage` carries 11 numeric fields. Which ones populate depends on the provider:
 
-| Field | Lago metric code | Bedrock | Anthropic | Mistral | OpenAI |
-|---|---|---|---|---|---|
-| input | `llm_input_tokens` | ✓ | ✓ | ✓ | ✓ |
-| output | `llm_output_tokens` | ✓ | ✓ | ✓ | ✓ |
-| cache_read | `llm_cached_input_tokens` | ✓ (Anthropic) | ✓ | ✓ (when cache hits) | ✓ (auto-cache) |
-| cache_write | `llm_cache_creation_tokens` | ✓ (Anthropic) | ✓ | ✗ | ✗ (auto-cache; OpenAI doesn't surface creation counts) |
-| cache_write_5m / 1h | `llm_cache_write_5m/1h_tokens` | ✓ (Anthropic InvokeModel) | ✓ | ✗ | ✗ |
-| reasoning | `llm_reasoning_tokens` | ✗ (folded into output) | ✗ (folded into output, even with extended thinking) | ✗ (folded into output) | **✓ (o-series models)** |
-| tool_calls | `llm_tool_calls` | ✓ | ✓ | ✓ | ✓ |
-| audio_input | `llm_audio_input_tokens` | ✗ | ✗ | ✗ | ✓ (GPT-4o-audio input) |
-| audio_output | `llm_audio_output_tokens` | ✗ | ✗ | ✗ | ✓ (GPT-4o-audio output) |
-| image_input | `llm_image_input_tokens` | ✗ | ✗ | ✗ | ✗ (Phase 3 — multimodal adapter) |
+| Field | Lago metric code | Bedrock | Anthropic | Mistral | OpenAI | Gemini |
+|---|---|---|---|---|---|---|
+| input | `llm_input_tokens` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| output | `llm_output_tokens` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| cache_read | `llm_cached_input_tokens` | ✓ (Anthropic) | ✓ | ✓ (when cache hits) | ✓ (auto-cache) | ✓ (CachedContent API) |
+| cache_write | `llm_cache_creation_tokens` | ✓ (Anthropic) | ✓ | ✗ | ✗ | ✗ |
+| cache_write_5m / 1h | `llm_cache_write_5m/1h_tokens` | ✓ (Anthropic InvokeModel) | ✓ | ✗ | ✗ | ✗ |
+| reasoning | `llm_reasoning_tokens` | ✗ (folded into output) | ✗ (folded into output, even with extended thinking) | ✗ (folded into output) | **✓ (o-series, subset)** | **✓ (Gemini 2.5, additive)** |
+| tool_calls | `llm_tool_calls` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| audio_input | `llm_audio_input_tokens` | ✗ | ✗ | ✗ | ✓ (GPT-4o-audio) | ✓ (multimodal AUDIO) |
+| audio_output | `llm_audio_output_tokens` | ✗ | ✗ | ✗ | ✓ (GPT-4o-audio) | ✓ (multimodal AUDIO) |
+| image_input | `llm_image_input_tokens` | ✗ | ✗ | ✗ | ✗ (Phase 3) | ✓ (multimodal IMAGE) |
+
+**Semantic note on `reasoning`:**
+- **OpenAI's `reasoning_tokens` is a SUBSET of `output`** — already counted in `completion_tokens`.
+- **Gemini's `thoughts_token_count` is ADDITIVE to `output`** — `candidates + thoughts = total billable output`.
 
 OpenAI's Predicted Outputs tokens (`accepted_prediction_tokens`, `rejected_prediction_tokens`) are not surfaced — see the OpenAI adapter docstring for details on this intentional gap.
 

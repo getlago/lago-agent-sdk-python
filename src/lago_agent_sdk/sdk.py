@@ -91,15 +91,20 @@ class LagoSDK:
             from .wrappers.openai import wrap_openai_client
 
             return wrap_openai_client(self, client, dimensions=dimensions, subscription=subscription)
+        if kind == "gemini":
+            from .wrappers.gemini import wrap_gemini_client
+
+            return wrap_gemini_client(self, client, dimensions=dimensions, subscription=subscription)
         if kind == "unknown":
             raise UnknownClientError(
                 f"Unknown client passed to wrap(): {type(client).__module__}.{type(client).__name__}. "
                 "Supported: boto3 bedrock-runtime, mistralai.client.Mistral, "
-                "anthropic.Anthropic / AsyncAnthropic, openai.OpenAI / AsyncOpenAI."
+                "anthropic.Anthropic / AsyncAnthropic, openai.OpenAI / AsyncOpenAI, "
+                "google.genai.Client."
             )
         raise UnknownClientError(
             f"Client kind '{kind}' is not yet supported. "
-            "Implemented: 'bedrock', 'mistral', 'anthropic', 'openai'."
+            "Implemented: 'bedrock', 'mistral', 'anthropic', 'openai', 'gemini'."
         )
 
     # ------------------------------------------------------------------

@@ -38,6 +38,6 @@ def detect_client_kind(client: Any) -> str:
     if cls_name == "mistral" and "mistral" in module:
         return "mistral"
     if "google" in module and ("genai" in module or "generativeai" in module):
-        return "google"
+        return "gemini"
 
     return "unknown"
