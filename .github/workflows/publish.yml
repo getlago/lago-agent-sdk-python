@@ -1,0 +1,129 @@
+name: publish
+
+# Triggered when a v*.*.* tag is pushed. The tag's version must match the
+# version in pyproject.toml — the workflow fails otherwise so you can't
+# accidentally publish a mismatched build.
+#
+# One-time setup on PyPI:
+#   https://pypi.org/manage/account/publishing/
+#   PyPI Project Name: lago-agent-sdk
+#   Owner:             getlago
+#   Repository name:   lago-agent-sdk-python
+#   Workflow name:     publish.yml
+#   Environment name:  pypi
+#
+# After setup, releasing is one command from your laptop:
+#   git tag v0.1.0 && git push --tags
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  # ----------------------------------------------------------------------
+  # 1. Run the full CI gate first. If anything is red, abort before build.
+  # ----------------------------------------------------------------------
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --all-extras
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run mypy src
+      - run: uv run pytest tests/unit -q --cov=lago_agent_sdk --cov-fail-under=80
+
+  # ----------------------------------------------------------------------
+  # 2. Build the sdist + wheel and assert the tag matches the package version.
+  # ----------------------------------------------------------------------
+  build:
+    name: build
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+      - name: Verify tag matches pyproject version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag $GITHUB_REF_NAME (=$TAG) != pyproject.toml version $PKG"
+            exit 1
+          fi
+          echo "Tag $TAG matches pyproject version $PKG"
+      - name: Build distributions
+        run: |
+          uv pip install --system build
+          python -m build
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # ----------------------------------------------------------------------
+  # 3. Publish to PyPI via OIDC trusted publishing.
+  # ----------------------------------------------------------------------
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # OIDC requires `id-token: write` permission on the workflow.
+    permissions:
+      id-token: write
+    # The `pypi` environment is what you bind to in PyPI's trusted-publisher
+    # config — restricts which workflows can claim the OIDC identity.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/lago-agent-sdk
+    steps:
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No `password:` — OIDC handles auth automatically.
+
+  # ----------------------------------------------------------------------
+  # 4. Create a GitHub Release tied to the tag, attaching the artifacts.
+  # ----------------------------------------------------------------------
+  release:
+    name: github release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*
