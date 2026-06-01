@@ -95,10 +95,35 @@ def wrap_openai_client(
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: openai emit failed: %s", exc)
 
-    def _make_sync_create(original: Any) -> Any:
+    def _extract_stream_usage(payload: Any) -> dict[str, Any] | None:
+        """Pull usage out of a stream event, handling both API shapes.
+
+        Chat Completions: usage sits at the top of the final chunk
+        (`{"usage": {...}}`).
+        Responses API:    usage sits under `event.response.usage` on the
+        terminal `response.completed` event (`{"type": "response.completed",
+        "response": {"usage": {...}}}`).
+        """
+        if not isinstance(payload, dict):
+            return None
+        usage = payload.get("usage")
+        if isinstance(usage, dict) and usage:
+            return {"usage": usage}
+        # Responses API stream events nest usage under `.response.usage`
+        response = payload.get("response")
+        if isinstance(response, dict):
+            nested = response.get("usage")
+            if isinstance(nested, dict) and nested:
+                return {"usage": nested}
+        return None
+
+    def _make_sync_create(original: Any, is_responses_api: bool = False) -> Any:
         def _create(*args: Any, **kwargs: Any) -> Any:
             lago_opts = _pop_lago_kwarg(kwargs)
-            _ensure_stream_options_include_usage(kwargs)
+            # `stream_options.include_usage` is a Chat-Completions-only knob.
+            # The Responses API rejects it; injecting would break the call.
+            if not is_responses_api:
+                _ensure_stream_options_include_usage(kwargs)
             model_id = kwargs.get("model", "")
             sub, dims = _resolve_opts(lago_opts)
             response = original(*args, **kwargs)
@@ -113,10 +138,9 @@ def wrap_openai_client(
                 try:
                     for event in src:
                         payload = event.model_dump() if hasattr(event, "model_dump") else event
-                        if isinstance(payload, dict):
-                            usage = payload.get("usage")
-                            if isinstance(usage, dict) and usage:
-                                last_usage = {"usage": usage}
+                        extracted = _extract_stream_usage(payload)
+                        if extracted is not None:
+                            last_usage = extracted
                         yield event
                 finally:
                     if last_usage is not None:
@@ -126,10 +150,11 @@ def wrap_openai_client(
 
         return _create
 
-    def _make_async_create(original: Any) -> Any:
+    def _make_async_create(original: Any, is_responses_api: bool = False) -> Any:
         async def _create_async(*args: Any, **kwargs: Any) -> Any:
             lago_opts = _pop_lago_kwarg(kwargs)
-            _ensure_stream_options_include_usage(kwargs)
+            if not is_responses_api:
+                _ensure_stream_options_include_usage(kwargs)
             model_id = kwargs.get("model", "")
             sub, dims = _resolve_opts(lago_opts)
             response = await original(*args, **kwargs)
@@ -143,10 +168,9 @@ def wrap_openai_client(
                 try:
                     async for event in src:
                         payload = event.model_dump() if hasattr(event, "model_dump") else event
-                        if isinstance(payload, dict):
-                            usage = payload.get("usage")
-                            if isinstance(usage, dict) and usage:
-                                last_usage = {"usage": usage}
+                        extracted = _extract_stream_usage(payload)
+                        if extracted is not None:
+                            last_usage = extracted
                         yield event
                 finally:
                     if last_usage is not None:
@@ -157,7 +181,7 @@ def wrap_openai_client(
         return _create_async
 
     # ------------------------------------------------------------------
-    # chat.completions.create
+    # chat.completions.create  (is_responses_api=False)
     # ------------------------------------------------------------------
     chat = getattr(client, "chat", None)
     completions = getattr(chat, "completions", None) if chat is not None else None
@@ -165,22 +189,22 @@ def wrap_openai_client(
         original_chat_create = getattr(completions, "create", None)
         if original_chat_create is not None:
             completions.create = (
-                _make_async_create(original_chat_create)
+                _make_async_create(original_chat_create, is_responses_api=False)
                 if is_async
-                else _make_sync_create(original_chat_create)
+                else _make_sync_create(original_chat_create, is_responses_api=False)
             )
 
     # ------------------------------------------------------------------
-    # responses.create
+    # responses.create  (is_responses_api=True — skips stream_options injection)
     # ------------------------------------------------------------------
     responses_namespace = getattr(client, "responses", None)
     if responses_namespace is not None:
         original_responses_create = getattr(responses_namespace, "create", None)
         if original_responses_create is not None:
             responses_namespace.create = (
-                _make_async_create(original_responses_create)
+                _make_async_create(original_responses_create, is_responses_api=True)
                 if is_async
-                else _make_sync_create(original_responses_create)
+                else _make_sync_create(original_responses_create, is_responses_api=True)
             )
 
     setattr(client, _INSTRUMENTED_ATTR, True)

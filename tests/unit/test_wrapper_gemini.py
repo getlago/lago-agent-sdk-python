@@ -210,3 +210,106 @@ def test_wrap_instrumentation_failure_does_not_break_call() -> None:
     resp = client.models.generate_content(model="x", contents="hi")
     assert resp is not None
     sdk.shutdown(timeout=1.0)
+
+
+# ==========================================================================
+# ASYNC PATH — client.aio.models (the SDK's async surface).
+# Exercises _make_async_generate and _make_async_stream on the wrapper.
+# ==========================================================================
+import pytest  # noqa: E402  — late import keeps the file's main top-of-file clean
+
+
+class FakeAsyncModels:
+    def __init__(self) -> None:
+        self.generate_calls = 0
+        self.stream_calls = 0
+
+    async def generate_content(self, **kwargs: Any) -> Any:
+        self.generate_calls += 1
+        assert "extra_lago" not in kwargs
+        return FakePydanticResponse(
+            {
+                "model_version": kwargs.get("model", "gemini-2.5-flash"),
+                "candidates": [{"content": {"parts": [{"text": "hi"}]}, "finish_reason": "STOP"}],
+                "usage_metadata": {
+                    "prompt_token_count": 7,
+                    "candidates_token_count": 23,
+                    "thoughts_token_count": 0,
+                    "total_token_count": 30,
+                },
+            }
+        )
+
+    async def generate_content_stream(self, **kwargs: Any) -> Any:
+        self.stream_calls += 1
+        assert "extra_lago" not in kwargs
+
+        async def _aiter():
+            yield FakeStreamChunk(
+                {
+                    "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
+                    "usage_metadata": None,
+                }
+            )
+            yield FakeStreamChunk(
+                {
+                    "candidates": [{"content": {"parts": [{"text": "."}]}, "finish_reason": "STOP"}],
+                    "usage_metadata": {
+                        "prompt_token_count": 9,
+                        "candidates_token_count": 4,
+                        "thoughts_token_count": 0,
+                        "total_token_count": 13,
+                    },
+                }
+            )
+
+        return _aiter()
+
+
+class FakeAioNamespace:
+    def __init__(self) -> None:
+        self.models = FakeAsyncModels()
+
+
+class FakeAsyncGeminiClient:
+    """Mimics google-genai client with the async `.aio` surface populated."""
+
+    __module__ = "google.genai.client"
+
+    def __init__(self) -> None:
+        # The sync .models still needs to be present (the wrapper looks at both)
+        self.models = FakeModels()
+        # Critically: also expose .aio.models — this is what the wrapper wraps
+        # for async paths.
+        self.aio = FakeAioNamespace()
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_generate_content_emits() -> None:
+    sdk, received = _make_sdk()
+    fake = FakeAsyncGeminiClient()
+    client = sdk.wrap(fake)
+    resp = await client.aio.models.generate_content(model="gemini-2.5-flash", contents="hi")
+    assert resp.model_dump()["usage_metadata"]["prompt_token_count"] == 7
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in flat}
+    assert by_code["llm_input_tokens"] == 7
+    assert by_code["llm_output_tokens"] == 23
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_generate_content_stream_captures_final_usage() -> None:
+    sdk, received = _make_sdk()
+    fake = FakeAsyncGeminiClient()
+    client = sdk.wrap(fake)
+    stream = await client.aio.models.generate_content_stream(model="gemini-2.5-flash", contents="hi")
+    chunks = [c async for c in stream]
+    assert len(chunks) == 2
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in flat}
+    assert by_code["llm_input_tokens"] == 9
+    assert by_code["llm_output_tokens"] == 4

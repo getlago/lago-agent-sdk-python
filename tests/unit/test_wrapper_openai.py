@@ -294,3 +294,216 @@ def test_instrumentation_failure_does_not_break_call() -> None:
     resp = client.chat.completions.create(model="x", messages=[])
     assert resp is not None
     sdk.shutdown(timeout=1.0)
+
+
+# ==========================================================================
+# ASYNC PATH — AsyncOpenAI variants (mirror of the sync tests above).
+# These cover the async wrapper code paths: _create_async, _wrap_async_stream,
+# and the Responses-API streaming injection guard.
+# ==========================================================================
+import pytest  # noqa: E402  — late import keeps the file's main top-of-file clean
+
+
+class FakeAsyncCompletions:
+    def __init__(self) -> None:
+        self.create_calls = 0
+        self.last_kwargs: dict[str, Any] | None = None
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.create_calls += 1
+        assert "extra_lago" not in kwargs
+        self.last_kwargs = dict(kwargs)
+
+        if kwargs.get("stream") is True:
+
+            async def _aiter():
+                yield FakeStreamChunk({"choices": [{"delta": {"content": "hi"}}], "usage": None})
+                yield FakeStreamChunk(
+                    {
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": 12,
+                            "completion_tokens": 22,
+                            "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0},
+                            "completion_tokens_details": {
+                                "reasoning_tokens": 0,
+                                "audio_tokens": 0,
+                            },
+                        },
+                    }
+                )
+
+            return _aiter()
+
+        return FakeChatCompletion(
+            {
+                "model": kwargs.get("model", "gpt-4o-mini"),
+                "choices": [{"message": {"role": "assistant", "content": "hi", "tool_calls": None}}],
+                "usage": {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 16,
+                    "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0},
+                    "completion_tokens_details": {"reasoning_tokens": 0, "audio_tokens": 0},
+                },
+            }
+        )
+
+
+class FakeAsyncChat:
+    def __init__(self) -> None:
+        self.completions = FakeAsyncCompletions()
+
+
+class FakeAsyncResponsesNamespace:
+    def __init__(self) -> None:
+        self.create_calls = 0
+        self.last_kwargs: dict[str, Any] | None = None
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.create_calls += 1
+        assert "extra_lago" not in kwargs
+        self.last_kwargs = dict(kwargs)
+
+        if kwargs.get("stream") is True:
+
+            async def _aiter():
+                yield FakeStreamChunk(
+                    {
+                        "type": "response.completed",
+                        "response": {"usage": {"input_tokens": 53, "output_tokens": 6}},
+                    }
+                )
+
+            return _aiter()
+
+        return FakeResponsesResponse(
+            {
+                "model": kwargs.get("model", "gpt-4o-mini"),
+                "output": [{"type": "function_call", "name": "get_weather"}],
+                "usage": {
+                    "input_tokens": 53,
+                    "output_tokens": 6,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 0},
+                },
+            }
+        )
+
+
+class FakeAsyncOpenAI:
+    """Mimics `from openai import AsyncOpenAI; AsyncOpenAI(api_key=...)`."""
+
+    def __init__(self) -> None:
+        self.chat = FakeAsyncChat()
+        self.responses = FakeAsyncResponsesNamespace()
+
+
+# Wrapper detects async via type(client).__name__.startswith("Async"), so we
+# override __name__ to "AsyncOpenAI" to mimic the real `AsyncOpenAI` class.
+FakeAsyncOpenAI.__module__ = "openai.fake"
+FakeAsyncOpenAI.__name__ = "AsyncOpenAI"
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_chat_completions_emits() -> None:
+    sdk, received = _new_sdk()
+    fake = FakeAsyncOpenAI()
+    client = sdk.wrap(fake)
+    resp = await client.chat.completions.create(model="gpt-4o-mini", messages=[])
+    assert resp.usage["prompt_tokens"] == 8
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code["llm_input_tokens"] == 8
+    assert by_code["llm_output_tokens"] == 16
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_chat_completions_stream_captures_usage() -> None:
+    sdk, received = _new_sdk()
+    fake = FakeAsyncOpenAI()
+    client = sdk.wrap(fake)
+    stream = await client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True)
+    chunks = [c async for c in stream]
+    assert len(chunks) == 2
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code["llm_input_tokens"] == 12
+    assert by_code["llm_output_tokens"] == 22
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_responses_create_emits() -> None:
+    sdk, received = _new_sdk()
+    fake = FakeAsyncOpenAI()
+    client = sdk.wrap(fake)
+    resp = await client.responses.create(model="gpt-4o-mini", input="hi")
+    assert resp.usage["input_tokens"] == 53
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code["llm_input_tokens"] == 53
+    assert by_code["llm_output_tokens"] == 6
+    assert by_code["llm_tool_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_responses_create_with_stream_does_NOT_inject_stream_options() -> None:
+    """Regression test: Responses API + stream=True must not get stream_options.
+
+    The Responses API does not accept the `stream_options` parameter — passing it
+    would raise TypeError or HTTP 400. The wrapper must inject `stream_options.
+    include_usage=True` ONLY on the chat-completions path.
+    """
+    sdk, _ = _new_sdk()
+    fake = FakeAsyncOpenAI()
+    client = sdk.wrap(fake)
+    # Stream from the Responses API — the wrapper should NOT inject stream_options.
+    stream = await client.responses.create(model="gpt-4o-mini", input="hi", stream=True)
+    async for _ in stream:
+        pass
+    sdk.shutdown(timeout=1.0)
+    seen_kwargs = fake.responses.last_kwargs or {}
+    assert "stream_options" not in seen_kwargs, (
+        "Responses API received `stream_options` — would cause TypeError / 400. "
+        "The wrapper should only inject this on Chat Completions, not Responses."
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_chat_completions_stream_DOES_inject_stream_options() -> None:
+    """Contrast with the test above: on chat.completions the injection IS correct."""
+    sdk, _ = _new_sdk()
+    fake = FakeAsyncOpenAI()
+    client = sdk.wrap(fake)
+    stream = await client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True)
+    async for _ in stream:
+        pass
+    sdk.shutdown(timeout=1.0)
+    seen_kwargs = fake.chat.completions.last_kwargs or {}
+    assert seen_kwargs.get("stream_options") == {"include_usage": True}
+
+
+@pytest.mark.asyncio
+async def test_async_responses_create_stream_extracts_usage_from_completed_event() -> None:
+    """Regression test: Responses API stream events nest usage under `event.response.usage`.
+
+    The terminal `response.completed` event carries the final usage on
+    `event.response.usage`, NOT at the event's top level. The stream-wrapper's
+    usage extraction must look at the nested field for the Responses API.
+    """
+    sdk, received = _new_sdk()
+    fake = FakeAsyncOpenAI()
+    client = sdk.wrap(fake)
+    stream = await client.responses.create(model="gpt-4o-mini", input="hi", stream=True)
+    async for _ in stream:
+        pass
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code.get("llm_input_tokens") == 53, (
+        "Responses API stream did not emit usage. Likely the streaming wrapper "
+        "looks only at event.usage (top-level), but Responses uses event.response.usage."
+    )
+    assert by_code.get("llm_output_tokens") == 6

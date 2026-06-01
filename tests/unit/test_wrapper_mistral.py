@@ -162,3 +162,104 @@ def test_wrap_instrumentation_failure_does_not_break_call():
     resp = client.chat.complete(model="x", messages=[])
     assert resp is not None
     sdk.shutdown(timeout=1.0)
+
+
+# ==========================================================================
+# ASYNC PATH — `chat.complete_async` and `chat.stream_async`
+# Exercises _complete_async and _stream_async on the wrapper.
+# ==========================================================================
+import pytest  # noqa: E402  — late import keeps the file's main top-of-file clean
+
+
+class FakeAsyncChat:
+    def __init__(self):
+        self.complete_async_calls = 0
+        self.stream_async_calls = 0
+
+    async def complete_async(self, **kwargs):
+        self.complete_async_calls += 1
+        assert "extra_lago" not in kwargs
+        return FakePydanticResponse(
+            {
+                "model": kwargs.get("model", "mistral-small-latest"),
+                "choices": [{"message": {"content": "hi", "tool_calls": None}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19},
+            }
+        )
+
+    async def stream_async(self, **kwargs):
+        """Returns an async iterable of chunks; final chunk carries usage."""
+        self.stream_async_calls += 1
+        assert "extra_lago" not in kwargs
+
+        async def _aiter():
+            yield FakeStreamChunk(
+                {"data": {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]}}
+            )
+            yield FakeStreamChunk(
+                {
+                    "data": {
+                        "choices": [{"delta": {"content": "."}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
+                    }
+                }
+            )
+
+        return _aiter()
+
+
+class FakeAsyncMistral:
+    """Mimics `mistralai.client.Mistral` exposing the async surface."""
+
+    __module__ = "mistralai.client.sdk"
+
+    def __init__(self):
+        self.chat = FakeAsyncChat()
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_chat_complete_async_emits():
+    sdk, received = _make_sdk()
+    fake = FakeAsyncMistral()
+    client = sdk.wrap(fake)
+    resp = await client.chat.complete_async(model="mistral-small-latest", messages=[])
+    assert resp.model_dump()["usage"]["prompt_tokens"] == 12
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in flat}
+    assert by_code["llm_input_tokens"] == 12
+    assert by_code["llm_output_tokens"] == 7
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_strips_extra_lago_and_uses_per_call_sub():
+    sdk, received = _make_sdk("sub_default")
+    fake = FakeAsyncMistral()
+    client = sdk.wrap(fake)
+    await client.chat.complete_async(
+        model="mistral-small-latest",
+        messages=[],
+        extra_lago={"subscription": "sub_per_call", "dimensions": {"feature": "X"}},
+    )
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert all(e["external_subscription_id"] == "sub_per_call" for e in flat)
+    assert flat[0]["properties"]["feature"] == "X"
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_chat_stream_async_captures_usage_from_final_chunk():
+    sdk, received = _make_sdk()
+    fake = FakeAsyncMistral()
+    client = sdk.wrap(fake)
+    stream = client.chat.stream_async(model="mistral-small-latest", messages=[])
+    chunks = [c async for c in stream]
+    assert len(chunks) == 2
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in flat}
+    assert by_code["llm_input_tokens"] == 9
+    assert by_code["llm_output_tokens"] == 4

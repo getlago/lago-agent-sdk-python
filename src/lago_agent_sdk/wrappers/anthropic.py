@@ -212,16 +212,15 @@ class _LagoStreamManager:
         try:
             result = await self._inner.__aexit__(exc_type, exc, tb)
         finally:
-            self._emit_final()
+            await self._emit_final_async()
         return result
 
     def _emit_final(self) -> None:
+        """Sync path — `get_final_message()` returns the final message directly."""
         try:
-            final = (
-                self._stream.get_final_message()
-                if self._stream and hasattr(self._stream, "get_final_message")
-                else None
-            )
+            if not self._stream or not hasattr(self._stream, "get_final_message"):
+                return
+            final = self._stream.get_final_message()
             if final is not None:
                 from ..adapters import extract_anthropic_native
 
@@ -229,3 +228,22 @@ class _LagoStreamManager:
                 self._sdk.emit(usage, subscription=self._sub, dimensions=self._dims)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: anthropic stream-manager emit failed: %s", exc)
+
+    async def _emit_final_async(self) -> None:
+        """Async path — `AsyncMessageStream.get_final_message()` is a coroutine.
+
+        Calling it without `await` returns an un-awaited coroutine object that
+        the adapter sees as `{}` → zero usage emitted, plus a RuntimeWarning.
+        Must await.
+        """
+        try:
+            if not self._stream or not hasattr(self._stream, "get_final_message"):
+                return
+            final = await self._stream.get_final_message()
+            if final is not None:
+                from ..adapters import extract_anthropic_native
+
+                usage = extract_anthropic_native(final, model_id=self._model_id)
+                self._sdk.emit(usage, subscription=self._sub, dimensions=self._dims)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("lago: anthropic async stream-manager emit failed: %s", exc)

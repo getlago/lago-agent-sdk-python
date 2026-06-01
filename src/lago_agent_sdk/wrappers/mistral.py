@@ -131,7 +131,11 @@ def wrap_mistral_client(
 
         async def _agen() -> AsyncIterator[Any]:
             assert original_stream_async is not None
-            ait = original_stream_async(*args, **kwargs)
+            # mistralai v2 `chat.stream_async` is `async def` — calling it
+            # returns a coroutine that must be awaited to obtain the
+            # AsyncIterable. Without await, `async for` would raise
+            # "got coroutine" TypeError on the customer's first iteration.
+            ait = await original_stream_async(*args, **kwargs)
             last_usage: dict[str, Any] | None = None
             try:
                 async for event in ait:

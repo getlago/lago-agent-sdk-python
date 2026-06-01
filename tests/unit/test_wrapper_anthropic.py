@@ -221,3 +221,162 @@ def test_instrumentation_failure_does_not_break_call() -> None:
     resp = client.messages.create(model="x", messages=[])
     assert resp is not None
     sdk.shutdown(timeout=1.0)
+
+
+# ==========================================================================
+# ASYNC PATH — AsyncAnthropic + AsyncMessageStream context manager.
+# Exercises the async wrapper paths: _create_async, _wrap_async_stream,
+# and _LagoStreamManager.__aenter__ / __aexit__ where the final-message
+# coroutine must be awaited.
+# ==========================================================================
+import pytest  # noqa: E402  — late import keeps the file's main top-of-file clean
+
+
+class FakeAsyncMessages:
+    def __init__(self) -> None:
+        self.create_calls = 0
+        self.stream_calls = 0
+        self.final_message_awaited = False  # tracks whether the async path was actually awaited
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.create_calls += 1
+        assert "extra_lago" not in kwargs
+
+        if kwargs.get("stream") is True:
+
+            async def _aiter():
+                yield FakeStreamEvent(
+                    {"type": "message_start", "message": {"usage": {"input_tokens": 12}}},
+                )
+                yield FakeStreamEvent(
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"},
+                        "usage": {"input_tokens": 12, "output_tokens": 22},
+                    }
+                )
+                yield FakeStreamEvent({"type": "message_stop"})
+
+            return _aiter()
+
+        return FakeMessage(
+            {
+                "model": kwargs.get("model", "claude-sonnet-4-6"),
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 16,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": 0,
+                        "ephemeral_1h_input_tokens": 0,
+                    },
+                },
+            }
+        )
+
+    def stream(self, **kwargs: Any) -> Any:
+        self.stream_calls += 1
+        assert "extra_lago" not in kwargs
+        outer = self
+
+        final_message = FakeMessage(
+            {
+                "model": kwargs.get("model", "claude-sonnet-4-6"),
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {"input_tokens": 5, "output_tokens": 11},
+            }
+        )
+
+        class _FakeAsyncStreamManager:
+            async def __aenter__(self_inner) -> Any:
+                return _FakeAsyncStreamHandle(final_message, outer)
+
+            async def __aexit__(self_inner, exc_type, exc, tb) -> Any:  # noqa: D401
+                return False
+
+        return _FakeAsyncStreamManager()
+
+
+class _FakeAsyncStreamHandle:
+    def __init__(self, final: Any, parent: FakeAsyncMessages) -> None:
+        self._final = final
+        self._parent = parent
+
+    async def get_final_message(self) -> Any:
+        """async by design — mirrors the real AsyncMessageStream.get_final_message()."""
+        self._parent.final_message_awaited = True
+        return self._final
+
+
+class FakeAsyncAnthropic:
+    """Mimics `from anthropic import AsyncAnthropic; AsyncAnthropic(api_key=...)`."""
+
+    def __init__(self) -> None:
+        self.messages = FakeAsyncMessages()
+
+
+# Wrapper detects async via type(client).__name__.startswith("Async"), so we
+# override __name__ to "AsyncAnthropic" to mimic the real `AsyncAnthropic` class.
+FakeAsyncAnthropic.__module__ = "anthropic.fake"
+FakeAsyncAnthropic.__name__ = "AsyncAnthropic"
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_messages_create_emits() -> None:
+    sdk, received = _new_sdk()
+    fake = FakeAsyncAnthropic()
+    client = sdk.wrap(fake)
+    resp = await client.messages.create(model="claude-sonnet-4-6", messages=[])
+    assert resp.usage["input_tokens"] == 8
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code["llm_input_tokens"] == 8
+    assert by_code["llm_output_tokens"] == 16
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_messages_create_stream_captures_usage() -> None:
+    """Async iteration of `messages.create(stream=True)` — wraps an async generator."""
+    sdk, received = _new_sdk()
+    fake = FakeAsyncAnthropic()
+    client = sdk.wrap(fake)
+    stream = await client.messages.create(model="claude-sonnet-4-6", messages=[], stream=True)
+    events = [e async for e in stream]
+    assert len(events) == 3
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code["llm_input_tokens"] == 12
+    assert by_code["llm_output_tokens"] == 22
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_messages_stream_context_manager_emits() -> None:
+    """Regression test: async messages.stream(...) context manager must emit usage.
+
+    `async with client.messages.stream(...)` exits and the wrapper's _emit_final
+    is called from __aexit__. On AsyncMessageStream, `get_final_message()` is
+    a coroutine — calling it without `await` yields a coroutine object that the
+    adapter sees as `{}`, so nothing gets billed. The async exit path must await.
+    """
+    sdk, received = _new_sdk()
+    fake = FakeAsyncAnthropic()
+    client = sdk.wrap(fake)
+    async with client.messages.stream(model="claude-sonnet-4-6", messages=[]) as stream:
+        # Customer would iterate via stream.text_stream; not required for this test.
+        pass
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code.get("llm_input_tokens") == 5, (
+        "Async messages.stream context-manager did not emit usage. "
+        "Likely _emit_final calls get_final_message() synchronously, but on "
+        "AsyncMessageStream it is a coroutine — needs `await` on the __aexit__ path."
+    )
+    assert by_code.get("llm_output_tokens") == 11
+    assert fake.messages.final_message_awaited, (
+        "get_final_message() was never awaited — its coroutine was discarded."
+    )
