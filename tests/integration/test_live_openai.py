@@ -188,3 +188,38 @@ def test_live_openai_responses_create_emits_to_lago() -> None:
             assert e["properties"]["provider"] == "openai"
     finally:
         server.shutdown()
+
+
+def test_live_openai_responses_create_with_stream_emits_to_lago() -> None:
+    """Live regression test for two bugs in the Responses API streaming path:
+
+    1. The wrapper must NOT inject `stream_options.include_usage` — Responses
+       rejects that param and the call would fail with HTTP 400.
+    2. The wrapper must extract usage from `event.response.usage` on the
+       terminal `response.completed` event (not from a top-level `event.usage`).
+    """
+    from openai import OpenAI
+
+    server, url = _spawn_lago()
+    try:
+        sdk = LagoSDK(api_key="x", api_url=url, default_subscription_id="sub_int")
+        client = sdk.wrap(OpenAI(api_key=os.environ["OPENAI_API_KEY"]))
+        stream = client.responses.create(
+            model="gpt-4o-mini",
+            input="Say hi",
+            max_output_tokens=20,
+            stream=True,
+        )
+        # Drain — also verifies the customer's call wasn't broken by injection.
+        for _ in stream:
+            pass
+        assert sdk.flush(timeout=10.0)
+        sdk.shutdown(timeout=2.0)
+        events = _collect_events(server)
+        codes = _codes(events)
+        assert "llm_input_tokens" in codes
+        assert "llm_output_tokens" in codes
+        for e in events:
+            assert e["properties"]["api"] == "responses"
+    finally:
+        server.shutdown()

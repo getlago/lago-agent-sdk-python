@@ -124,18 +124,17 @@ def wrap_mistral_client(
             logger.warning("lago: mistral.chat.complete_async instrumentation failed: %s", exc)
         return response
 
-    def _stream_async(*args: Any, **kwargs: Any) -> Any:
+    # mistralai v2 `chat.stream_async` is `async def`, so customers naturally
+    # write `stream = await client.chat.stream_async(...)` and then iterate.
+    # The wrapper must preserve that shape — it's also `async def` so it
+    # returns a coroutine that resolves to the wrapped AsyncIterable.
+    async def _stream_async(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
         assert original_stream_async is not None  # guaranteed by outer if-guard
         lago_opts = _pop_lago_kwarg(kwargs)
         model_id = kwargs.get("model", "")
+        ait = await original_stream_async(*args, **kwargs)
 
         async def _agen() -> AsyncIterator[Any]:
-            assert original_stream_async is not None
-            # mistralai v2 `chat.stream_async` is `async def` — calling it
-            # returns a coroutine that must be awaited to obtain the
-            # AsyncIterable. Without await, `async for` would raise
-            # "got coroutine" TypeError on the customer's first iteration.
-            ait = await original_stream_async(*args, **kwargs)
             last_usage: dict[str, Any] | None = None
             try:
                 async for event in ait:

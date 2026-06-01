@@ -254,7 +254,9 @@ async def test_async_wrap_chat_stream_async_captures_usage_from_final_chunk():
     sdk, received = _make_sdk()
     fake = FakeAsyncMistral()
     client = sdk.wrap(fake)
-    stream = client.chat.stream_async(model="mistral-small-latest", messages=[])
+    # mistralai's stream_async is `async def` — must be awaited to obtain the
+    # AsyncIterable. The wrapper preserves this contract.
+    stream = await client.chat.stream_async(model="mistral-small-latest", messages=[])
     chunks = [c async for c in stream]
     assert len(chunks) == 2
     assert sdk.flush(timeout=2.0)

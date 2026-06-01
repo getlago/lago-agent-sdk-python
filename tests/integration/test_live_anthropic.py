@@ -112,3 +112,35 @@ def test_live_anthropic_messages_stream_context_manager() -> None:
         assert "llm_output_tokens" in codes
     finally:
         server.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_live_async_anthropic_messages_stream_context_manager_emits() -> None:
+    """Live regression test for the async messages.stream(...) context manager.
+
+    Bug: __aexit__ called the sync _emit_final, which invoked
+    get_final_message() without await. On AsyncMessageStream that method is
+    a coroutine, so the un-awaited object fell through to the adapter as {}
+    → zero usage emitted, plus a "coroutine was never awaited" RuntimeWarning.
+    """
+    from anthropic import AsyncAnthropic
+
+    server, url = _spawn_lago()
+    try:
+        sdk = LagoSDK(api_key="x", api_url=url, default_subscription_id="sub_int")
+        client = sdk.wrap(AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"]))
+        async with client.messages.stream(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=20,
+            messages=[{"role": "user", "content": "Say hi"}],
+        ) as stream:
+            async for _ in stream.text_stream:
+                pass
+        assert sdk.flush(timeout=10.0)
+        sdk.shutdown(timeout=2.0)
+        events = [e for p in server.received for e in p["events"]]  # type: ignore[attr-defined]
+        codes = {e["code"] for e in events}
+        assert "llm_input_tokens" in codes
+        assert "llm_output_tokens" in codes
+    finally:
+        server.shutdown()
