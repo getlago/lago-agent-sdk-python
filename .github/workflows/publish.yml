@@ -122,7 +122,11 @@ jobs:
           name: dist
           path: dist/
       - name: Publish
-        uses: pypa/gh-action-pypi-publish@ecb4c3dfd4790f14e30aaeac04855c7413ee9368 # v1.12.2
+        # Pinned to the COMMIT sha (not the annotated-tag object sha). This is a
+        # Docker action; GitHub pulls ghcr.io/pypa/gh-action-pypi-publish:<ref>,
+        # and pypa publishes that image tagged by commit sha — the tag-object sha
+        # has no image (manifest unknown).
+        uses: pypa/gh-action-pypi-publish@15c56dba361d8335944d31a2ecd17d700fc7bcbc # v1.12.2
         # No `password:` — OIDC handles auth automatically.
 
   # ----------------------------------------------------------------------
