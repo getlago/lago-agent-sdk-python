@@ -84,9 +84,10 @@ jobs:
           fi
           echo "Tag $TAG matches pyproject version $PKG"
       - name: Build distributions
-        run: |
-          uv pip install --system build
-          python -m build
+        # `uv build` produces the sdist + wheel into dist/ using the project's
+        # build backend — no need to pip-install `build` into the runner's
+        # system Python (which is PEP 668 externally-managed and rejects it).
+        run: uv build
       - name: Upload dist artifacts
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
