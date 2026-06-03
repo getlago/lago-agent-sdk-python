@@ -184,6 +184,9 @@ Backed by `contextvars` for safe propagation across `asyncio` tasks.
 - **OpenAI's `reasoning_tokens` is a SUBSET of `output`** — already counted in `completion_tokens`.
 - **Gemini's `thoughts_token_count` is ADDITIVE to `output`** — `candidates + thoughts = total billable output`.
 
+**Semantic note on input breakdowns (avoid double-counting):**
+For both OpenAI and Gemini, `cache_read`, `audio_input`, and `image_input` are **subsets of `input`**, not additive to it — they are a breakdown of tokens already counted in `llm_input_tokens`. For example, OpenAI reports `cached_tokens` under `prompt_tokens_details` *within* `prompt_tokens`, and Gemini's docs state `prompt_token_count` "includes the number of tokens in the cached content". A billable metric that sums `llm_input_tokens + llm_cached_input_tokens` (or `+ llm_audio_input_tokens`, `+ llm_image_input_tokens`) will **double-count**. Bill on `llm_input_tokens` as the total; use the breakdown fields only for cost attribution or discounted-rate tiers (e.g. cached input billed at a lower rate), subtracting them from `input` rather than adding.
+
 OpenAI's Predicted Outputs tokens (`accepted_prediction_tokens`, `rejected_prediction_tokens`) are not surfaced — see the OpenAI adapter docstring for details on this intentional gap.
 
 ## Error policy

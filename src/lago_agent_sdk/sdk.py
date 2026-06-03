@@ -95,6 +95,15 @@ class LagoSDK:
             from .wrappers.gemini import wrap_gemini_client
 
             return wrap_gemini_client(self, client, dimensions=dimensions, subscription=subscription)
+        if kind == "gemini_legacy":
+            raise UnknownClientError(
+                "The legacy google-generativeai SDK "
+                "(`import google.generativeai; genai.GenerativeModel(...)`) is not "
+                "supported — its surface differs from the unified SDK and cannot be "
+                "instrumented. Migrate to google-genai: `pip install google-genai`, "
+                "then `from google import genai; client = genai.Client(...)` and wrap "
+                "the Client. See https://ai.google.dev/gemini-api/docs/migrate."
+            )
         if kind == "unknown":
             raise UnknownClientError(
                 f"Unknown client passed to wrap(): {type(client).__module__}.{type(client).__name__}. "

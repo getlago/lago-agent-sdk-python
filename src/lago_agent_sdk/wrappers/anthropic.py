@@ -46,6 +46,35 @@ def _is_message_like(obj: Any) -> bool:
         return False
 
 
+def _merge_stream_usage(accumulated: dict[str, Any], payload: Any) -> None:
+    """Fold one streaming event's usage into the running accumulator.
+
+    Anthropic splits authoritative usage across two events:
+      - ``message_start`` carries the input/cache counts nested under
+        ``message.usage`` (with ``output_tokens`` only primed to 1).
+      - ``message_delta`` carries the *cumulative* ``output_tokens`` at the top
+        level (and, in some API shapes, echoes input/cache there too).
+
+    Reading only the top-level usage misses ``message_start``'s input/cache, so
+    a basic stream — whose ``message_delta`` is just ``{"output_tokens": N}`` —
+    would bill ``input_tokens=0``. Merge both locations; ``dict.update`` lets the
+    more complete / more recent values win while preserving the input counts from
+    ``message_start`` when a delta omits them.
+    """
+    if not isinstance(payload, dict):
+        return
+    # message_start: input/cache live under message.usage
+    message = payload.get("message")
+    if isinstance(message, dict):
+        nested = message.get("usage")
+        if isinstance(nested, dict):
+            accumulated.update(nested)
+    # message_delta (and others): cumulative usage at the top level
+    top = payload.get("usage")
+    if isinstance(top, dict):
+        accumulated.update(top)
+
+
 def wrap_anthropic_client(
     sdk: Any,
     client: Any,
@@ -95,20 +124,18 @@ def wrap_anthropic_client(
             _emit_from(response, model_id, sub, dims)
             return response
 
-        # Streaming — wrap the iterator to capture the final usage on close.
+        # Streaming — wrap the iterator, merging usage across message_start
+        # (input/cache) and message_delta (cumulative output) before emitting.
         def _wrap_stream(src: Iterator[Any]) -> Iterator[Any]:
-            last_usage: dict[str, Any] | None = None
+            accumulated: dict[str, Any] = {}
             try:
                 for event in src:
                     payload = event.model_dump() if hasattr(event, "model_dump") else event
-                    if isinstance(payload, dict):
-                        usage = payload.get("usage")
-                        if isinstance(usage, dict):
-                            last_usage = {"usage": usage}
+                    _merge_stream_usage(accumulated, payload)
                     yield event
             finally:
-                if last_usage is not None:
-                    _emit_from(last_usage, model_id, sub, dims)
+                if accumulated:
+                    _emit_from({"usage": accumulated}, model_id, sub, dims)
 
         return _wrap_stream(response)
 
@@ -127,18 +154,15 @@ def wrap_anthropic_client(
             return response
 
         async def _wrap_async_stream(src: AsyncIterator[Any]) -> AsyncIterator[Any]:
-            last_usage: dict[str, Any] | None = None
+            accumulated: dict[str, Any] = {}
             try:
                 async for event in src:
                     payload = event.model_dump() if hasattr(event, "model_dump") else event
-                    if isinstance(payload, dict):
-                        usage = payload.get("usage")
-                        if isinstance(usage, dict):
-                            last_usage = {"usage": usage}
+                    _merge_stream_usage(accumulated, payload)
                     yield event
             finally:
-                if last_usage is not None:
-                    _emit_from(last_usage, model_id, sub, dims)
+                if accumulated:
+                    _emit_from({"usage": accumulated}, model_id, sub, dims)
 
         return _wrap_async_stream(response)
 

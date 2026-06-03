@@ -39,13 +39,30 @@ class FakeMessages:
         self.create_calls += 1
         assert "extra_lago" not in kwargs
         if kwargs.get("stream") is True:
+            # Mirrors the real wire shape: message_start carries the authoritative
+            # input/cache counts (output only primed to 1) nested under
+            # message.usage; message_delta carries ONLY the cumulative output at
+            # the top level — it does NOT echo input_tokens. A wrapper that reads
+            # only top-level usage therefore bills input_tokens=0.
             events = [
-                FakeStreamEvent({"type": "message_start", "message": {"usage": {"input_tokens": 12}}}),
+                FakeStreamEvent(
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "usage": {
+                                "input_tokens": 12,
+                                "cache_creation_input_tokens": 0,
+                                "cache_read_input_tokens": 0,
+                                "output_tokens": 1,
+                            }
+                        },
+                    }
+                ),
                 FakeStreamEvent(
                     {
                         "type": "message_delta",
                         "delta": {"stop_reason": "end_turn"},
-                        "usage": {"input_tokens": 12, "output_tokens": 22},
+                        "usage": {"output_tokens": 22},
                     }
                 ),
                 FakeStreamEvent({"type": "message_stop"}),
@@ -165,7 +182,13 @@ def test_wrap_double_wrap_is_idempotent() -> None:
     assert fake.messages.create_calls == 1
 
 
-def test_wrap_create_with_stream_captures_usage_from_message_delta() -> None:
+def test_wrap_create_with_stream_merges_message_start_and_delta() -> None:
+    """Regression: input/cache come from message_start, output from message_delta.
+
+    message_delta does not echo input_tokens (only cumulative output), so the
+    stream wrapper must merge message_start's nested message.usage with the
+    delta. Reading only top-level usage would bill input_tokens=0.
+    """
     sdk, received = _new_sdk()
     fake = FakeAnthropic()
     client = sdk.wrap(fake)
@@ -174,7 +197,9 @@ def test_wrap_create_with_stream_captures_usage_from_message_delta() -> None:
     assert sdk.flush(timeout=2.0)
     sdk.shutdown(timeout=1.0)
     by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
-    assert by_code["llm_input_tokens"] == 12
+    assert by_code["llm_input_tokens"] == 12, (
+        "input_tokens lost — wrapper ignored message_start's nested message.usage"
+    )
     assert by_code["llm_output_tokens"] == 22
 
 
@@ -245,14 +270,26 @@ class FakeAsyncMessages:
         if kwargs.get("stream") is True:
 
             async def _aiter():
+                # Realistic wire shape: input/cache only on message_start;
+                # message_delta carries cumulative output, no input echo.
                 yield FakeStreamEvent(
-                    {"type": "message_start", "message": {"usage": {"input_tokens": 12}}},
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "usage": {
+                                "input_tokens": 12,
+                                "cache_creation_input_tokens": 0,
+                                "cache_read_input_tokens": 0,
+                                "output_tokens": 1,
+                            }
+                        },
+                    },
                 )
                 yield FakeStreamEvent(
                     {
                         "type": "message_delta",
                         "delta": {"stop_reason": "end_turn"},
-                        "usage": {"input_tokens": 12, "output_tokens": 22},
+                        "usage": {"output_tokens": 22},
                     }
                 )
                 yield FakeStreamEvent({"type": "message_stop"})

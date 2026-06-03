@@ -140,6 +140,34 @@ def test_wrap_double_wrap_is_idempotent() -> None:
     assert fake.models.generate_calls == 1
 
 
+def test_wrap_rejects_legacy_generativeai_sdk_with_migration_hint() -> None:
+    """The legacy google-generativeai SDK must be rejected, not silently no-op'd.
+
+    Its GenerativeModel surface has no .models/.aio, so the gemini wrapper would
+    wrap nothing and emit zero billing events. wrap() must raise with a clear
+    pointer to migrate to the unified google-genai SDK.
+    """
+    import pytest
+
+    from lago_agent_sdk import UnknownClientError
+
+    class LegacyGenerativeModel:
+        """Mimics `import google.generativeai as genai; genai.GenerativeModel(...)`."""
+
+        __module__ = "google.generativeai.generative_models"
+
+        def generate_content(self, *_a, **_k):  # pragma: no cover - never called
+            raise AssertionError("legacy client should be rejected before any call")
+
+    sdk, _ = _make_sdk()
+    with pytest.raises(UnknownClientError) as exc:
+        sdk.wrap(LegacyGenerativeModel())
+    msg = str(exc.value).lower()
+    assert "google-genai" in msg
+    assert "migrate" in msg or "migrat" in msg
+    sdk.shutdown(timeout=1.0)
+
+
 def test_wrap_generate_content_stream_captures_usage_from_final_chunk() -> None:
     sdk, received = _make_sdk()
     fake = FakeGeminiClient()

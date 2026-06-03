@@ -4,6 +4,19 @@ All notable changes to this project will be documented here. Format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+- **Anthropic `messages.create(stream=True)` under-billed input tokens.** The stream wrapper read only top-level `usage`, which on a basic stream appears only on `message_delta` as `{output_tokens: N}` — the authoritative `input_tokens` / `cache_*` counts arrive nested under `message.usage` on the `message_start` event and were ignored, so input billed 0. The wrapper now merges usage from `message_start` (input/cache) and `message_delta` (cumulative output). Sync + async paths; regression tests use the realistic wire shape (delta carries no input echo).
+- **Legacy `google-generativeai` SDK silently emitted no events.** The detector matched both the new `google-genai` and the deprecated `google-generativeai` SDKs, but the wrapper only instruments the unified `Client.models` / `.aio` surface — a legacy `GenerativeModel` routed through and wrapped nothing. `wrap()` now rejects legacy clients with a clear pointer to migrate to `google-genai`.
+
+### Security
+- Hardened the publish workflow: least-privilege `permissions: contents: read` default (only `publish` gets `id-token: write`, only `release` gets `contents: write`), and every third-party action pinned to a full commit SHA so a re-pointed tag can't inject code into the OIDC-token-minting job.
+- Added `if: startsWith(github.ref, 'refs/tags/v')` to the `publish` job as defense-in-depth — it refuses to run on a non-tag ref even if the environment's protected-tag rule is misconfigured.
+- Added `.github/dependabot.yml` (github-actions ecosystem) so the SHA pins stay fresh — Dependabot bumps the SHA and version comment together rather than letting actions silently age.
+- RELEASING.md now documents `pypi` environment protection (required reviewers + protected-tag restriction) as a **required** setup step, not optional, since trusted publishing is only as strong as that environment's rules.
+
+### Documentation
+- README: clarified that `cache_read`, `audio_input`, and `image_input` are **subsets** of `input` for OpenAI and Gemini (not additive) — summing them with `llm_input_tokens` double-counts.
+
 ### Added
 - Native `google-genai` SDK support covering `client.models.generate_content` + `generate_content_stream`, sync + async (`client.aio.models`).
 - `extract_gemini_native` adapter maps `usage_metadata`: `prompt_token_count → input`, `candidates_token_count → output`, `cached_content_token_count → cache_read`, `thoughts_token_count → reasoning`, `prompt_tokens_details[modality=AUDIO/IMAGE] → audio_input/image_input`, `candidates_tokens_details[modality=AUDIO] → audio_output`, count of `candidates[0].content.parts[].function_call → tool_calls`.
