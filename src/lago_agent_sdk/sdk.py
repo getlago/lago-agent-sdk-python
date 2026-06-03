@@ -83,13 +83,37 @@ class LagoSDK:
             from .wrappers.mistral import wrap_mistral_client
 
             return wrap_mistral_client(self, client, dimensions=dimensions, subscription=subscription)
+        if kind == "anthropic":
+            from .wrappers.anthropic import wrap_anthropic_client
+
+            return wrap_anthropic_client(self, client, dimensions=dimensions, subscription=subscription)
+        if kind == "openai":
+            from .wrappers.openai import wrap_openai_client
+
+            return wrap_openai_client(self, client, dimensions=dimensions, subscription=subscription)
+        if kind == "gemini":
+            from .wrappers.gemini import wrap_gemini_client
+
+            return wrap_gemini_client(self, client, dimensions=dimensions, subscription=subscription)
+        if kind == "gemini_legacy":
+            raise UnknownClientError(
+                "The legacy google-generativeai SDK "
+                "(`import google.generativeai; genai.GenerativeModel(...)`) is not "
+                "supported — its surface differs from the unified SDK and cannot be "
+                "instrumented. Migrate to google-genai: `pip install google-genai`, "
+                "then `from google import genai; client = genai.Client(...)` and wrap "
+                "the Client. See https://ai.google.dev/gemini-api/docs/migrate."
+            )
         if kind == "unknown":
             raise UnknownClientError(
                 f"Unknown client passed to wrap(): {type(client).__module__}.{type(client).__name__}. "
-                "Supported: boto3 bedrock-runtime, mistralai.client.Mistral."
+                "Supported: boto3 bedrock-runtime, mistralai.client.Mistral, "
+                "anthropic.Anthropic / AsyncAnthropic, openai.OpenAI / AsyncOpenAI, "
+                "google.genai.Client."
             )
         raise UnknownClientError(
-            f"Client kind '{kind}' is not yet supported. Implemented: 'bedrock', 'mistral'."
+            f"Client kind '{kind}' is not yet supported. "
+            "Implemented: 'bedrock', 'mistral', 'anthropic', 'openai', 'gemini'."
         )
 
     # ------------------------------------------------------------------

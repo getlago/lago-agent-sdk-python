@@ -1,0 +1,88 @@
+{
+  "_model_id": "o4-mini",
+  "_response": {
+    "id": "resp_01686e0eda1186ad006a19525c9244819281061c5e851add1a",
+    "created_at": 1780044380.0,
+    "error": null,
+    "incomplete_details": null,
+    "instructions": null,
+    "metadata": {},
+    "model": "o4-mini-2025-04-16",
+    "object": "response",
+    "output": [
+      {
+        "id": "rs_01686e0eda1186ad006a19525e3b6081928c78127466f13ae9",
+        "summary": [],
+        "type": "reasoning",
+        "content": null,
+        "encrypted_content": null,
+        "status": null
+      },
+      {
+        "id": "msg_01686e0eda1186ad006a1952607b7c8192aabd7ae10c7ed3c1",
+        "content": [
+          {
+            "annotations": [],
+            "text": "Here is a proof by mathematical induction that for every positive integer n,  \n\u20031\u00b3 + 2\u00b3 + \u22ef + n\u00b3  =  (1 + 2 + \u22ef + n)\u00b2.  \n\nNotation. Let  \n\u2003S(n)  := 1\u00b3 + 2\u00b3 + \u22ef + n\u00b3,  \nand recall the well\u2010known formula  \n\u2003T(n) := 1 + 2 + \u22ef + n  =  n(n + 1)/2.  \n\nWe will show  \n\u2003S(n)  =  [T(n)]\u00b2  =  [n(n + 1)/2]\u00b2.  \n\n1. Base case (n = 1).  \n  S(1) = 1\u00b3 = 1,  \n  T(1) = 1, so [T(1)]\u00b2 = 1\u00b2 = 1.  \n  Hence S(1) = [T(1)]\u00b2.  \n\n2. Inductive step.  \n  Assume that for some k \u2265 1,  \n    S(k)  =  [T(k)]\u00b2  =  [k(k + 1)/2]\u00b2.  \n  We must show  \n    S(k + 1)  =  [T(k + 1)]\u00b2.  \n\n  Now  \n    S(k + 1)  \n    = S(k) + (k + 1)\u00b3  \n    = [k(k + 1)/2]\u00b2   +   (k + 1)\u00b3       (by the inductive hypothesis)  \n    =  (k\u00b2 (k + 1)\u00b2)/4   +   (k + 1)\u00b3.  \n\n  Factor out (k + 1)\u00b2/4 from the sum:  \n    =  (k + 1)\u00b2   \n        \u00b7 [k\u00b2/4  +  4\u00b7(k + 1)/4 ]  \n      =  (k + 1)\u00b2   \n        \u00b7 [ (k\u00b2 + 4(k + 1)) / 4 ]  \n      =  (k + 1)\u00b2   \n        \u00b7 [ (k\u00b2 + 4k + 4) / 4 ]  \n      =  (k + 1)\u00b2   \n        \u00b7 [ (k + 2)\u00b2 / 4 ]  \n    =  [ (k + 1)(k + 2) / 2 ]\u00b2.  \n\n  But (k + 1)(k + 2)/2 = T(k + 1), so we conclude  \n    S(k + 1)  =  [T(k + 1)]\u00b2.  \n\nBy the principle of mathematical induction, the formula  \n\u20031\u00b3 + 2\u00b3 + \u22ef + n\u00b3  =  [n(n + 1)/2]\u00b2  \nholds for all positive integers n.  \nEquivalently, the sum of the first n cubes equals the square of the sum of the first n positive integers.",
+            "type": "output_text",
+            "logprobs": []
+          }
+        ],
+        "role": "assistant",
+        "status": "completed",
+        "type": "message",
+        "phase": null
+      }
+    ],
+    "parallel_tool_calls": true,
+    "temperature": 1.0,
+    "tool_choice": "auto",
+    "tools": [],
+    "top_p": 1.0,
+    "background": false,
+    "completed_at": 1780044387.0,
+    "conversation": null,
+    "max_output_tokens": 2000,
+    "max_tool_calls": null,
+    "previous_response_id": null,
+    "prompt": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "in_memory",
+    "reasoning": {
+      "effort": "low",
+      "generate_summary": null,
+      "summary": null,
+      "context": "current_turn"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "status": "completed",
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "top_logprobs": 0,
+    "truncation": "disabled",
+    "usage": {
+      "input_tokens": 33,
+      "input_tokens_details": {
+        "cached_tokens": 0
+      },
+      "output_tokens": 981,
+      "output_tokens_details": {
+        "reasoning_tokens": 320
+      },
+      "total_tokens": 1014
+    },
+    "user": null,
+    "billing": {
+      "payer": "developer"
+    },
+    "frequency_penalty": 0.0,
+    "moderation": null,
+    "presence_penalty": 0.0,
+    "store": true
+  }
+}

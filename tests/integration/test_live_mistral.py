@@ -87,3 +87,34 @@ def test_live_mistral_chat_stream_emits_to_lago():
         assert "llm_output_tokens" in codes
     finally:
         server.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_live_mistral_chat_stream_async_emits_to_lago() -> None:
+    """Live regression test for chat.stream_async.
+
+    Bug: the wrapper iterated `original_stream_async(*args, **kwargs)` without
+    awaiting it. In mistralai v2 this method is `async def`, so calling it
+    returns a coroutine — `async for` raises "got coroutine" TypeError.
+    """
+    from mistralai.client import Mistral
+
+    server, url = _spawn_lago()
+    try:
+        sdk = LagoSDK(api_key="x", api_url=url, default_subscription_id="sub_int")
+        client = sdk.wrap(Mistral(api_key=os.environ["MISTRAL_API_KEY"]))
+        stream = await client.chat.stream_async(
+            model="mistral-small-latest",
+            messages=[{"role": "user", "content": "Say hi"}],
+            max_tokens=20,
+        )
+        async for _ in stream:
+            pass
+        assert sdk.flush(timeout=10.0)
+        sdk.shutdown(timeout=2.0)
+        events = [e for p in server.received for e in p["events"]]  # type: ignore[attr-defined]
+        codes = {e["code"] for e in events}
+        assert "llm_input_tokens" in codes
+        assert "llm_output_tokens" in codes
+    finally:
+        server.shutdown()

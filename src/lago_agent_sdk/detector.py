@@ -37,7 +37,16 @@ def detect_client_kind(client: Any) -> str:
     # Older mistralai versions or aliased imports
     if cls_name == "mistral" and "mistral" in module:
         return "mistral"
-    if "google" in module and ("genai" in module or "generativeai" in module):
-        return "google"
+    # New unified google-genai SDK only (`google.genai.Client`). The legacy
+    # google-generativeai SDK (`google.generativeai.GenerativeModel`) has a
+    # different surface — no `.models` / `.aio` — that the gemini wrapper cannot
+    # instrument, so it would silently wrap nothing. Flag it separately so wrap()
+    # can reject it with a clear migration message instead.
+    #
+    # "genai" is not a substring of "generativeai", so these never overlap.
+    if "google" in module and "genai" in module:
+        return "gemini"
+    if "google" in module and "generativeai" in module:
+        return "gemini_legacy"
 
     return "unknown"

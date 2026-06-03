@@ -1,0 +1,33 @@
+{
+  "_model_id": "claude-sonnet-4-6",
+  "_response": {
+    "id": "msg_01CnMDjYpfBiy7JWKyMeNWsL",
+    "container": null,
+    "content": [
+      {
+        "citations": null,
+        "text": "Hi! How can I help you today?",
+        "type": "text"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "role": "assistant",
+    "stop_details": null,
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 2808,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 2808,
+      "cache_read_input_tokens": 0,
+      "inference_geo": "global",
+      "input_tokens": 7,
+      "output_tokens": 12,
+      "server_tool_use": null,
+      "service_tier": "standard"
+    }
+  }
+}

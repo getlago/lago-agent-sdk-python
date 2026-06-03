@@ -1,0 +1,142 @@
+{
+  "_model_id": "claude-haiku-4-5-20251001",
+  "_response": {
+    "events": [
+      {
+        "message": {
+          "id": "msg_01A9ASsVixqCzpb4qwbcCkd2",
+          "container": null,
+          "content": [],
+          "model": "claude-haiku-4-5-20251001",
+          "role": "assistant",
+          "stop_details": null,
+          "stop_reason": null,
+          "stop_sequence": null,
+          "type": "message",
+          "usage": {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 0,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "inference_geo": "not_available",
+            "input_tokens": 13,
+            "output_tokens": 8,
+            "server_tool_use": null,
+            "service_tier": "standard"
+          }
+        },
+        "type": "message_start"
+      },
+      {
+        "content_block": {
+          "citations": null,
+          "text": "",
+          "type": "text"
+        },
+        "index": 0,
+        "type": "content_block_start"
+      },
+      {
+        "delta": {
+          "text": "Dolphins are highly intelligent marine mammals known",
+          "type": "text_delta"
+        },
+        "index": 0,
+        "type": "content_block_delta"
+      },
+      {
+        "type": "text",
+        "text": "Dolphins are highly intelligent marine mammals known",
+        "snapshot": "Dolphins are highly intelligent marine mammals known"
+      },
+      {
+        "delta": {
+          "text": " for their playful behavior, complex social structures, and remarkable ability to communicate with each other through clicks",
+          "type": "text_delta"
+        },
+        "index": 0,
+        "type": "content_block_delta"
+      },
+      {
+        "type": "text",
+        "text": " for their playful behavior, complex social structures, and remarkable ability to communicate with each other through clicks",
+        "snapshot": "Dolphins are highly intelligent marine mammals known for their playful behavior, complex social structures, and remarkable ability to communicate with each other through clicks"
+      },
+      {
+        "delta": {
+          "text": " and whistles.",
+          "type": "text_delta"
+        },
+        "index": 0,
+        "type": "content_block_delta"
+      },
+      {
+        "type": "text",
+        "text": " and whistles.",
+        "snapshot": "Dolphins are highly intelligent marine mammals known for their playful behavior, complex social structures, and remarkable ability to communicate with each other through clicks and whistles."
+      },
+      {
+        "index": 0,
+        "type": "content_block_stop",
+        "content_block": {
+          "citations": null,
+          "text": "Dolphins are highly intelligent marine mammals known for their playful behavior, complex social structures, and remarkable ability to communicate with each other through clicks and whistles.",
+          "type": "text",
+          "parsed_output": null
+        }
+      },
+      {
+        "delta": {
+          "container": null,
+          "stop_details": null,
+          "stop_reason": "end_turn",
+          "stop_sequence": null
+        },
+        "type": "message_delta",
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 13,
+          "output_tokens": 35,
+          "server_tool_use": null
+        }
+      },
+      {
+        "type": "message_stop",
+        "message": {
+          "id": "msg_01A9ASsVixqCzpb4qwbcCkd2",
+          "container": null,
+          "content": [
+            {
+              "citations": null,
+              "text": "Dolphins are highly intelligent marine mammals known for their playful behavior, complex social structures, and remarkable ability to communicate with each other through clicks and whistles.",
+              "type": "text",
+              "parsed_output": null
+            }
+          ],
+          "model": "claude-haiku-4-5-20251001",
+          "role": "assistant",
+          "stop_details": null,
+          "stop_reason": "end_turn",
+          "stop_sequence": null,
+          "type": "message",
+          "usage": {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 0,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "inference_geo": "not_available",
+            "input_tokens": 13,
+            "output_tokens": 35,
+            "server_tool_use": null,
+            "service_tier": "standard"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -18,6 +18,7 @@ class CanonicalUsage:
     tool_calls: int = 0
     image_input: int = 0
     audio_input: int = 0
+    audio_output: int = 0
     model: str = ""
     provider: str = ""
     api: str = ""
@@ -34,6 +35,7 @@ class CanonicalUsage:
         "tool_calls",
         "image_input",
         "audio_input",
+        "audio_output",
     )
 
     def nonzero_numeric(self) -> dict[str, int]:
