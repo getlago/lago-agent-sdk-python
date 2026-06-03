@@ -122,11 +122,16 @@ jobs:
           name: dist
           path: dist/
       - name: Publish
-        # Pinned to the COMMIT sha (not the annotated-tag object sha). This is a
-        # Docker action; GitHub pulls ghcr.io/pypa/gh-action-pypi-publish:<ref>,
-        # and pypa publishes that image tagged by commit sha — the tag-object sha
-        # has no image (manifest unknown).
-        uses: pypa/gh-action-pypi-publish@15c56dba361d8335944d31a2ecd17d700fc7bcbc # v1.12.2
+        # v1.12.4 bundles twine 6.1.0, which understands Metadata-Version 2.4
+        # (what current setuptools / `uv build` emit). v1.12.2 shipped twine
+        # 5.1.1, which rejects 2.4 with "Metadata is missing required fields:
+        # Name, Version".
+        #
+        # Pinned to the COMMIT sha (not the annotated-tag object sha): this is a
+        # Docker action and GitHub pulls ghcr.io/pypa/gh-action-pypi-publish:<ref>;
+        # pypa publishes that image keyed by commit sha, so the tag-object sha has
+        # no image (manifest unknown).
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
         # No `password:` — OIDC handles auth automatically.
 
   # ----------------------------------------------------------------------
