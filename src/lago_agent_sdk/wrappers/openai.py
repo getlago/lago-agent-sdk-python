@@ -83,15 +83,18 @@ def wrap_openai_client(
     base_sub = subscription
     is_async = type(client).__name__.startswith("Async")
 
-    def _resolve_opts(lago_opts: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
-        sub = lago_opts.get("subscription") or base_sub
-        dims = {**base_dims, **(lago_opts.get("dimensions") or {})}
-        return sub, dims
+    def _resolve_opts(lago_opts: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "subscription": lago_opts.get("subscription") or base_sub,
+            "dimensions": {**base_dims, **(lago_opts.get("dimensions") or {})},
+            "mode": lago_opts.get("mode"),
+            "markup": lago_opts.get("markup"),
+        }
 
-    def _emit_from(payload: Any, model_id: str, sub: str | None, dims: dict[str, Any]) -> None:
+    def _emit_from(payload: Any, model_id: str, opts: dict[str, Any]) -> None:
         try:
             usage = extract_openai_native(payload, model_id=model_id)
-            sdk.emit(usage, subscription=sub, dimensions=dims)
+            sdk.emit(usage, **opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: openai emit failed: %s", exc)
 
@@ -125,11 +128,11 @@ def wrap_openai_client(
             if not is_responses_api:
                 _ensure_stream_options_include_usage(kwargs)
             model_id = kwargs.get("model", "")
-            sub, dims = _resolve_opts(lago_opts)
+            opts = _resolve_opts(lago_opts)
             response = original(*args, **kwargs)
 
             if _is_response_like(response):
-                _emit_from(response, model_id, sub, dims)
+                _emit_from(response, model_id, opts)
                 return response
 
             # Streaming — wrap the iterator to capture the final usage on close.
@@ -144,7 +147,7 @@ def wrap_openai_client(
                         yield event
                 finally:
                     if last_usage is not None:
-                        _emit_from(last_usage, model_id, sub, dims)
+                        _emit_from(last_usage, model_id, opts)
 
             return _wrap_stream(response)
 
@@ -156,11 +159,11 @@ def wrap_openai_client(
             if not is_responses_api:
                 _ensure_stream_options_include_usage(kwargs)
             model_id = kwargs.get("model", "")
-            sub, dims = _resolve_opts(lago_opts)
+            opts = _resolve_opts(lago_opts)
             response = await original(*args, **kwargs)
 
             if _is_response_like(response):
-                _emit_from(response, model_id, sub, dims)
+                _emit_from(response, model_id, opts)
                 return response
 
             async def _wrap_async_stream(src: AsyncIterator[Any]) -> AsyncIterator[Any]:
@@ -174,7 +177,7 @@ def wrap_openai_client(
                         yield event
                 finally:
                     if last_usage is not None:
-                        _emit_from(last_usage, model_id, sub, dims)
+                        _emit_from(last_usage, model_id, opts)
 
             return _wrap_async_stream(response)
 

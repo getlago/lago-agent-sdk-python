@@ -58,10 +58,13 @@ def wrap_mistral_client(
     original_complete_async = getattr(chat, "complete_async", None)
     original_stream_async = getattr(chat, "stream_async", None)
 
-    def _resolve_opts(lago_opts: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
-        sub = lago_opts.get("subscription") or base_sub
-        dims = {**base_dims, **(lago_opts.get("dimensions") or {})}
-        return sub, dims
+    def _resolve_opts(lago_opts: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "subscription": lago_opts.get("subscription") or base_sub,
+            "dimensions": {**base_dims, **(lago_opts.get("dimensions") or {})},
+            "mode": lago_opts.get("mode"),
+            "markup": lago_opts.get("markup"),
+        }
 
     # ------------------------------------------------------------------
     # chat.complete — non-streaming
@@ -73,8 +76,8 @@ def wrap_mistral_client(
         response = original_complete(*args, **kwargs)
         try:
             usage = extract_mistral_native(_to_dict(response), model_id=model_id)
-            sub, dims = _resolve_opts(lago_opts)
-            sdk.emit(usage, subscription=sub, dimensions=dims)
+            opts = _resolve_opts(lago_opts)
+            sdk.emit(usage, **opts)
         except Exception as exc:  # noqa: BLE001 — never break the call
             logger.warning("lago: mistral.chat.complete instrumentation failed: %s", exc)
         return response
@@ -101,8 +104,8 @@ def wrap_mistral_client(
                 if last_usage is not None:
                     try:
                         usage = extract_mistral_native(last_usage, model_id=model_id)
-                        sub, dims = _resolve_opts(lago_opts)
-                        sdk.emit(usage, subscription=sub, dimensions=dims)
+                        opts = _resolve_opts(lago_opts)
+                        sdk.emit(usage, **opts)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("lago: mistral.chat.stream instrumentation failed: %s", exc)
 
@@ -118,8 +121,8 @@ def wrap_mistral_client(
         response = await original_complete_async(*args, **kwargs)
         try:
             usage = extract_mistral_native(_to_dict(response), model_id=model_id)
-            sub, dims = _resolve_opts(lago_opts)
-            sdk.emit(usage, subscription=sub, dimensions=dims)
+            opts = _resolve_opts(lago_opts)
+            sdk.emit(usage, **opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: mistral.chat.complete_async instrumentation failed: %s", exc)
         return response
@@ -147,8 +150,8 @@ def wrap_mistral_client(
                 if last_usage is not None:
                     try:
                         usage = extract_mistral_native(last_usage, model_id=model_id)
-                        sub, dims = _resolve_opts(lago_opts)
-                        sdk.emit(usage, subscription=sub, dimensions=dims)
+                        opts = _resolve_opts(lago_opts)
+                        sdk.emit(usage, **opts)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("lago: mistral.chat.stream_async instrumentation failed: %s", exc)
 

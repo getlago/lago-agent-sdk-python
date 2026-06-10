@@ -189,6 +189,57 @@ For both OpenAI and Gemini, `cache_read`, `audio_input`, and `image_input` are *
 
 OpenAI's Predicted Outputs tokens (`accepted_prediction_tokens`, `rejected_prediction_tokens`) are not surfaced — see the OpenAI adapter docstring for details on this intentional gap.
 
+## Pricing mode — send dollar cost instead of tokens
+
+By default the SDK emits **token counts** (`pricing_mode="tokens"`). You can instead have it
+compute and emit the **dollar cost** of each call: `Σ(unit_price_per_token × tokens) × markup`.
+
+```python
+from lago_agent_sdk import LagoSDK, LagoConfig
+
+sdk = LagoSDK(api_key="...", config=LagoConfig(
+    api_key="...",
+    default_subscription_id="sub_123",
+    pricing_mode="price",     # "tokens" (default) | "price"
+    markup=1.2,               # optional cost multiplier (1.2 = +20%)
+))
+client = sdk.wrap(anthropic_client)
+# ... use the client normally ...
+```
+
+In **price mode** the SDK emits **one event per call** with code `llm_cost`. The event carries a
+top-level `precise_total_amount_cents` (the total cost in cents, after markup) for Lago's
+**dynamic charge model**, plus a breakdown in `properties`: `unit` (total tokens), `value` (USD
+total), `base_cost` (pre-markup), `markup`, `price_source`, and per-field `*_tokens` /
+`*_unit_price` / `*_cost`. Set up in Lago a `sum`-aggregation billable metric `llm_cost` on
+`field_name: "unit"` and a **dynamic** charge on it — Lago sums each event's
+`precise_total_amount_cents` into a single fee (`unit` is the displayed usage quantity). See
+`testing/lago_setup_pricing_plan.py` for a script that creates this.
+
+Per-call override via `extra_lago` (mode and markup, in addition to subscription/dimensions):
+
+```python
+client.messages.create(model="claude-...", messages=[...],
+                        extra_lago={"mode": "price", "markup": 1.5})
+```
+
+**Live, public pricing sources (no API keys):**
+- **OpenRouter** (`/api/v1/models`) for native `anthropic` / `openai` / `mistral` / `gemini`
+  clients — USD per token.
+- **AWS Bedrock Price List Bulk API** (public) for Bedrock — parsed per region.
+
+Prices are fetched and cached in the background (TTL `pricing_ttl_seconds`, default 1h); the
+refresh runs on the SDK's background thread, so **your LLM call is never blocked on pricing**.
+
+**Fallback (never under-bill):** if a price is unavailable (table not warm on the first call,
+or the model isn't found in the source), the SDK **falls back to emitting token-count events**
+and calls `on_error` so it's visible — it never silently drops the usage.
+
+**Bedrock note:** AWS's public bulk data lists many models (Titan, Llama, Mistral, Cohere, and
+older Claude) but, at time of writing, **not the current Claude 3.5/3.7/4 models**. Bedrock
+calls for models absent from AWS's data fall back to token events. Native Anthropic clients are
+priced via OpenRouter and unaffected.
+
 ## Error policy
 
 The SDK never breaks your LLM call. If anything in instrumentation fails (adapter bug, Lago down, network error), the SDK swallows it, logs a warning, and your call returns normally.
