@@ -98,15 +98,18 @@ def wrap_anthropic_client(
     original_stream = getattr(messages, "stream", None)
     is_async = type(client).__name__.startswith("Async")
 
-    def _resolve_opts(lago_opts: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
-        sub = lago_opts.get("subscription") or base_sub
-        dims = {**base_dims, **(lago_opts.get("dimensions") or {})}
-        return sub, dims
+    def _resolve_opts(lago_opts: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "subscription": lago_opts.get("subscription") or base_sub,
+            "dimensions": {**base_dims, **(lago_opts.get("dimensions") or {})},
+            "mode": lago_opts.get("mode"),
+            "markup": lago_opts.get("markup"),
+        }
 
-    def _emit_from(payload: Any, model_id: str, sub: str | None, dims: dict[str, Any]) -> None:
+    def _emit_from(payload: Any, model_id: str, opts: dict[str, Any]) -> None:
         try:
             usage = extract_anthropic_native(payload, model_id=model_id)
-            sdk.emit(usage, subscription=sub, dimensions=dims)
+            sdk.emit(usage, **opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: anthropic emit failed: %s", exc)
 
@@ -117,11 +120,11 @@ def wrap_anthropic_client(
         assert original_create is not None
         lago_opts = _pop_lago_kwarg(kwargs)
         model_id = kwargs.get("model", "")
-        sub, dims = _resolve_opts(lago_opts)
+        opts = _resolve_opts(lago_opts)
         response = original_create(*args, **kwargs)
 
         if _is_message_like(response):
-            _emit_from(response, model_id, sub, dims)
+            _emit_from(response, model_id, opts)
             return response
 
         # Streaming — wrap the iterator, merging usage across message_start
@@ -135,7 +138,7 @@ def wrap_anthropic_client(
                     yield event
             finally:
                 if accumulated:
-                    _emit_from({"usage": accumulated}, model_id, sub, dims)
+                    _emit_from({"usage": accumulated}, model_id, opts)
 
         return _wrap_stream(response)
 
@@ -146,11 +149,11 @@ def wrap_anthropic_client(
         assert original_create is not None
         lago_opts = _pop_lago_kwarg(kwargs)
         model_id = kwargs.get("model", "")
-        sub, dims = _resolve_opts(lago_opts)
+        opts = _resolve_opts(lago_opts)
         response = await original_create(*args, **kwargs)
 
         if _is_message_like(response):
-            _emit_from(response, model_id, sub, dims)
+            _emit_from(response, model_id, opts)
             return response
 
         async def _wrap_async_stream(src: AsyncIterator[Any]) -> AsyncIterator[Any]:
@@ -162,7 +165,7 @@ def wrap_anthropic_client(
                     yield event
             finally:
                 if accumulated:
-                    _emit_from({"usage": accumulated}, model_id, sub, dims)
+                    _emit_from({"usage": accumulated}, model_id, opts)
 
         return _wrap_async_stream(response)
 
@@ -177,9 +180,9 @@ def wrap_anthropic_client(
         assert original_stream is not None
         lago_opts = _pop_lago_kwarg(kwargs)
         model_id = kwargs.get("model", "")
-        sub, dims = _resolve_opts(lago_opts)
+        opts = _resolve_opts(lago_opts)
         inner = original_stream(*args, **kwargs)
-        return _LagoStreamManager(inner, sdk, model_id, sub, dims, is_async=is_async)
+        return _LagoStreamManager(inner, sdk, model_id, opts, is_async=is_async)
 
     if original_create is not None:
         messages.create = _create_async if is_async else _create
@@ -202,16 +205,14 @@ class _LagoStreamManager:
         inner: Any,
         sdk: Any,
         model_id: str,
-        sub: str | None,
-        dims: dict[str, Any],
+        opts: dict[str, Any],
         *,
         is_async: bool,
     ) -> None:
         self._inner = inner
         self._sdk = sdk
         self._model_id = model_id
-        self._sub = sub
-        self._dims = dims
+        self._opts = opts
         self._stream: Any = None
         self._is_async = is_async
 
@@ -249,7 +250,7 @@ class _LagoStreamManager:
                 from ..adapters import extract_anthropic_native
 
                 usage = extract_anthropic_native(final, model_id=self._model_id)
-                self._sdk.emit(usage, subscription=self._sub, dimensions=self._dims)
+                self._sdk.emit(usage, **self._opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: anthropic stream-manager emit failed: %s", exc)
 
@@ -268,6 +269,6 @@ class _LagoStreamManager:
                 from ..adapters import extract_anthropic_native
 
                 usage = extract_anthropic_native(final, model_id=self._model_id)
-                self._sdk.emit(usage, subscription=self._sub, dimensions=self._dims)
+                self._sdk.emit(usage, **self._opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: anthropic async stream-manager emit failed: %s", exc)
