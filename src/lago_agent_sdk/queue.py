@@ -29,6 +29,7 @@ class EventQueue:
         max_buffer_size: int = 10_000,
         max_retry_seconds: float = 60.0,
         on_error: Callable[[Exception, str], None] | None = None,
+        pricing: Any | None = None,
     ) -> None:
         self._sender = sender
         self._flush_interval = flush_interval
@@ -36,6 +37,9 @@ class EventQueue:
         self._max_buffer_size = max_buffer_size
         self._max_retry_seconds = max_retry_seconds
         self._on_error = on_error
+        # Optional PricingProvider — its (blocking) HTTP refresh runs on this
+        # background thread so the customer's call is never blocked on pricing.
+        self._pricing = pricing
 
         self._buffer: deque[dict[str, Any]] = deque()
         self._lock = threading.Lock()
@@ -62,6 +66,10 @@ class EventQueue:
         self._buffer = deque()  # don't replay parent's events from the child
         self._backoff_seconds = 0.0
         self._http_calls = 0
+        # Note: the PricingProvider self-heals on fork via a PID check inside
+        # lookup()/maybe_refresh(); we deliberately do NOT call into it from this
+        # fork handler (touching it here changes thread timing enough to trip
+        # macOS's objc fork-safety abort).
         self._thread = threading.Thread(target=self._run, name="lago-queue", daemon=True)
         self._thread.start()
 
@@ -114,6 +122,13 @@ class EventQueue:
         while not self._stopping.is_set():
             self._wake.wait(timeout=self._flush_interval)
             self._wake.clear()
+
+            # Refresh pricing tables on this background thread (off the hot path).
+            if self._pricing is not None:
+                try:
+                    self._pricing.maybe_refresh()
+                except Exception:  # noqa: BLE001 — pricing must never break the queue
+                    pass
 
             while True:
                 batch = self._take_batch()

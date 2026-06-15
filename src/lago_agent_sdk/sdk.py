@@ -11,8 +11,9 @@ from typing import Any
 from .canonical import CanonicalUsage
 from .config import LagoConfig
 from .detector import detect_client_kind
-from .exceptions import UnknownClientError
+from .exceptions import PricingUnavailableError, UnknownClientError
 from .lago_client import LagoClient
+from .pricing import PricingProvider, coerce_markup, compute_cost
 from .queue import EventQueue
 
 logger = logging.getLogger("lago_agent_sdk")
@@ -47,6 +48,16 @@ class LagoSDK:
             api_url=self.config.api_url,
             timeout=self.config.request_timeout_seconds,
         )
+        # Pricing provider (price mode). Default does no network until a
+        # price-mode lookup flags a source stale; refreshes run on the queue
+        # thread, never on the customer's call.
+        self._pricing: PricingProvider = self.config.pricing_provider or PricingProvider(
+            ttl_seconds=self.config.pricing_ttl_seconds,
+            default_region=self.config.bedrock_default_region,
+            on_error=self.config.on_error,
+        )
+        if self.config.pricing_mode == "price":
+            self._pricing.prime()  # eager warm when price mode is the global default
         self._queue = EventQueue(
             sender=self._lago_client.send_batch,
             flush_interval=self.config.flush_interval_seconds,
@@ -54,6 +65,7 @@ class LagoSDK:
             max_buffer_size=self.config.max_buffer_size,
             max_retry_seconds=self.config.max_retry_seconds,
             on_error=self.config.on_error,
+            pricing=self._pricing,
         )
 
     # ------------------------------------------------------------------
@@ -124,7 +136,16 @@ class LagoSDK:
         usage: CanonicalUsage,
         subscription: str | None = None,
         dimensions: dict[str, Any] | None = None,
+        mode: str | None = None,
+        markup: float | None = None,
     ) -> None:
+        """Emit usage to Lago.
+
+        In ``tokens`` mode (default), pushes one event per nonzero token field.
+        In ``price`` mode, pushes a single dollar-cost event; if no price is
+        available it falls back to token events and reports via on_error.
+        Precedence for mode/markup: per-call arg > config default.
+        """
         try:
             sub = self._resolve_subscription(subscription)
             if not sub:
@@ -134,37 +155,106 @@ class LagoSDK:
                 )
                 return
 
-            nonzero = usage.nonzero_numeric()
-            if not nonzero:
-                # Mistral legacy / empty — nothing to bill
+            effective_mode = mode or self.config.pricing_mode
+            if effective_mode != "price":
+                self._emit_token_events(usage, sub, dimensions)
                 return
 
-            now = int(time.time())
-            for field_name, value in nonzero.items():
-                code = self.config.metric_codes.get(field_name)
-                if not code:
-                    continue
-                event = {
-                    "transaction_id": str(uuid.uuid4()),
-                    "external_subscription_id": sub,
-                    "code": code,
-                    "timestamp": now,
-                    "properties": {
-                        "value": str(value),
-                        "model": usage.model,
-                        "provider": usage.provider,
-                        "api": usage.api,
-                        **(dimensions or {}),
-                    },
-                }
-                self._queue.push(event)
+            price = self._pricing.lookup(usage.provider, usage.model, usage.api)
+            if price is None:
+                # Don't silently under-bill: fall back to token events + report.
+                self._report_error(PricingUnavailableError(usage.provider, usage.model, usage.api), "pricing")
+                self._emit_token_events(usage, sub, dimensions)
+                return
+
+            markup_value, ok = coerce_markup(markup if markup is not None else self.config.markup)
+            if not ok:
+                self._report_error(
+                    ValueError(
+                        f"invalid markup {markup if markup is not None else self.config.markup!r}; using 1.0"
+                    ),
+                    "pricing",
+                )
+            self._emit_cost_event(usage, price, markup_value, sub, dimensions)
         except Exception as exc:  # noqa: BLE001 — never raise from emit
-            if self.config.on_error:
-                try:
-                    self.config.on_error(exc, "emit")
-                except Exception:  # noqa: BLE001
-                    pass
-            logger.warning("lago emit failed: %s", exc)
+            self._report_error(exc, "emit")
+
+    def _emit_token_events(self, usage: CanonicalUsage, sub: str, dimensions: dict[str, Any] | None) -> None:
+        nonzero = usage.nonzero_numeric()
+        if not nonzero:
+            # Mistral legacy / empty — nothing to bill
+            return
+        now = int(time.time())
+        for field_name, value in nonzero.items():
+            code = self.config.metric_codes.get(field_name)
+            if not code:
+                continue
+            event = {
+                "transaction_id": str(uuid.uuid4()),
+                "external_subscription_id": sub,
+                "code": code,
+                "timestamp": now,
+                "properties": {
+                    "value": str(value),
+                    "model": usage.model,
+                    "provider": usage.provider,
+                    "api": usage.api,
+                    **(dimensions or {}),
+                },
+            }
+            self._queue.push(event)
+
+    def _emit_cost_event(
+        self,
+        usage: CanonicalUsage,
+        price: Any,
+        markup: Any,
+        sub: str,
+        dimensions: dict[str, Any] | None,
+    ) -> None:
+        breakdown = compute_cost(usage, price, markup)
+        # `unit` = total tokens for the call — the quantity the sum-aggregation
+        # billable metric sums (the dynamic charge's fee comes from
+        # precise_total_amount_cents; unit is the displayed usage quantity).
+        # Sum the *billed* per-field counts from the breakdown, which compute_cost
+        # has already de-overlapped (e.g. cache_read carved out of input), so
+        # subset fields aren't double-counted in the displayed total.
+        unit = sum(int(parts["tokens"]) for parts in breakdown.fields.values())
+        properties: dict[str, Any] = {
+            "unit": str(unit),
+            "value": breakdown.total,
+            "base_cost": breakdown.base,
+            "markup": breakdown.markup,
+            "model": usage.model,
+            "provider": usage.provider,
+            "api": usage.api,
+            "price_source": breakdown.source,
+        }
+        for field_name, parts in breakdown.fields.items():
+            properties[f"{field_name}_tokens"] = parts["tokens"]
+            properties[f"{field_name}_unit_price"] = parts["unit_price"]
+            properties[f"{field_name}_cost"] = parts["cost"]
+        properties.update(dimensions or {})
+        self._queue.push(
+            {
+                "transaction_id": str(uuid.uuid4()),
+                "external_subscription_id": sub,
+                "code": self.config.cost_metric_code,
+                "timestamp": int(time.time()),
+                # Top-level amount (in cents) for Lago's dynamic charge model —
+                # the charge sums these into a single fee.
+                "precise_total_amount_cents": breakdown.total_cents,
+                "properties": properties,
+            }
+        )
+
+    def _report_error(self, exc: Exception, where: str) -> None:
+        if self.config.on_error:
+            try:
+                self.config.on_error(exc, where)
+            except Exception:  # noqa: BLE001
+                pass
+        logger.warning("lago %s failed: %s", where, exc)
 
     def flush(self, timeout: float = 5.0) -> bool:
         return self._queue.flush(timeout=timeout)

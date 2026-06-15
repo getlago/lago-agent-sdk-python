@@ -73,6 +73,8 @@ def wrap_boto3_bedrock_client(
                 usage,
                 subscription=lago_opts.get("subscription") or base_sub,
                 dimensions={**base_dims, **(lago_opts.get("dimensions") or {})},
+                mode=lago_opts.get("mode"),
+                markup=lago_opts.get("markup"),
             )
         except Exception as exc:  # noqa: BLE001 — never break the call
             logger.warning("lago: converse instrumentation failed: %s", exc)
@@ -108,6 +110,8 @@ def wrap_boto3_bedrock_client(
                             usage,
                             subscription=lago_opts.get("subscription") or base_sub,
                             dimensions={**base_dims, **(lago_opts.get("dimensions") or {})},
+                            mode=lago_opts.get("mode"),
+                            markup=lago_opts.get("markup"),
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("lago: converse_stream instrumentation failed: %s", exc)
@@ -135,6 +139,8 @@ def wrap_boto3_bedrock_client(
                         usage,
                         subscription=lago_opts.get("subscription") or base_sub,
                         dimensions={**base_dims, **(lago_opts.get("dimensions") or {})},
+                        mode=lago_opts.get("mode"),
+                        markup=lago_opts.get("markup"),
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("lago: invoke_model parse/emit failed: %s", exc)
@@ -203,6 +209,8 @@ def wrap_boto3_bedrock_client(
                         usage,
                         subscription=lago_opts.get("subscription") or base_sub,
                         dimensions={**base_dims, **(lago_opts.get("dimensions") or {})},
+                        mode=lago_opts.get("mode"),
+                        markup=lago_opts.get("markup"),
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("lago: invoke_model_with_response_stream instrumentation failed: %s", exc)

@@ -1,0 +1,59 @@
+{
+  "_comment": "Cross-repo golden money cases. Python (Decimal) and JS (scaled BigInt) must produce identical base/total/total_cents strings. Money is floored to 12 decimal places (ROUND_DOWN). Prices are USD per token (strings); markup is a string multiplier. total_cents = total USD x 100 (Lago dynamic charge precise_total_amount_cents).",
+  "cases": [
+    {
+      "name": "input+output, no markup",
+      "prices": { "input": "0.000003", "output": "0.000015" },
+      "counts": { "input": 1000, "output": 500 },
+      "markup": "1",
+      "base": "0.0105",
+      "total": "0.0105",
+      "total_cents": "1.05"
+    },
+    {
+      "name": "input+output, 1.2x markup",
+      "prices": { "input": "0.000003", "output": "0.000015" },
+      "counts": { "input": 1000, "output": 500 },
+      "markup": "1.2",
+      "base": "0.0105",
+      "total": "0.0126",
+      "total_cents": "1.26"
+    },
+    {
+      "name": "cache_read + reasoning, 1.5x markup",
+      "prices": { "cache_read": "0.0000005", "reasoning": "0.00001" },
+      "counts": { "cache_read": 2000, "reasoning": 100 },
+      "markup": "1.5",
+      "base": "0.002",
+      "total": "0.003",
+      "total_cents": "0.3"
+    },
+    {
+      "name": "free model -> zero",
+      "prices": { "input": "0", "output": "0" },
+      "counts": { "input": 1000, "output": 200 },
+      "markup": "1",
+      "base": "0",
+      "total": "0",
+      "total_cents": "0"
+    },
+    {
+      "name": "12dp exact precision",
+      "prices": { "input": "0.000000333333" },
+      "counts": { "input": 3 },
+      "markup": "1",
+      "base": "0.000000999999",
+      "total": "0.000000999999",
+      "total_cents": "0.0000999999"
+    },
+    {
+      "name": "floor-12dp truncation on markup",
+      "prices": { "input": "0.000001" },
+      "counts": { "input": 1000 },
+      "markup": "1.333333333333",
+      "base": "0.001",
+      "total": "0.001333333333",
+      "total_cents": "0.1333333333"
+    }
+  ]
+}

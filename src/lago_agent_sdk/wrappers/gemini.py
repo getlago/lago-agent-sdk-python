@@ -45,15 +45,18 @@ def wrap_gemini_client(
     base_dims = dict(dimensions or {})
     base_sub = subscription
 
-    def _resolve_opts(lago_opts: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
-        sub = lago_opts.get("subscription") or base_sub
-        dims = {**base_dims, **(lago_opts.get("dimensions") or {})}
-        return sub, dims
+    def _resolve_opts(lago_opts: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "subscription": lago_opts.get("subscription") or base_sub,
+            "dimensions": {**base_dims, **(lago_opts.get("dimensions") or {})},
+            "mode": lago_opts.get("mode"),
+            "markup": lago_opts.get("markup"),
+        }
 
-    def _emit_from(payload: Any, model_id: str, sub: str | None, dims: dict[str, Any]) -> None:
+    def _emit_from(payload: Any, model_id: str, opts: dict[str, Any]) -> None:
         try:
             usage = extract_gemini_native(payload, model_id=model_id)
-            sdk.emit(usage, subscription=sub, dimensions=dims)
+            sdk.emit(usage, **opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: gemini emit failed: %s", exc)
 
@@ -61,9 +64,9 @@ def wrap_gemini_client(
         def _generate(*args: Any, **kwargs: Any) -> Any:
             lago_opts = _pop_lago_kwarg(kwargs)
             model_id = kwargs.get("model") or (args[0] if args else "")
-            sub, dims = _resolve_opts(lago_opts)
+            opts = _resolve_opts(lago_opts)
             response = original(*args, **kwargs)
-            _emit_from(response, str(model_id), sub, dims)
+            _emit_from(response, str(model_id), opts)
             return response
 
         return _generate
@@ -72,9 +75,9 @@ def wrap_gemini_client(
         async def _generate_async(*args: Any, **kwargs: Any) -> Any:
             lago_opts = _pop_lago_kwarg(kwargs)
             model_id = kwargs.get("model") or (args[0] if args else "")
-            sub, dims = _resolve_opts(lago_opts)
+            opts = _resolve_opts(lago_opts)
             response = await original(*args, **kwargs)
-            _emit_from(response, str(model_id), sub, dims)
+            _emit_from(response, str(model_id), opts)
             return response
 
         return _generate_async
@@ -83,7 +86,7 @@ def wrap_gemini_client(
         def _stream(*args: Any, **kwargs: Any) -> Iterator[Any]:
             lago_opts = _pop_lago_kwarg(kwargs)
             model_id = kwargs.get("model") or (args[0] if args else "")
-            sub, dims = _resolve_opts(lago_opts)
+            opts = _resolve_opts(lago_opts)
             src = original(*args, **kwargs)
 
             def _iter() -> Iterator[Any]:
@@ -96,7 +99,7 @@ def wrap_gemini_client(
                         yield chunk
                 finally:
                     if last_with_usage is not None:
-                        _emit_from(last_with_usage, str(model_id), sub, dims)
+                        _emit_from(last_with_usage, str(model_id), opts)
 
             return _iter()
 
@@ -106,7 +109,7 @@ def wrap_gemini_client(
         async def _stream_async(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
             lago_opts = _pop_lago_kwarg(kwargs)
             model_id = kwargs.get("model") or (args[0] if args else "")
-            sub, dims = _resolve_opts(lago_opts)
+            opts = _resolve_opts(lago_opts)
             src = await original(*args, **kwargs)
 
             async def _aiter() -> AsyncIterator[Any]:
@@ -119,7 +122,7 @@ def wrap_gemini_client(
                         yield chunk
                 finally:
                     if last_with_usage is not None:
-                        _emit_from(last_with_usage, str(model_id), sub, dims)
+                        _emit_from(last_with_usage, str(model_id), opts)
 
             return _aiter()
 
