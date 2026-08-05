@@ -99,6 +99,33 @@ def test_unknown_top_usage_field_lands_in_extras() -> None:
 
 
 # --------------------------------------------------------------------------
+# Model attribution — bill on what answered, not what was requested
+# --------------------------------------------------------------------------
+def test_model_resolves_to_response_value_not_request_alias() -> None:
+    """Anthropic resolves a short alias to a dated snapshot in the response.
+
+    Reproduced live against the real API (no gateway involved): requesting
+    "claude-sonnet-4-5" answered as "claude-sonnet-4-5-20250929". Pricing/
+    attribution must key off what actually answered, or every alias-based call
+    gets billed under the wrong model.
+    """
+    resp = {
+        "model": "claude-sonnet-4-5-20250929",
+        "content": [{"type": "text", "text": "hi"}],
+        "usage": {"input_tokens": 16, "output_tokens": 7},
+    }
+    u = extract_anthropic_native(resp, model_id="claude-sonnet-4-5")
+    assert u.model == "claude-sonnet-4-5-20250929"
+
+
+def test_model_falls_back_to_request_when_response_is_silent() -> None:
+    """The synthetic usage blob the streaming wrapper builds carries no top-level
+    `model` — fall back to the requested model rather than emitting an empty string."""
+    u = extract_anthropic_native({"usage": {"input_tokens": 1, "output_tokens": 1}}, model_id="claude-sonnet-4-5")
+    assert u.model == "claude-sonnet-4-5"
+
+
+# --------------------------------------------------------------------------
 # Synthetic
 # --------------------------------------------------------------------------
 def test_handles_pydantic_via_model_dump() -> None:

@@ -1,0 +1,50 @@
+{
+  "id": "01KZ8HCAGMGZWBBDAYR4WR9J8P",
+  "created_at": "2026-08-05T08:42:01.279Z",
+  "updated_at": "2026-08-05 08:42:01",
+  "event_id": "2a80105e-33f9-41fa-8fcf-c56b48cf05d4",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-5-20250929",
+  "model_type": "",
+  "path": "v1/messages",
+  "duration": 2707,
+  "request_type": "provider",
+  "request_content_type": "application/json",
+  "status_code": 200,
+  "response_content_type": "application/json",
+  "success": true,
+  "cached": false,
+  "tokens_in": 10,
+  "tokens_out": 4,
+  "metadata": null,
+  "step": 0,
+  "timings": {
+    "total": 2706.3450969997793,
+    "latency": 2704.368099000305
+  },
+  "location": {
+    "region": "\u00cele-de-France",
+    "colo": "CDG"
+  },
+  "cost": 0.0011187,
+  "custom_cost": false,
+  "feedback": null,
+  "score": null,
+  "request": "",
+  "response": "",
+  "prompts": null,
+  "guardrails": null,
+  "authentication": true,
+  "wholesale": false,
+  "byok": null,
+  "user_agent": "Anthropic/Python 0.103.1",
+  "usage_metadata": {
+    "input_tokens": 10,
+    "output_tokens": 4,
+    "total_tokens": 14,
+    "input_cache_creation_tokens": 0,
+    "input_cached_tokens": 3429
+  },
+  "dlp_action": null,
+  "dlp_profiles": null
+}

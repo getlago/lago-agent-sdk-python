@@ -1,0 +1,52 @@
+{
+  "id": "01KZ8GBQ2FK36MSXZXT8GE04Z7",
+  "created_at": "2026-08-05T08:24:10.327Z",
+  "updated_at": "2026-08-05 08:24:10",
+  "event_id": "5e4ef893-b905-4f0f-8af3-51ed48366314",
+  "provider": "workers-ai",
+  "model": "@cf/meta/llama-3.2-1b-instruct",
+  "model_type": "text-generation",
+  "path": "@cf/meta/llama-3.2-1b-instruct",
+  "duration": 244,
+  "request_type": "workers-ai",
+  "request_content_type": "application/json",
+  "status_code": 200,
+  "response_content_type": "application/json",
+  "success": true,
+  "cached": false,
+  "tokens_in": 19,
+  "tokens_out": 35,
+  "metadata": {
+    "lago_subscription": "cf_gateway_test_sub"
+  },
+  "step": 0,
+  "timings": {
+    "total": 243.16022199999998,
+    "latency": 239.53808700000002
+  },
+  "location": {
+    "region": "",
+    "colo": ""
+  },
+  "cost": 7.513e-06,
+  "custom_cost": false,
+  "feedback": null,
+  "score": null,
+  "request": "",
+  "response": "",
+  "prompts": null,
+  "guardrails": null,
+  "authentication": true,
+  "wholesale": false,
+  "byok": null,
+  "user_agent": "cloudflare-worker",
+  "usage_metadata": {
+    "input_tokens": 19,
+    "output_tokens": 35,
+    "total_tokens": 54,
+    "input_cached_tokens": 0,
+    "neurons": 0.6854994362220168
+  },
+  "dlp_action": null,
+  "dlp_profiles": null
+}

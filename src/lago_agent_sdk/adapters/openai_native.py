@@ -101,6 +101,20 @@ def _count_responses_tool_calls(resp: dict[str, Any]) -> int:
     return sum(1 for item in output if isinstance(item, dict) and item.get("type") == "function_call")
 
 
+def _resolve_model(response_model: Any, requested_model: str) -> str:
+    """Prefer the model the response reports over the one requested.
+
+    A provider can resolve a short alias to a more specific name — e.g. Anthropic
+    turning "claude-sonnet-4-5" into "claude-sonnet-4-5-20250929" — with no gateway
+    or fallback involved at all. Pricing and attribution must key off what actually
+    answered. Falls back to the requested model only when the response is silent
+    about its own model (e.g. a synthetic streaming usage blob).
+    """
+    if isinstance(response_model, str) and response_model:
+        return response_model
+    return requested_model or ""
+
+
 def extract_openai_native(response: Any, model_id: str = "") -> CanonicalUsage:
     """Translate an OpenAI response (chat completion or responses API) → CanonicalUsage.
 
@@ -150,7 +164,7 @@ def extract_openai_native(response: Any, model_id: str = "") -> CanonicalUsage:
         audio_input=audio_input,
         audio_output=audio_output,
         tool_calls=tool_calls,
-        model=model_id or (resp.get("model") if isinstance(resp.get("model"), str) else "") or "",
+        model=_resolve_model(resp.get("model"), model_id),
         provider="openai",
         api=api,
         extras=extras,

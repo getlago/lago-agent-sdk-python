@@ -1,0 +1,24 @@
+{
+  "id": "01KZ3Y993DV0Z5CAQCA4CJ3GRD",
+  "created_at": "2026-08-03T13:51:26.857Z",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-5-20250929",
+  "model_type": "",
+  "path": "v1/messages",
+  "status_code": 200,
+  "success": true,
+  "cached": false,
+  "tokens_in": 16,
+  "tokens_out": 7,
+  "metadata": {"lago_subscription": "cf_gateway_test_sub"},
+  "step": 0,
+  "cost": 0.000153,
+  "custom_cost": false,
+  "usage_metadata": {
+    "input_tokens": 16,
+    "output_tokens": 7,
+    "total_tokens": 23,
+    "input_cache_creation_tokens": 0,
+    "input_cached_tokens": 0
+  }
+}

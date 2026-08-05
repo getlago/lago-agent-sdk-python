@@ -9,6 +9,18 @@ Methods wrapped:
   - AsyncMessages.create(...)      — async non-streaming and stream=True
   - AsyncMessages.stream(...)      — async context-manager helper
 
+Gateway cache-hit detection (non-streaming .create(...) only):
+  Non-streaming calls go through `.with_raw_response.create(...)` instead of
+  `.create(...)` so we can see response headers before parsing the body. If a
+  gateway in front of the provider (e.g. Cloudflare AI Gateway) marks the
+  response `cf-aig-cache-status: HIT`, the provider served it from cache at zero
+  cost to the customer — we skip billing it. `.parse()` on the raw response
+  returns the exact same object `.create()` would, so nothing downstream changes.
+  This is a no-op when there's no gateway in the path: the header is simply
+  absent. `.stream()` is NOT covered — Anthropic recommends
+  `.with_streaming_response` for that, which behaves differently and hasn't been
+  verified end-to-end.
+
 Per-call override: pop `extra_lago={"subscription": ..., "dimensions": ...}` from kwargs
 before forwarding so Anthropic's strict validation doesn't reject it.
 """
@@ -42,6 +54,20 @@ def _is_message_like(obj: Any) -> bool:
             return "usage" in obj
         # hasattr propagates non-AttributeError exceptions on Py3; guard explicitly.
         return hasattr(obj, "usage")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _is_cache_hit(raw_response: Any) -> bool:
+    """True if a gateway in front of the provider served this from cache.
+
+    A cache hit (Cloudflare AI Gateway: `cf-aig-cache-status: HIT`) costs the
+    provider — and the customer — nothing. Billing it would overcharge for a
+    call that never actually happened. Safe no-op with no gateway in the path:
+    `.headers.get(...)` simply returns None.
+    """
+    try:
+        return bool(raw_response.headers.get("cf-aig-cache-status") == "HIT")
     except Exception:  # noqa: BLE001
         return False
 
@@ -95,6 +121,7 @@ def wrap_anthropic_client(
         return client
 
     original_create = getattr(messages, "create", None)
+    raw_create = getattr(getattr(messages, "with_raw_response", None), "create", None)
     original_stream = getattr(messages, "stream", None)
     is_async = type(client).__name__.startswith("Async")
 
@@ -121,6 +148,18 @@ def wrap_anthropic_client(
         lago_opts = _pop_lago_kwarg(kwargs)
         model_id = kwargs.get("model", "")
         opts = _resolve_opts(lago_opts)
+
+        if not kwargs.get("stream") and raw_create is not None:
+            # Non-streaming with `.with_raw_response` available: see gateway
+            # headers before parsing — `.parse()` returns the identical object
+            # `.create()` would have, so the customer sees no difference.
+            raw = raw_create(*args, **kwargs)
+            response = raw.parse()
+            if _is_message_like(response) and not _is_cache_hit(raw):
+                _emit_from(response, model_id, opts)
+            return response
+
+        # Streaming, or `.with_raw_response` unavailable (older/custom client).
         response = original_create(*args, **kwargs)
 
         if _is_message_like(response):
@@ -150,6 +189,14 @@ def wrap_anthropic_client(
         lago_opts = _pop_lago_kwarg(kwargs)
         model_id = kwargs.get("model", "")
         opts = _resolve_opts(lago_opts)
+
+        if not kwargs.get("stream") and raw_create is not None:
+            raw = await raw_create(*args, **kwargs)
+            response = raw.parse()
+            if _is_message_like(response) and not _is_cache_hit(raw):
+                _emit_from(response, model_id, opts)
+            return response
+
         response = await original_create(*args, **kwargs)
 
         if _is_message_like(response):
