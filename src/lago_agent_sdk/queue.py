@@ -1,9 +1,17 @@
 """Async batched event queue.
 
 Thread-safe, in-memory. Background thread flushes every `flush_interval`
-seconds or immediately when buffer reaches `max_batch_size`. On send
-failure, re-prepends the batch and applies exponential backoff
-(1s, 2s, 4s, 8s, capped at 60s). Resets on next success.
+seconds or immediately when buffer reaches `max_batch_size`. On a TRANSIENT
+send failure (network error, 5xx), re-prepends the batch and applies
+exponential backoff (1s, 2s, 4s, 8s, capped at 60s). Resets on next success.
+
+A PERMANENT failure (Lago 4xx — e.g. a duplicate `transaction_id` from
+replaying/backfilling the same window twice) is different: retrying it will
+never succeed, so it is logged and dropped instead of re-queued. Without this
+distinction, one permanently-doomed batch sits at the front of the FIFO buffer
+and blocks every event queued behind it — including brand new, perfectly
+valid ones — for the full backoff ceiling, over and over, since a batch that
+can never succeed is retried exactly like one that might.
 """
 
 from __future__ import annotations
@@ -16,6 +24,17 @@ import time
 from collections import deque
 from collections.abc import Callable
 from typing import Any
+
+from .exceptions import LagoApiError
+
+
+def _is_permanent_failure(exc: Exception) -> bool:
+    """A Lago 4xx (bad request, validation error, duplicate transaction_id,
+    ...) will never succeed by retrying the exact same batch. A 5xx or a
+    network-level exception (timeout, connection error, no LagoApiError at
+    all) might — those stay retryable."""
+    return isinstance(exc, LagoApiError) and 400 <= exc.status < 500
+
 
 logger = logging.getLogger("lago_agent_sdk.queue")
 
@@ -73,6 +92,14 @@ class EventQueue:
         self._thread = threading.Thread(target=self._run, name="lago-queue", daemon=True)
         self._thread.start()
 
+    def wake(self) -> None:
+        """Nudge the background thread to run its tick (drain + pricing
+        `maybe_refresh()`) right now instead of waiting up to
+        `flush_interval` seconds for its next scheduled tick. Just sets an
+        in-memory flag — never blocks, never does I/O on the caller's
+        thread."""
+        self._wake.set()
+
     def push(self, event: dict[str, Any]) -> None:
         with self._lock:
             if len(self._buffer) >= self._max_buffer_size:
@@ -118,6 +145,42 @@ class EventQueue:
         with self._lock:
             self._buffer.extendleft(reversed(batch))
 
+    def _report_error(self, exc: Exception, where: str = "send_batch") -> None:
+        """Best-effort `on_error` callback — a customer's own callback must
+        never be allowed to break the queue's send/retry loop."""
+        if self._on_error:
+            try:
+                self._on_error(exc, where)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _send_individually(self, batch: list[dict[str, Any]], batch_exc: Exception) -> None:
+        """Recovery path for a batch that failed with a permanent (4xx) error.
+
+        Each event is sent alone: one that individually 4xxs (e.g. its own
+        transaction_id really is a duplicate) is logged and dropped for good;
+        one that succeeds alone is done; one that hits a TRANSIENT error while
+        isolated is re-queued for the normal backoff-and-retry path, same as
+        any other event. Reports once via on_error for the batch as a whole
+        (the original exception) so a caller isn't flooded with N callbacks
+        for what's really one root cause.
+        """
+        self._report_error(batch_exc)
+        for event in batch:
+            try:
+                self._http_calls += 1
+                self._sender([event])
+            except Exception as exc:  # noqa: BLE001
+                if _is_permanent_failure(exc):
+                    logger.warning(
+                        "lago dropping event (permanent failure, will not retry): transaction_id=%s: %s",
+                        event.get("transaction_id"),
+                        exc,
+                    )
+                else:
+                    logger.warning("lago send failed for isolated event, will retry: %s", exc)
+                    self._replay_failed([event])
+
     def _run(self) -> None:
         while not self._stopping.is_set():
             self._wake.wait(timeout=self._flush_interval)
@@ -143,12 +206,19 @@ class EventQueue:
                     self._sender(batch)
                     self._backoff_seconds = 0.0
                 except Exception as exc:  # noqa: BLE001
+                    if _is_permanent_failure(exc):
+                        # Lago's batch endpoint is all-or-nothing: a single bad
+                        # transaction_id fails the WHOLE batch, even if the rest
+                        # are perfectly valid — re-queuing the batch as-is would
+                        # retry (and re-fail) forever, but dropping it outright
+                        # would silently lose those valid events too. Isolate by
+                        # falling back to one-by-one for this batch only; only
+                        # the events that individually 4xx get dropped.
+                        self._send_individually(batch, exc)
+                        self._backoff_seconds = 0.0
+                        continue
                     self._replay_failed(batch)
-                    if self._on_error:
-                        try:
-                            self._on_error(exc, "send_batch")
-                        except Exception:  # noqa: BLE001
-                            pass
+                    self._report_error(exc)
                     logger.warning("lago send_batch failed: %s", exc)
                     self._backoff_seconds = (
                         1.0
@@ -156,10 +226,39 @@ class EventQueue:
                         else min(self._backoff_seconds * 2, self._max_retry_seconds)
                     )
                     break
-        # drain on exit
-        batch = self._take_batch()
-        if batch:
+        # Drain on exit — keep sending until the buffer is truly empty, not
+        # just one batch's worth (a buffer holding more than max_batch_size
+        # events at shutdown previously left the rest never even attempted).
+        # No more retries are possible once this thread exits, so unlike the
+        # main loop, a transient failure here is ALSO final: it must be
+        # logged, never silently swallowed the way a bare `except: pass`
+        # previously did — that's what actually lost events, not the network
+        # blip itself, which by itself is recoverable if it's just reported.
+        # `_send_individually` re-queues transient sub-failures for retry —
+        # appropriate for the main loop, which lives on, but during this exit
+        # drain that could spin forever against a persistently-down network.
+        # Bound the whole drain by wall-clock time; whatever's still in the
+        # buffer once the budget is spent is logged as lost, not retried
+        # forever in an exiting daemon thread.
+        drain_deadline = time.monotonic() + min(self._max_retry_seconds, 10.0)
+        while time.monotonic() < drain_deadline:
+            batch = self._take_batch()
+            if not batch:
+                break
             try:
                 self._sender(batch)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                if _is_permanent_failure(exc):
+                    self._send_individually(batch, exc)
+                else:
+                    self._report_error(exc)
+                    logger.warning(
+                        "lago: %d event(s) LOST on shutdown — final drain failed with no more "
+                        "retries possible: %s",
+                        len(batch),
+                        exc,
+                    )
+        with self._lock:
+            stranded = len(self._buffer)
+        if stranded:
+            logger.warning("lago: %d event(s) LOST on shutdown — drain time budget exhausted", stranded)

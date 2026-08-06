@@ -250,3 +250,27 @@ def test_audio_output_mapped_from_completion_details() -> None:
     u = extract_openai_native(resp, model_id="gpt-4o-audio")
     assert u.audio_input == 0
     assert u.audio_output == 33
+
+
+def test_workers_ai_model_via_openai_sdk_infers_correct_provider() -> None:
+    """Real shape: the openai SDK pointed at Cloudflare's `.../compat` endpoint,
+    routed to a Workers AI model. The SDK shape looks identical to a real
+    OpenAI response — "provider" can only be told apart by the resolved model
+    string itself. Getting this wrong made Workers AI calls permanently
+    unpriceable in price mode (stamped "openai", which has no Workers AI
+    entries in its price table) — this is what fixed it."""
+    resp = {
+        "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "usage": {"prompt_tokens": 38, "completion_tokens": 2},
+    }
+    u = extract_openai_native(resp, model_id="workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast")
+    assert u.provider == "workers-ai"
+    assert u.model == "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
+
+def test_real_openai_model_still_gets_openai_provider() -> None:
+    """The inference rule must not become over-eager — a genuine OpenAI model
+    (no "@cf/" prefix) still gets "openai", unchanged."""
+    resp = {"model": "gpt-4o-mini-2024-07-18", "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+    u = extract_openai_native(resp, model_id="gpt-4o-mini")
+    assert u.provider == "openai"

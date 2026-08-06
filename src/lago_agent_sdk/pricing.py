@@ -7,6 +7,24 @@ Sources:
   - OpenRouter (``https://openrouter.ai/api/v1/models``) for native providers
     (anthropic / openai / mistral / gemini). Prices are USD per token.
   - AWS Bedrock Price List **Bulk** API (public, no credentials) for Bedrock.
+  - Cloudflare's own model catalog (``/accounts/{id}/ai/models/search``) for
+    ``workers-ai`` — the actual rate the gateway bills at, not a third party's
+    price for hosting the same open-weight model elsewhere (verified live:
+    Cloudflare's real charged cost for one call matched this catalog's rate
+    exactly; OpenRouter's listing for the same underlying model came out ~3.5x
+    lower — a genuinely different price, not just a naming mismatch). Needs
+    an account id + API token (Cloudflare's catalog isn't public/no-auth the
+    way OpenRouter/AWS are); without both set, this source is simply empty.
+  - Mistral's own ``/v1/models`` for *alias resolution*, not pricing directly.
+    Mistral has no per-token price table of its own (confirmed: their pricing
+    page lists one FAQ example, not a structured/JSON price list) — it genuinely
+    has no analogue to Cloudflare's catalog. But a customer request commonly
+    uses a moving alias (``mistral-small-latest``) and Mistral's response never
+    resolves it (unlike Anthropic/OpenAI, which report the dated snapshot that
+    answered) — so the OpenRouter lookup below misses even though OpenRouter
+    *does* list the resolved id (e.g. ``mistralai/mistral-small-2603``) with
+    real pricing. ``/v1/models`` exposes the resolution directly via each
+    model's ``aliases`` array; needs the customer's own Mistral API key.
 
 Design constraints (mirror the queue's non-blocking guarantee):
   - ``lookup()`` is pure in-memory and O(1); it NEVER does network I/O, so the
@@ -28,7 +46,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from typing import Any, Protocol
@@ -40,6 +58,8 @@ logger = logging.getLogger("lago_agent_sdk.pricing")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
 AWS_PRICING_HOST = "https://pricing.us-east-1.amazonaws.com"
 AWS_BEDROCK_REGION_INDEX = f"{AWS_PRICING_HOST}/offers/v1.0/aws/AmazonBedrock/current/region_index.json"
+CLOUDFLARE_MODELS_URL_TEMPLATE = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search"
+MISTRAL_MODELS_URL = "https://api.mistral.ai/v1/models"
 
 # Canonical usage fields we know how to price.
 PRICED_FIELDS = ("input", "output", "cache_read", "cache_write", "reasoning")
@@ -73,6 +93,19 @@ _VENDOR_MAP = {
     "mistral": "mistralai",
     "gemini": "google",
     "google": "google",
+}
+
+# Cloudflare's catalog price unit -> canonical field. Real, surveyed units also
+# include "per 1k characters", "per step", "per 512 by 512 tile", "per audio
+# minute (websocket)", "per audio minute", "per inference request" — none of
+# those are token-based, so they're deliberately absent: a model priced only in
+# those units yields a ModelPrice with no input/output/cache_read at all, which
+# `compute_cost` already treats as "unpriced field, skip it" — the same safe
+# behavior as any other model with no usable price.
+_CLOUDFLARE_UNIT_FIELD_MAP = {
+    "per M input tokens": "input",
+    "per M output tokens": "output",
+    "per M cached input tokens": "cache_read",
 }
 
 # Bedrock cross-region inference prefix -> a representative AWS region.
@@ -113,6 +146,21 @@ def _parse_price(value: Any) -> Decimal | None:
     if d.is_nan() or d.is_infinite() or d < 0:
         return None
     return d.quantize(_Q, rounding=ROUND_DOWN)
+
+
+def money_str_to_cents(usd: str) -> str:
+    """A money string (already floored to 12dp) → the same amount in cents,
+    same floor-and-format conventions as everywhere else."""
+    return _fmt_money(Decimal(usd) * 100)
+
+
+def apply_markup(usd: str, markup: str) -> str:
+    """`compute_cost`'s per-field `cost` values are PRE-markup — only the
+    summed `total` has markup applied. Splitting a breakdown into one event
+    per field (per token_type) needs markup applied to each field individually,
+    with the same floor-to-12dp convention as everywhere else, or a markup
+    != 1.0 would silently vanish from every per-field/token_type event."""
+    return _fmt_money((Decimal(usd) * Decimal(markup)).quantize(_Q, rounding=ROUND_DOWN))
 
 
 def _fmt_money(d: Decimal) -> str:
@@ -205,17 +253,39 @@ def compute_cost(usage: CanonicalUsage, price: ModelPrice, markup: Decimal) -> C
             "unit_price": _fmt_money(unit),
             "cost": _fmt_money(cost),
         }
-    # Floor the USD total to 12 dp FIRST, then derive cents from it, so cents ==
-    # billed-USD × 100 exactly (matches the JS integer-division implementation).
+    return _finalize_breakdown(base, markup, price.source, fields)
+
+
+def _finalize_breakdown(
+    base: Decimal, markup: Decimal, source: str, fields: dict[str, dict[str, str]]
+) -> CostBreakdown:
+    """Shared tail for `compute_cost`/`compute_precomputed_cost`: floor the
+    USD total to 12 dp FIRST, then derive cents from it, so cents ==
+    billed-USD × 100 exactly (matches the JS integer-division implementation)."""
     total = (base * markup).quantize(_Q, rounding=ROUND_DOWN)
     return CostBreakdown(
         total=_fmt_money(total),
         total_cents=_fmt_money(total * 100),
         base=_fmt_money(base),
         markup=_fmt_money(markup),
-        source=price.source,
+        source=source,
         fields=fields,
     )
+
+
+def compute_precomputed_cost(usd_cost: Any, markup: Decimal) -> CostBreakdown:
+    """Build a CostBreakdown from a cost the CALLER already knows.
+
+    For a gateway that reports its own real, metered price per call (e.g.
+    Cloudflare AI Gateway's `cost` field), computing our own per-token estimate
+    via the OpenRouter/Bedrock tables would be redundant AND less accurate than
+    the number the gateway already gives us. This skips `compute_cost` entirely
+    — there's one lump sum, not a per-field breakdown, so `fields` is empty and
+    the invalid/negative case floors to 0 the same way `_parse_price` always has,
+    rather than raising or silently mis-billing.
+    """
+    base = _parse_price(usd_cost) or Decimal(0)
+    return _finalize_breakdown(base, markup, "precomputed", {})
 
 
 def coerce_markup(markup: Any) -> tuple[Decimal, bool]:
@@ -258,6 +328,89 @@ def parse_openrouter(data: Any) -> dict[str, Any]:
     return {"exact": exact, "norm": norm}
 
 
+# A real dated Mistral snapshot ends in a short numeric tag (e.g. "-2603",
+# "-2411", "-2508") — never a "-latest"-style moniker. Used to pick the one
+# genuine canonical name out of a family that mutually lists each other (see
+# parse_mistral_aliases).
+_MISTRAL_DATED_ID = re.compile(r"-\d{4,8}$")
+
+
+def _pick_mistral_canonical(names: list[str]) -> str:
+    """Prefer a dated snapshot id (what OpenRouter actually lists models
+    under) over a "-latest"-style moniker. Falls back to shortest-then-
+    alphabetical so the choice is always deterministic even with no dated
+    candidate in the group."""
+    dated = [n for n in names if _MISTRAL_DATED_ID.search(n)]
+    pool = dated or names
+    return sorted(pool, key=lambda n: (len(n), n))[0]
+
+
+def parse_mistral_aliases(data: Any) -> dict[str, str]:
+    """Parse Mistral's `/v1/models` response into {alias: canonical_id}.
+
+    Naively mapping "each name in this entry's `aliases` -> this entry's
+    `id`" is wrong: Mistral's real response lists EVERY name in a family as
+    its own top-level entry, each one's `aliases` pointing at the others —
+    e.g. `id="mistral-small-2603"`, `id="mistral-small-latest"`, AND
+    `id="magistral-small-latest"` each appear separately, each listing the
+    other two as `aliases`. A directional last-write-wins map is then
+    order-dependent and can resolve an alias to ANOTHER alias instead of the
+    real dated snapshot (confirmed live: this resolved
+    "mistral-small-latest" -> "magistral-small-latest", which OpenRouter
+    doesn't list, instead of -> "mistral-small-2603", which it does).
+
+    Union-find instead: treat a model's id + its aliases as one connected
+    group regardless of which entry mentions which, then pick a single
+    canonical name per group (see `_pick_mistral_canonical`) and map every
+    other member of the group to it.
+    """
+    models = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(models, list):
+        return {}
+
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        root = x
+        while parent.get(root, root) != root:
+            root = parent[root]
+        return root
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    names: set[str] = set()
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        mid = m.get("id")
+        if not isinstance(mid, str) or not mid:
+            continue
+        parent.setdefault(mid, mid)
+        names.add(mid)
+        for alias in m.get("aliases") or []:
+            if isinstance(alias, str) and alias:
+                parent.setdefault(alias, alias)
+                names.add(alias)
+                union(mid, alias)
+
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        groups.setdefault(find(name), []).append(name)
+
+    result: dict[str, str] = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue  # no aliasing at all — nothing to resolve
+        canonical = _pick_mistral_canonical(members)
+        for name in members:
+            if name != canonical:
+                result[name] = canonical
+    return result
+
+
 def lookup_openrouter(table: dict[str, Any], provider: str, model: str) -> ModelPrice | None:
     """Match (provider, model) to an OpenRouter price. Conservative: vendor-gated."""
     vendor = _VENDOR_MAP.get((provider or "").lower(), (provider or "").lower())
@@ -276,6 +429,68 @@ def lookup_openrouter(table: dict[str, Any], provider: str, model: str) -> Model
     if hit is not None:
         return hit
     return None
+
+
+# ----------------------------------------------------------------------
+# Cloudflare Workers AI parsing + matching
+#
+# Unlike OpenRouter/Bedrock, this is the ACTUAL rate the gateway bills at — not
+# a third party's price for hosting the same open-weight model elsewhere, which
+# can (and does) differ meaningfully. Model strings (e.g.
+# "@cf/meta/llama-3.3-70b-instruct-fp8-fast") are already exact and
+# self-contained; no vendor-prefix mapping is needed the way OpenRouter needs
+# one to disambiguate "anthropic" -> "anthropic" vs "mistral" -> "mistralai".
+# ----------------------------------------------------------------------
+def parse_cloudflare_workers_ai(models: Any) -> dict[str, ModelPrice]:
+    """Parse `/ai/models/search` results into {model_name: ModelPrice}.
+
+    A model with no `price` property at all, or whose price entries are all
+    non-token units (per-image, per-audio-minute, ...), is simply absent from
+    the table — `lookup` then returns None, same as any other priced-nowhere
+    model, and the caller safely falls back to token events.
+    """
+    table: dict[str, ModelPrice] = {}
+    if not isinstance(models, list):
+        return table
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        name = m.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        price_prop = next(
+            (p for p in m.get("properties", []) if isinstance(p, dict) and p.get("property_id") == "price"),
+            None,
+        )
+        if not isinstance(price_prop, dict):
+            continue
+        entries = price_prop.get("value")
+        if not isinstance(entries, list):
+            continue
+        fields: dict[str, Decimal] = {}
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("currency") != "USD":
+                continue
+            field = _CLOUDFLARE_UNIT_FIELD_MAP.get(str(entry.get("unit", "")))
+            if field is None:
+                continue
+            per_million = _parse_price(entry.get("price"))
+            if per_million is None:
+                continue
+            fields[field] = (per_million / Decimal(1_000_000)).quantize(_Q, rounding=ROUND_DOWN)
+        if fields:
+            table[name] = ModelPrice(source="cloudflare_workers_ai", **fields)
+    return table
+
+
+def lookup_cloudflare_workers_ai(table: dict[str, ModelPrice], model: str) -> ModelPrice | None:
+    """Exact match first; a version-suffix fallback covers the same drift we've
+    seen in practice — e.g. a live response naming a model
+    "...instruct-v2" when the catalog itself only lists "...instruct"."""
+    hit = table.get(model)
+    if hit is not None:
+        return hit
+    return table.get(_strip_version(model))
 
 
 # ----------------------------------------------------------------------
@@ -416,13 +631,37 @@ def lookup_bedrock(region_table: dict[str, ModelPrice], model: str) -> ModelPric
 class PricingFetcher(Protocol):
     def fetch_openrouter(self) -> dict[str, Any]: ...
     def fetch_bedrock(self, region: str) -> dict[str, ModelPrice]: ...
+    def fetch_cloudflare_workers_ai(self) -> dict[str, ModelPrice]: ...
+    def fetch_mistral_aliases(self, api_key: str | None = None) -> dict[str, str]: ...
 
 
 class HttpPricingFetcher:
-    """Default fetcher using ``requests`` (already a core dependency)."""
+    """Default fetcher using ``requests`` (already a core dependency).
 
-    def __init__(self, timeout: float = 10.0) -> None:
+    ``cloudflare_account_id``/``cloudflare_api_token``: unlike OpenRouter/AWS,
+    Cloudflare's model catalog is account-scoped and needs auth — there's no
+    public, no-credentials equivalent. Without both set,
+    ``fetch_cloudflare_workers_ai`` returns an empty table rather than raising,
+    so Workers AI pricing is simply unavailable (safe token-event fallback)
+    instead of breaking price mode for every other provider.
+
+    ``mistral_api_key``: same story — Mistral's ``/v1/models`` needs the
+    customer's own key. Without it, ``fetch_mistral_aliases`` returns an
+    empty map, so alias resolution is simply skipped and lookups fall back to
+    whatever the request already spelled out (safe miss, not a break).
+    """
+
+    def __init__(
+        self,
+        timeout: float = 10.0,
+        cloudflare_account_id: str | None = None,
+        cloudflare_api_token: str | None = None,
+        mistral_api_key: str | None = None,
+    ) -> None:
         self._timeout = timeout
+        self._cf_account_id = cloudflare_account_id
+        self._cf_api_token = cloudflare_api_token
+        self._mistral_api_key = mistral_api_key
 
     def fetch_openrouter(self) -> dict[str, Any]:
         import requests
@@ -444,6 +683,43 @@ class HttpPricingFetcher:
         offer.raise_for_status()
         return parse_bedrock_offer(offer.json(), region)
 
+    def fetch_cloudflare_workers_ai(self) -> dict[str, ModelPrice]:
+        import requests
+
+        if not self._cf_account_id or not self._cf_api_token:
+            return {}
+        url = CLOUDFLARE_MODELS_URL_TEMPLATE.format(account_id=self._cf_account_id)
+        headers = {"Authorization": f"Bearer {self._cf_api_token}"}
+        models: list[Any] = []
+        page = 1
+        while True:
+            resp = requests.get(
+                url, headers=headers, params={"per_page": 50, "page": page}, timeout=self._timeout
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            batch = body.get("result") or []
+            models.extend(batch)
+            total = body.get("result_info", {}).get("total_count", len(models))
+            if len(batch) < 50 or len(models) >= total:
+                break
+            page += 1
+        return parse_cloudflare_workers_ai(models)
+
+    def fetch_mistral_aliases(self, api_key: str | None = None) -> dict[str, str]:
+        import requests
+
+        # An explicitly configured key (LagoConfig.mistral_api_key) always
+        # wins over one learned from a wrapped client — a deliberate config
+        # value shouldn't be silently shadowed by an auto-detected one.
+        key = self._mistral_api_key or api_key
+        if not key:
+            return {}
+        headers = {"Authorization": f"Bearer {key}"}
+        resp = requests.get(MISTRAL_MODELS_URL, headers=headers, timeout=self._timeout)
+        resp.raise_for_status()
+        return parse_mistral_aliases(resp.json())
+
 
 # ----------------------------------------------------------------------
 # PricingProvider — cache + background refresh + non-blocking lookup
@@ -455,8 +731,15 @@ class PricingProvider:
         ttl_seconds: float = 3600.0,
         default_region: str = "us-east-1",
         on_error: Callable[[Exception, str], None] | None = None,
+        cloudflare_account_id: str | None = None,
+        cloudflare_api_token: str | None = None,
+        mistral_api_key: str | None = None,
     ) -> None:
-        self._fetcher: PricingFetcher = fetcher or HttpPricingFetcher()
+        self._fetcher: PricingFetcher = fetcher or HttpPricingFetcher(
+            cloudflare_account_id=cloudflare_account_id,
+            cloudflare_api_token=cloudflare_api_token,
+            mistral_api_key=mistral_api_key,
+        )
         self._ttl = ttl_seconds
         self._default_region = default_region
         self._on_error = on_error
@@ -470,6 +753,17 @@ class PricingProvider:
         self._bedrock: dict[str, dict[str, ModelPrice]] = {}
         self._bedrock_fetched: dict[str, float] = {}
         self._bedrock_stale: set[str] = set()
+        self._cloudflare_workers_ai: dict[str, ModelPrice] | None = None
+        self._cloudflare_fetched = 0.0
+        self._cloudflare_stale = False
+        self._mistral_aliases: dict[str, str] | None = None
+        self._mistral_fetched = 0.0
+        self._mistral_stale = False
+        # Learned from a wrapped Mistral client (see LagoSDK._auto_prime_pricing_for),
+        # not configured — the customer's own client already carries this key
+        # for making real calls, so alias resolution can reuse it without
+        # ever requiring a separate LagoConfig.mistral_api_key.
+        self._mistral_api_key_override: str | None = None
         self._refreshing: set[str] = set()
 
     def _heal_fork(self) -> None:
@@ -483,13 +777,57 @@ class PricingProvider:
             self._pid = os.getpid()
             self._openrouter_stale = self._openrouter is not None or self._openrouter_stale
             self._bedrock_stale = set(self._bedrock.keys())
+            self._cloudflare_stale = self._cloudflare_workers_ai is not None or self._cloudflare_stale
+            self._mistral_stale = self._mistral_aliases is not None or self._mistral_stale
             self._refreshing = set()
 
-    def prime(self) -> None:
-        """Flag the OpenRouter table for an eager background warm (used when
-        price mode is the global default) to shrink the cold-start window."""
+    def prime(self, providers: Iterable[str] = ()) -> None:
+        """Flag OpenRouter for an eager background warm (used when price mode
+        is the global default) to shrink the cold-start window.
+
+        Deliberately does NOT also eagerly warm Cloudflare Workers AI or
+        Mistral alias resolution by default — both are credential-gated and
+        provider-specific; most price-mode customers never touch Workers AI
+        or Mistral at all, and eagerly hitting either's API at construction
+        time regardless of actual usage is real, unnecessary work (an extra
+        network round-trip per SDK instance, every TTL cycle, for a provider
+        that may never be called). Instead they stay purely reactive: the
+        first real `lookup()` for that provider flags it stale (see below),
+        `maybe_refresh()` fetches it on the queue's very next tick, and every
+        call after that — even the one a second later — hits the cache, with
+        zero further network calls until the TTL expires. Only that first
+        call for a given provider can race a cold cache; every provider that
+        session never calls costs nothing.
+
+        Pass `providers=["mistral"]` and/or `["workers-ai"]` when you already
+        know, in advance, which of these two you're about to call this
+        session — this eagerly warms exactly that source too, so even ITS
+        first call prices correctly instead of paying the one-time lazy
+        cold-start cost. Unknown provider names are silently ignored (no
+        source is warmed) rather than raising, since this is a hint, not a
+        contract."""
         with self._lock:
             self._openrouter_stale = True
+            for p in providers:
+                key = (p or "").lower()
+                if key == "workers-ai":
+                    self._cloudflare_stale = True
+                elif key == "mistral":
+                    self._mistral_stale = True
+
+    def learn_mistral_api_key(self, api_key: str) -> None:
+        """Adopt a Mistral API key discovered from a wrapped client, so
+        alias resolution can run without ever requiring the customer to
+        also declare it in `LagoConfig` — their Mistral client already
+        carries the exact credential needed. Pure in-memory, no I/O. A key
+        explicitly set via `LagoConfig.mistral_api_key` always wins over one
+        learned this way (see `HttpPricingFetcher.fetch_mistral_aliases`);
+        this only fills the gap when no explicit key was configured."""
+        if not api_key:
+            return
+        with self._lock:
+            if not self._mistral_api_key_override:
+                self._mistral_api_key_override = api_key
 
     # ---- non-blocking lookup (customer thread) ----
     def lookup(self, provider: str, model: str, api: str) -> ModelPrice | None:
@@ -506,12 +844,32 @@ class PricingProvider:
                     if not fresh:
                         self._bedrock_stale.add(region)
                 return lookup_bedrock(table, model) if table is not None else None
+            if (provider or "").lower() == "workers-ai":
+                with self._lock:
+                    table_cf = self._cloudflare_workers_ai
+                    fresh_cf = table_cf is not None and (time.time() - self._cloudflare_fetched) < self._ttl
+                    if not fresh_cf:
+                        self._cloudflare_stale = True
+                return lookup_cloudflare_workers_ai(table_cf, model) if table_cf is not None else None
+            resolved_model = model
+            is_mistral = (provider or "").lower() == "mistral"
             with self._lock:
+                if is_mistral:
+                    aliases = self._mistral_aliases
+                    fresh_m = aliases is not None and (time.time() - self._mistral_fetched) < self._ttl
+                    if not fresh_m:
+                        self._mistral_stale = True
+                    # Cold/miss: resolved_model stays the alias as-requested,
+                    # and the OpenRouter lookup below misses safely, same as
+                    # before this resolution step existed — never worse than
+                    # the old behavior, only better once the table is warm.
+                    if aliases:
+                        resolved_model = aliases.get(model, model)
                 table_or = self._openrouter
                 fresh = table_or is not None and (time.time() - self._openrouter_fetched) < self._ttl
                 if not fresh:
                     self._openrouter_stale = True
-            return lookup_openrouter(table_or, provider, model) if table_or is not None else None
+            return lookup_openrouter(table_or, provider, resolved_model) if table_or is not None else None
         except Exception:  # noqa: BLE001 — lookup must never raise
             return None
 
@@ -523,12 +881,23 @@ class PricingProvider:
         # keeps the queue's background tick essentially free and avoids extra
         # cross-thread lock churn. The reads are racy but harmless: a missed flag
         # just defers a refresh by one tick.
-        if not self._openrouter_stale and not self._bedrock_stale:
+        if (
+            not self._openrouter_stale
+            and not self._bedrock_stale
+            and not self._cloudflare_stale
+            and not self._mistral_stale
+        ):
             return
         with self._lock:
             do_openrouter = self._openrouter_stale and "openrouter" not in self._refreshing
             if do_openrouter:
                 self._refreshing.add("openrouter")
+            do_cloudflare = self._cloudflare_stale and "cloudflare_workers_ai" not in self._refreshing
+            if do_cloudflare:
+                self._refreshing.add("cloudflare_workers_ai")
+            do_mistral = self._mistral_stale and "mistral_aliases" not in self._refreshing
+            if do_mistral:
+                self._refreshing.add("mistral_aliases")
             regions = [r for r in self._bedrock_stale if f"bedrock:{r}" not in self._refreshing]
             for r in regions:
                 self._refreshing.add(f"bedrock:{r}")
@@ -545,6 +914,34 @@ class PricingProvider:
             finally:
                 with self._lock:
                     self._refreshing.discard("openrouter")
+
+        if do_cloudflare:
+            try:
+                table_cf = self._fetcher.fetch_cloudflare_workers_ai()
+                with self._lock:
+                    self._cloudflare_workers_ai = table_cf
+                    self._cloudflare_fetched = time.time()
+                    self._cloudflare_stale = False
+            except Exception as exc:  # noqa: BLE001
+                self._report(exc, "pricing.fetch_cloudflare_workers_ai")
+            finally:
+                with self._lock:
+                    self._refreshing.discard("cloudflare_workers_ai")
+
+        if do_mistral:
+            try:
+                with self._lock:
+                    learned_key = self._mistral_api_key_override
+                aliases = self._fetcher.fetch_mistral_aliases(learned_key)
+                with self._lock:
+                    self._mistral_aliases = aliases
+                    self._mistral_fetched = time.time()
+                    self._mistral_stale = False
+            except Exception as exc:  # noqa: BLE001
+                self._report(exc, "pricing.fetch_mistral_aliases")
+            finally:
+                with self._lock:
+                    self._refreshing.discard("mistral_aliases")
 
         for r in regions:
             try:

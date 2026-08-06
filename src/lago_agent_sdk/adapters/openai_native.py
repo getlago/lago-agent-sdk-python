@@ -40,6 +40,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from ..canonical import CanonicalUsage
+from ._common import resolve_model
 
 # Top-level usage fields we recognize across BOTH chat completions and responses APIs.
 _KNOWN_USAGE_FIELDS = {
@@ -101,18 +102,19 @@ def _count_responses_tool_calls(resp: dict[str, Any]) -> int:
     return sum(1 for item in output if isinstance(item, dict) and item.get("type") == "function_call")
 
 
-def _resolve_model(response_model: Any, requested_model: str) -> str:
-    """Prefer the model the response reports over the one requested.
-
-    A provider can resolve a short alias to a more specific name — e.g. Anthropic
-    turning "claude-sonnet-4-5" into "claude-sonnet-4-5-20250929" — with no gateway
-    or fallback involved at all. Pricing and attribution must key off what actually
-    answered. Falls back to the requested model only when the response is silent
-    about its own model (e.g. a synthetic streaming usage blob).
-    """
-    if isinstance(response_model, str) and response_model:
-        return response_model
-    return requested_model or ""
+def _infer_provider(resolved_model: str) -> str:
+    """The SDK shape only ever tells you "this looks like an OpenAI response" —
+    it can't tell you who actually served it. Going through a gateway's
+    OpenAI-compatible endpoint (e.g. Cloudflare's `.../compat`), the resolved
+    model string is the only real signal: "@cf/..." is Cloudflare Workers AI's
+    own naming convention, never a real OpenAI model. This isn't cosmetic —
+    `provider` is what price-mode keys pricing off of, and Workers AI has a
+    genuinely different price table (Cloudflare's own catalog) than real
+    OpenAI models (OpenRouter); stamping "openai" on a Workers AI call would
+    have made it permanently unpriceable, quietly, at the extraction layer."""
+    if resolved_model.startswith("@cf/"):
+        return "workers-ai"
+    return "openai"
 
 
 def extract_openai_native(response: Any, model_id: str = "") -> CanonicalUsage:
@@ -156,6 +158,7 @@ def extract_openai_native(response: Any, model_id: str = "") -> CanonicalUsage:
         if k not in _KNOWN_USAGE_FIELDS:
             extras[k] = v
 
+    resolved_model = resolve_model(resp.get("model"), model_id)
     return CanonicalUsage(
         input=input_tokens,
         output=output_tokens,
@@ -164,8 +167,8 @@ def extract_openai_native(response: Any, model_id: str = "") -> CanonicalUsage:
         audio_input=audio_input,
         audio_output=audio_output,
         tool_calls=tool_calls,
-        model=_resolve_model(resp.get("model"), model_id),
-        provider="openai",
+        model=resolved_model,
+        provider=_infer_provider(resolved_model),
         api=api,
         extras=extras,
     )
