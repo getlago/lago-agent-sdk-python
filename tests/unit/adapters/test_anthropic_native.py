@@ -121,7 +121,9 @@ def test_model_resolves_to_response_value_not_request_alias() -> None:
 def test_model_falls_back_to_request_when_response_is_silent() -> None:
     """The synthetic usage blob the streaming wrapper builds carries no top-level
     `model` — fall back to the requested model rather than emitting an empty string."""
-    u = extract_anthropic_native({"usage": {"input_tokens": 1, "output_tokens": 1}}, model_id="claude-sonnet-4-5")
+    u = extract_anthropic_native(
+        {"usage": {"input_tokens": 1, "output_tokens": 1}}, model_id="claude-sonnet-4-5"
+    )
     assert u.model == "claude-sonnet-4-5"
 
 

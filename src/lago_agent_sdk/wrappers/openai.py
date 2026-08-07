@@ -250,7 +250,9 @@ def wrap_openai_client(
     responses_namespace = getattr(client, "responses", None)
     if responses_namespace is not None:
         original_responses_create = getattr(responses_namespace, "create", None)
-        raw_responses_create = getattr(getattr(responses_namespace, "with_raw_response", None), "create", None)
+        raw_responses_create = getattr(
+            getattr(responses_namespace, "with_raw_response", None), "create", None
+        )
         if original_responses_create is not None:
             responses_namespace.create = (
                 _make_async_create(original_responses_create, raw_responses_create, is_responses_api=True)
