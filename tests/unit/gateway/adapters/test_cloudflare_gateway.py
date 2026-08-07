@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import pathlib
+from decimal import Decimal
 
+from lago_agent_sdk import CanonicalUsage
 from lago_agent_sdk.gateway.adapters import extract_cloudflare_log, resolve_subscription
+from lago_agent_sdk.pricing import compute_cost, lookup_openrouter, parse_openrouter
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "cloudflare_gateway"
 
@@ -162,7 +165,10 @@ def test_real_gemini_reasoning_tokens_mapped_from_camelcase_field() -> None:
     assert u.input == 9
     assert u.output == 21
     assert u.reasoning == 852
-    assert u.provider == "google-ai-studio"
+    # Cloudflare logs this as "google-ai-studio"; the SDK's own vocabulary calls
+    # it "gemini", which is what the price and token-semantics tables key off.
+    assert entry["provider"] == "google-ai-studio"
+    assert u.provider == "gemini"
     assert u.model == "gemini-2.5-flash"
 
 
@@ -284,3 +290,79 @@ def test_survives_non_string_model_and_provider() -> None:
 def test_survives_negative_and_non_numeric_tokens() -> None:
     assert extract_cloudflare_log({"tokens_in": -5}).input == 0
     assert extract_cloudflare_log({"tokens_out": "bogus"}).output == 0
+
+
+# --------------------------------------------------------------------------
+# Provider vocabulary — Cloudflare's names are not the SDK's names
+# --------------------------------------------------------------------------
+def test_provider_aliases_map_onto_sdk_vocabulary() -> None:
+    """Cloudflare's log vocabulary differs from the names the pricing tables and
+    the token-semantics sets key off. Verified live: `lookup_openrouter` with
+    provider="google-ai-studio" missed against the real 400-model OpenRouter
+    table and hit as "gemini"."""
+    for raw, expected in [
+        ("google-ai-studio", "gemini"),
+        ("google-vertex-ai", "gemini"),
+        ("vertex", "gemini"),
+        ("azure-openai", "openai"),
+        ("azureopenai", "openai"),
+        ("workersai", "workers-ai"),
+    ]:
+        u = extract_cloudflare_log({"provider": raw, "tokens_in": 1})
+        assert u.provider == expected, f"{raw} -> {u.provider}, expected {expected}"
+
+
+def test_provider_passthrough_for_names_we_already_agree_on() -> None:
+    for raw in ("anthropic", "openai", "mistral", "workers-ai"):
+        assert extract_cloudflare_log({"provider": raw, "tokens_in": 1}).provider == raw
+
+
+def test_unknown_provider_passes_through_untouched() -> None:
+    """An unrecognized provider is one we have no price table for; a clean miss
+    falls back to token events, which beats inventing a mapping."""
+    assert extract_cloudflare_log({"provider": "perplexity", "tokens_in": 1}).provider == "perplexity"
+    # AWS Bedrock is deliberately NOT aliased — its prices key off the `api`
+    # field, which this connector always sets to "cloudflare_gateway".
+    assert extract_cloudflare_log({"provider": "bedrock", "tokens_in": 1}).provider == "bedrock"
+
+
+def test_normalized_gemini_provider_prices_and_bills_cache_correctly() -> None:
+    """The two downstream consequences of the alias, end to end: the Gemini
+    price is now findable, and cache_read is treated as a SUBSET of input
+    (Gemini's semantics) instead of being billed on top of it."""
+    entry = _load("16_real_gemini_via_dedicated_endpoint.json")
+    u = extract_cloudflare_log(entry)
+    table = parse_openrouter(
+        {
+            "data": [
+                {
+                    "id": "google/gemini-2.5-flash",
+                    "pricing": {
+                        "prompt": "0.0000003",
+                        "completion": "0.0000025",
+                        "input_cache_read": "0.000000075",
+                    },
+                }
+            ]
+        }
+    )
+    price = lookup_openrouter(table, u.provider, u.model)
+    assert price is not None, "gemini price must resolve after normalization"
+
+    cached = CanonicalUsage(model=u.model, provider=u.provider, api=u.api, input=1000, cache_read=800)
+    b = compute_cost(cached, price, Decimal("1"))
+    assert b.fields["input"]["tokens"] == "200"  # 1000 - 800, not 1000
+    assert b.fields["cache_read"]["tokens"] == "800"
+
+
+def test_lookup_openrouter_strips_a_redundant_vendor_prefix() -> None:
+    """Real fixture 07 reports model="anthropic/claude-opus-4.8" alongside
+    provider="anthropic"; unstripped that built "anthropic/anthropic/..." and
+    never matched."""
+    table = parse_openrouter(
+        {"data": [{"id": "anthropic/claude-opus-4.8", "pricing": {"prompt": "0.000005"}}]}
+    )
+    assert lookup_openrouter(table, "anthropic", "anthropic/claude-opus-4.8") is not None
+    assert lookup_openrouter(table, "anthropic", "claude-opus-4.8") is not None
+    # Still vendor-gated: a model claiming a different vendor must not match.
+    assert lookup_openrouter(table, "openai", "anthropic/claude-opus-4.8") is None

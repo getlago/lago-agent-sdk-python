@@ -55,6 +55,37 @@ def _safe_str(v: Any) -> str:
     return v if isinstance(v, str) else ""
 
 
+# Cloudflare AI Gateway logs its OWN provider vocabulary, which is not the name
+# the pricing tables and token-semantics tables key off — and not always its own
+# URL slug either (the logs say "workers-ai" where the endpoint path says
+# "workersai"). Passed through verbatim, "google-ai-studio" matched no vendor in
+# pricing's _VENDOR_MAP, so every Gemini call backfilled through the gateway
+# missed on price; worse, it also missed _INPUT_INCLUDES_CACHE_READ, so Gemini's
+# cache_read — a SUBSET of its input count, not additive — was billed twice.
+#
+# Only providers this SDK can actually price need an entry. Anything else passes
+# through unchanged: an unrecognized provider is one we have no table for, and a
+# clean miss falls back to token events, which is strictly better than inventing
+# a mapping. AWS Bedrock is deliberately absent for that reason — Bedrock prices
+# are keyed off `api.startswith("bedrock")`, and this connector always sets
+# api="cloudflare_gateway", so mapping its provider name would route it to
+# OpenRouter under a vendor that cannot match. A miss there is honest.
+_PROVIDER_ALIASES = {
+    "google-ai-studio": "gemini",
+    "google-vertex-ai": "gemini",
+    "vertex": "gemini",
+    "azure-openai": "openai",
+    "azureopenai": "openai",
+    "workersai": "workers-ai",
+}
+
+
+def _normalize_provider(v: Any) -> str:
+    """Map Cloudflare's provider name onto the SDK's own provider vocabulary."""
+    p = _safe_str(v).lower()
+    return _PROVIDER_ALIASES.get(p, p)
+
+
 def extract_cloudflare_log(entry: dict[str, Any]) -> CanonicalUsage:
     """Translate one Cloudflare AI Gateway log entry → CanonicalUsage.
 
@@ -73,7 +104,7 @@ def extract_cloudflare_log(entry: dict[str, Any]) -> CanonicalUsage:
         cache_write=_safe_int(usage_meta.get("input_cache_creation_tokens")),
         reasoning=_safe_int(usage_meta.get("reasoningTokens") or usage_meta.get("reasoning_tokens")),
         model=_safe_str(entry.get("model")),
-        provider=_safe_str(entry.get("provider")),
+        provider=_normalize_provider(entry.get("provider")),
         api="cloudflare_gateway",
         extras={
             "cached": entry.get("cached"),

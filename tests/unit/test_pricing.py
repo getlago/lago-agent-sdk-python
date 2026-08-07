@@ -14,6 +14,7 @@ from lago_agent_sdk import CanonicalUsage, LagoConfig, LagoSDK, ModelPrice
 from lago_agent_sdk.pricing import (
     HttpPricingFetcher,
     PricingProvider,
+    _parse_price,
     bedrock_model_key,
     coerce_markup,
     compute_cost,
@@ -581,11 +582,95 @@ def test_money_golden_cases() -> None:
     for c in cases:
         prices = {k: Decimal(v) for k, v in c["prices"].items()}
         price = ModelPrice(source="openrouter", **prices)
-        usage = CanonicalUsage(model="m", provider="p", api="native", **c["counts"])
+        # `provider` is optional and defaults to a name in no _INCLUDES_ set, so
+        # the pre-existing cases keep their original semantics; cases that pin
+        # per-provider token semantics set it explicitly.
+        usage = CanonicalUsage(model="m", provider=c.get("provider", "p"), api="native", **c["counts"])
         b = compute_cost(usage, price, Decimal(c["markup"]))
         assert b.base == c["base"], f"{c['name']}: base {b.base} != {c['base']}"
         assert b.total == c["total"], f"{c['name']}: total {b.total} != {c['total']}"
         assert b.total_cents == c["total_cents"], f"{c['name']}: cents {b.total_cents} != {c['total_cents']}"
+
+
+def test_money_golden_precomputed_cases() -> None:
+    """The gateway path: a lump sum the caller already knows.
+
+    Several of these are verbatim `cost` values from real Cloudflare AI Gateway
+    log entries. JS renders any number below 1e-6 in exponential notation, so
+    these are the cases where the two repos silently disagreed on real money.
+    """
+    cases = json.loads((FIXTURES / "money_golden.json").read_text())["precomputed_cases"]
+    for c in cases:
+        b = compute_precomputed_cost(c["usd_cost"], Decimal(c["markup"]))
+        assert b.base == c["base"], f"{c['name']}: base {b.base} != {c['base']}"
+        assert b.total == c["total"], f"{c['name']}: total {b.total} != {c['total']}"
+        assert b.total_cents == c["total_cents"], f"{c['name']}: cents {b.total_cents} != {c['total_cents']}"
+
+
+def test_workers_ai_cache_read_is_subtracted_from_input() -> None:
+    """Regression: Workers AI is reached only through Cloudflare's OpenAI-COMPATIBLE
+    endpoint, so its `prompt_tokens` already includes the cached tokens. Counts and
+    rates here are real — a live cached call reported prompt=23233/cached=23168, and
+    @cf/moonshotai/kimi-k2.6 lists input $0.95/M with cached input $0.16/M. Billing
+    all 23233 at the input rate charged the cached portion twice (+583%).
+    """
+    price = ModelPrice(
+        source="cloudflare_workers_ai",
+        input=Decimal("0.00000095"),
+        cache_read=Decimal("0.00000016"),
+    )
+    usage = CanonicalUsage(
+        model="@cf/moonshotai/kimi-k2.6",
+        provider="workers-ai",
+        api="chat.completions",
+        input=23233,
+        cache_read=23168,
+    )
+    b = compute_cost(usage, price, Decimal("1"))
+    # only the 65 uncached tokens are billed at the input rate
+    assert b.fields["input"]["tokens"] == "65"
+    assert b.fields["cache_read"]["tokens"] == "23168"
+    assert b.total == "0.00376863"
+
+
+def test_anthropic_cache_read_stays_additive() -> None:
+    """The other side of the same rule: Anthropic reports input EXCLUSIVE of cache,
+    so nothing may be subtracted. Same counts/rates as the workers-ai case above."""
+    price = ModelPrice(
+        source="openrouter",
+        input=Decimal("0.00000095"),
+        cache_read=Decimal("0.00000016"),
+    )
+    usage = CanonicalUsage(
+        model="claude-x", provider="anthropic", api="native", input=23233, cache_read=23168
+    )
+    b = compute_cost(usage, price, Decimal("1"))
+    assert b.fields["input"]["tokens"] == "23233"
+    assert b.total == "0.02577823"
+
+
+def test_parse_price_accepts_exponential_notation() -> None:
+    """Real gateway costs below 1e-6 arrive in exponential form. Python has always
+    handled these; the golden fixture pins JS to the same values."""
+    assert _parse_price(9.807224944233895e-07) == Decimal("0.000000980722")
+    assert _parse_price("8.91e-7") == Decimal("0.000000891")
+    assert _parse_price("9.78e-07") == Decimal("0.000000978")
+    # below the 12dp floor -> zero, not None (a real but unbillably small amount)
+    assert _parse_price(1e-13) == Decimal(0)
+
+
+def test_parse_price_returns_none_instead_of_raising_on_huge_values() -> None:
+    """Regression: `.quantize()` sat outside the try, so any value >= 1e16 raised
+    InvalidOperation straight out of this function — past every caller that relies
+    on the documented None, and out of compute_precomputed_cost into emit()'s
+    catch-all, where the event was dropped as an unknown error rather than taking
+    the normal 'no price' path."""
+    assert _parse_price("1e15") == Decimal("1000000000000000")
+    assert _parse_price("1e16") is None
+    assert _parse_price("1e30") is None
+    assert _parse_price("1e999999999") is None
+    # and the tiny end stays a real zero, not a None
+    assert _parse_price("1e-999999999") == Decimal(0)
 
 
 def test_coerce_markup() -> None:

@@ -69,7 +69,16 @@ PRICED_FIELDS = ("input", "output", "cache_read", "cache_write", "reasoning")
 # For these, the cached portion must be billed at the cache-read rate, not the
 # full prompt rate, so compute_cost moves it out of `input`. Anthropic reports
 # input EXCLUSIVE of cache (cache_read/cache_write are additive), so it's absent.
-_INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini"})
+#
+# "workers-ai" belongs here because it is only ever reached through Cloudflare's
+# OpenAI-COMPATIBLE endpoint (`.../compat`), so its usage payload is the OpenAI
+# shape: `prompt_tokens` includes `prompt_tokens_details.cached_tokens`. It is a
+# distinct provider only because it prices against Cloudflare's own catalog
+# (see _infer_provider in adapters/openai_native.py) — the token semantics are
+# still OpenAI's. Omitting it billed the cached tokens twice: once at the full
+# input rate because they were never subtracted, and again at the cache-read
+# rate, which Cloudflare's catalog does publish for some models.
+_INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini", "workers-ai"})
 
 # Providers whose reported `output` token count ALREADY includes the reasoning
 # tokens (reasoning is a subset of output). For these, reasoning is billed as
@@ -145,7 +154,19 @@ def _parse_price(value: Any) -> Decimal | None:
         return None
     if d.is_nan() or d.is_infinite() or d < 0:
         return None
-    return d.quantize(_Q, rounding=ROUND_DOWN)
+    try:
+        return d.quantize(_Q, rounding=ROUND_DOWN)
+    except InvalidOperation:
+        # quantize raises once the result would exceed the default 28-digit
+        # context precision — i.e. at 1e16 and above (16 integer digits + the
+        # 12 fractional ones this always produces). Absurd as a price, but it
+        # must not ESCAPE: this function is documented as returning None on bad
+        # input, and callers rely on that. Uncaught, it propagated out of
+        # compute_precomputed_cost into emit()'s catch-all, so the event was
+        # dropped as an unknown error instead of taking the normal "no price"
+        # path. Returning None also keeps JS byte-identical, where parseScaled
+        # returns null for exactly these inputs.
+        return None
 
 
 def money_str_to_cents(usd: str) -> str:
@@ -414,6 +435,16 @@ def parse_mistral_aliases(data: Any) -> dict[str, str]:
 def lookup_openrouter(table: dict[str, Any], provider: str, model: str) -> ModelPrice | None:
     """Match (provider, model) to an OpenRouter price. Conservative: vendor-gated."""
     vendor = _VENDOR_MAP.get((provider or "").lower(), (provider or "").lower())
+    # Some sources report the model ALREADY carrying its vendor prefix — a real
+    # Cloudflare AI Gateway log for a REST-path call says
+    # model="anthropic/claude-opus-4.8" with provider="anthropic" — which would
+    # otherwise build "anthropic/anthropic/claude-opus-4.8" and never match.
+    # Strip it only when the prefix agrees with the vendor we just resolved, so
+    # this stays vendor-gated as documented: a model naming a DIFFERENT vendor
+    # than the call claims is still a miss, not a cross-vendor mispricing.
+    head, sep, tail = model.partition("/")
+    if sep and head.lower() in (vendor, (provider or "").lower()):
+        model = tail
     exact: dict[str, ModelPrice] = table.get("exact", {})
     norm: dict[tuple[str, str], ModelPrice] = table.get("norm", {})
     # 1. exact id
