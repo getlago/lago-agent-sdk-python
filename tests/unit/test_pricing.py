@@ -1295,6 +1295,72 @@ def test_price_unavailable_falls_back_to_token_events_and_reports() -> None:
     assert any(name == "PricingUnavailableError" and where == "pricing" for name, where in errors)
 
 
+def test_token_billed_provider_emits_tokens_without_reporting_an_error() -> None:
+    """A Databricks-hosted model has no per-token rate anywhere — not a cold table, not
+    an unmatched name, none exists. So token counts are the complete answer, and calling
+    that a failure on every request trains the reader to ignore on_error entirely."""
+    errors: list = []
+    sdk, received = _price_sdk(
+        _warm_provider(), on_error=lambda exc, where: errors.append((type(exc).__name__, where))
+    )
+    u = CanonicalUsage(
+        input=11,
+        output=4,
+        model="meta-llama-4-maverick-040225",
+        provider="databricks",
+        api="chat_completions",
+    )
+    sdk.emit(u)
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert {e["code"] for e in flat} == {"llm_input_tokens", "llm_output_tokens"}
+    assert [e["properties"]["value"] for e in flat if e["code"] == "llm_input_tokens"] == ["11"]
+    assert errors == []
+
+
+def test_a_real_price_miss_still_reports() -> None:
+    """The narrow exception above must not become a blanket silence: an unmatched model
+    on a provider that DOES publish rates is a genuine miss the customer can act on."""
+    errors: list = []
+    sdk, received = _price_sdk(
+        _warm_provider(), on_error=lambda exc, where: errors.append((type(exc).__name__, where))
+    )
+    sdk.emit(CanonicalUsage(input=5, model="no-such-model", provider="anthropic", api="native"))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert any(n == "PricingUnavailableError" and w == "pricing" for n, w in errors)
+
+
+def test_token_billed_note_is_logged_once_per_model(caplog) -> None:
+    """It is a standing fact about the provider, not an event about this call."""
+    import logging as _logging
+
+    sdk, _ = _price_sdk(_warm_provider())
+    with caplog.at_level(_logging.INFO, logger="lago_agent_sdk"):
+        for _ in range(3):
+            sdk.emit(CanonicalUsage(input=1, model="llama-4-maverick", provider="databricks", api="x"))
+        sdk.emit(CanonicalUsage(input=1, model="gpt-oss-20b", provider="databricks", api="x"))
+    sdk.shutdown(timeout=1.0)
+    notes = [r for r in caplog.records if "in its own units" in r.getMessage()]
+    assert len(notes) == 2  # one per distinct model, not one per call
+    assert any("llama-4-maverick" in n.getMessage() for n in notes)
+
+
+def test_byok_through_the_same_gateway_still_prices() -> None:
+    """TOKEN_BILLED_PROVIDERS keys on provider, so it covers Databricks-HOSTED models
+    only — BYOK traffic through the same gateway is stamped with the real vendor and
+    must keep pricing normally."""
+    sdk, received = _price_sdk(_warm_provider())
+    sdk.emit(
+        CanonicalUsage(input=100, output=50, model="claude-opus-4.8", provider="anthropic", api="native")
+    )
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert {e["code"] for e in flat} == {"llm_cost"}
+
+
 def test_per_call_price_mode_overrides_global_tokens() -> None:
     # global mode is tokens (default); per-call asks for price
     provider = _warm_provider()

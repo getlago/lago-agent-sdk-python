@@ -15,6 +15,7 @@ from .detector import detect_client_kind
 from .exceptions import PricingUnavailableError, UnknownClientError
 from .lago_client import LagoClient
 from .pricing import (
+    TOKEN_BILLED_PROVIDERS,
     CostBreakdown,
     PricingProvider,
     apply_markup,
@@ -71,6 +72,9 @@ class LagoSDK:
         )
         if self.config.pricing_mode == "price":
             self._pricing.prime()  # eager warm when price mode is the global default
+        # (provider, model) pairs already noted as token-billed, so the explanation is
+        # logged once rather than on every call. See `_note_token_billed`.
+        self._token_billed_noted: set[tuple[str, str]] = set()
         self._queue = EventQueue(
             sender=self._lago_client.send_batch,
             flush_interval=self.config.flush_interval_seconds,
@@ -260,6 +264,14 @@ class LagoSDK:
 
             if usd_cost is not None:
                 breakdown = compute_precomputed_cost(usd_cost, markup_value)
+            elif usage.provider in TOKEN_BILLED_PROVIDERS:
+                # NOT a failure, so deliberately not routed through on_error: this
+                # provider publishes no per-token rate at all, so token counts are the
+                # complete answer rather than a fallback. Said once per model instead
+                # of once per call. See TOKEN_BILLED_PROVIDERS for the reasoning.
+                self._note_token_billed(usage)
+                self._emit_token_events(usage, sub, dimensions, event_id)
+                return
             else:
                 price = self._pricing.lookup(usage.provider, usage.model, usage.api)
                 if price is None:
@@ -274,6 +286,24 @@ class LagoSDK:
             self._push_cost_event(usage, breakdown, sub, dimensions, event_id)
         except Exception as exc:  # noqa: BLE001 — never raise from emit
             self._report_error(exc, "emit")
+
+    def _note_token_billed(self, usage: CanonicalUsage) -> None:
+        """Say it once per model, at info level.
+
+        It is a standing fact about the provider, not an event about this call, so
+        repeating it per request would bury the log in something the reader can neither
+        fix nor act on.
+        """
+        key = (usage.provider, usage.model)
+        if key in self._token_billed_noted:
+            return
+        self._token_billed_noted.add(key)
+        logger.info(
+            "lago: %s bills %r in its own units, not per token — emitting token counts "
+            "for it instead of a dollar cost",
+            usage.provider,
+            usage.model,
+        )
 
     def _emit_token_events(
         self, usage: CanonicalUsage, sub: str, dimensions: dict[str, Any] | None, event_id: str | None = None

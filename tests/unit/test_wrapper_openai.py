@@ -619,3 +619,165 @@ async def test_async_responses_create_stream_extracts_usage_from_completed_event
         "looks only at event.usage (top-level), but Responses uses event.response.usage."
     )
     assert by_code.get("llm_output_tokens") == 6
+
+
+# ----------------------------------------------------------------------
+# Databricks: base_url decides the provider, and streaming quirks
+# ----------------------------------------------------------------------
+from lago_agent_sdk.wrappers.openai import _provider_hint_for  # noqa: E402
+
+_DBX = "https://dbc-0223ef70-2638.cloud.databricks.com"
+
+
+class _FakeClient:
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url
+
+
+@pytest.mark.parametrize(
+    "base_url,expected",
+    [
+        # Hosted foundation models — DBU-billed, must NOT reach a vendor price table.
+        (f"{_DBX}/ai-gateway/mlflow/v1", "databricks"),
+        (f"{_DBX}/ai-gateway/mlflow/v1/", "databricks"),
+        # BYOK surfaces keep their real vendor so they price against OpenRouter.
+        (f"{_DBX}/ai-gateway/openai/v1", ""),
+        (f"{_DBX}/ai-gateway/anthropic", ""),
+        # Unrelated clients are untouched.
+        ("https://api.openai.com/v1", ""),
+        ("https://gateway.ai.cloudflare.com/v1/acct/gw/compat", ""),
+        ("", ""),
+    ],
+)
+def test_provider_hint_keys_on_the_mlflow_path_only(base_url: str, expected: str) -> None:
+    """Two of Databricks' four surfaces use the SAME openai.OpenAI class, and the
+    response body cannot tell them apart — a hosted call echoes a served-entity
+    name with no marker. base_url is the only signal.
+
+    Matching `/ai-gateway/mlflow/` and not `/ai-gateway/` is load-bearing: the
+    openai/anthropic BYOK surfaces share that prefix and must keep their vendor
+    provider, or they would stop being priceable."""
+    assert _provider_hint_for(_FakeClient(base_url)) == expected
+
+
+def test_provider_hint_survives_a_client_without_base_url() -> None:
+    """Some client variants don't expose it; instrumentation must never break the
+    customer's call over that."""
+
+    class NoBaseUrl:
+        pass
+
+    class Raises:
+        @property
+        def base_url(self) -> str:
+            raise RuntimeError("boom")
+
+    assert _provider_hint_for(NoBaseUrl()) == ""
+    assert _provider_hint_for(Raises()) == ""
+
+
+def test_databricks_hosted_call_is_stamped_databricks_end_to_end() -> None:
+    """Through the real wrapper: a hosted model must come out as
+    provider="databricks" so the price lookup cannot hit. OpenRouter lists bare
+    `openai/gpt-oss-20b` at ~0.4x of Databricks' own DBU rate, so being stamped
+    "openai" would silently under-bill 2.5-5x the moment a served-entity rename
+    let _strip_version match it."""
+    sdk, received = _new_sdk()
+    fake = FakeOpenAI()
+    fake.base_url = f"{_DBX}/ai-gateway/mlflow/v1"
+    client = sdk.wrap(fake)
+    client.chat.completions.create(model="system.ai.llama-4-maverick", messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert received, "nothing emitted"
+    assert all(e["properties"]["provider"] == "databricks" for e in received)
+
+
+def test_databricks_byok_call_keeps_its_vendor_provider() -> None:
+    """The mirror: the same client class against the OpenAI BYOK surface must stay
+    "openai", because that path IS priceable and was verified exact against
+    Databricks' own metered spend on 38 of 38 buckets."""
+    sdk, received = _new_sdk()
+    fake = FakeOpenAI()
+    fake.base_url = f"{_DBX}/ai-gateway/openai/v1"
+    client = sdk.wrap(fake)
+    client.chat.completions.create(model="gpt-4o", messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert all(e["properties"]["provider"] == "openai" for e in received)
+
+
+class _DbxStreamCompletions:
+    """Minimal fake reproducing Databricks' streaming convention, which differs from
+    OpenAI's in two measured ways: usage is on EVERY frame and is CUMULATIVE, and
+    there is no final usage-only frame — the last frame is an ordinary delta."""
+
+    def __init__(self, cumulative: list[int]) -> None:
+        self._cumulative = cumulative
+        self.with_raw_response = None  # force the plain .create() path
+
+    def create(self, **kwargs: Any) -> Any:
+        assert kwargs.get("stream") is True
+        return iter(
+            [
+                FakeStreamChunk(
+                    {
+                        "model": "meta-llama-4-maverick-040225",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": "a"},
+                                "finish_reason": "stop" if n == self._cumulative[-1] else None,
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 14, "completion_tokens": n, "total_tokens": 14 + n},
+                    }
+                )
+                for n in self._cumulative
+            ]
+        )
+
+
+class _DbxStreamClient:
+    def __init__(self, cumulative: list[int]) -> None:
+        self.chat = type("C", (), {"completions": _DbxStreamCompletions(cumulative)})()
+        self.base_url = f"{_DBX}/ai-gateway/mlflow/v1"
+
+
+_DbxStreamClient.__module__ = "openai.fake"
+
+
+def test_databricks_streaming_cumulative_usage_takes_the_last_frame() -> None:
+    """last-usage-wins lands on the correct total by construction. This pins it,
+    because a "sum the frames" implementation would bill 1+7+15=23 instead of 15,
+    and a "first frame wins" one would bill 1."""
+    sdk, received = _new_sdk()
+    client = sdk.wrap(_DbxStreamClient([1, 7, 15]))
+    list(client.chat.completions.create(model="system.ai.llama-4-maverick", messages=[], stream=True))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code["llm_input_tokens"] == 14, "cumulative input must not be summed"
+    assert by_code["llm_output_tokens"] == 15, "final cumulative value, not 1+7+15"
+    assert all(e["properties"]["provider"] == "databricks" for e in received)
+
+
+def test_databricks_abandoned_stream_bills_the_partial_total() -> None:
+    """A behavioral divergence worth pinning rather than discovering later.
+
+    Against real OpenAI, abandoning a stream yields no usage at all — it only
+    arrives on a final usage-only chunk — so nothing is billed. Databricks puts a
+    cumulative usage on every frame, so the `finally`-block emit bills whatever had
+    been generated when the consumer walked away. Arguably better (it bills real
+    work), but NOT what the OpenAI path does."""
+    sdk, received = _new_sdk()
+    client = sdk.wrap(_DbxStreamClient([1, 7, 15]))
+    stream = client.chat.completions.create(model="system.ai.llama-4-maverick", messages=[], stream=True)
+    for i, _ in enumerate(stream):
+        if i == 1:  # abandon after the second frame
+            break
+    stream.close()  # trigger the generator's finally-block emit deterministically
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code.get("llm_output_tokens") == 7, "partial cumulative count at abandonment"
