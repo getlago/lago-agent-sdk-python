@@ -86,6 +86,7 @@ _INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini", "workers-ai"})
 # are additive to output, so it's absent here.)
 _OUTPUT_INCLUDES_REASONING = frozenset({"openai"})
 
+
 # Canonical field -> OpenRouter pricing key.
 _OPENROUTER_FIELD_MAP = {
     "input": "prompt",
@@ -140,7 +141,19 @@ _BEDROCK_VENDOR_WORDS = {
 
 _SCALE = 12
 _Q = Decimal(1).scaleb(-_SCALE)  # Decimal("1E-12")
-_VERSION_DATE_SUFFIX = re.compile(r"-(?:\d{8}|v\d+)$")
+# Vendors stamp resolved model names with a date in one of two shapes, and both
+# must be strippable or the price lookup misses. Anthropic uses a COMPACT date
+# ("claude-sonnet-4-5-20250929"); OpenAI uses a HYPHENATED one
+# ("gpt-5-2025-08-07", "o3-2025-04-16"). OpenRouter lists the BARE id
+# ("openai/gpt-5"), so a name we can't strip back to bare never matches.
+#
+# Handling only the compact form silently broke price mode for every current
+# OpenAI model: `create(model="gpt-5")` returns model="gpt-5-2025-08-07", and
+# `resolve_model` prefers the response's own name over the requested one, so
+# gpt-4.1 / gpt-4.1-mini / gpt-5 / gpt-5-mini / o3 / o4-mini all fell through to
+# token events. gpt-4o looked fine only by luck — OpenRouter happens to list
+# "openai/gpt-4o-2024-08-06" verbatim.
+_VERSION_DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2}|v\d+)$")
 
 
 # ----------------------------------------------------------------------
@@ -204,7 +217,7 @@ def _alnum(s: str) -> str:
 
 
 def _strip_version(model: str) -> str:
-    """Drop a trailing -YYYYMMDD date or -vN version tag."""
+    """Drop a trailing -YYYYMMDD / -YYYY-MM-DD date or -vN version tag."""
     return _VERSION_DATE_SUFFIX.sub("", model)
 
 

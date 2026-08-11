@@ -15,6 +15,7 @@ from lago_agent_sdk.pricing import (
     HttpPricingFetcher,
     PricingProvider,
     _parse_price,
+    _strip_version,
     bedrock_model_key,
     coerce_markup,
     compute_cost,
@@ -1321,3 +1322,76 @@ def test_default_mode_is_tokens_unchanged() -> None:
     sdk.shutdown(timeout=1.0)
     flat = [e for batch in received for e in batch]
     assert {e["code"] for e in flat} == {"llm_input_tokens", "llm_output_tokens"}
+
+
+# ----------------------------------------------------------------------
+# Date-suffix shapes — both vendors' conventions must strip
+# ----------------------------------------------------------------------
+
+# OpenRouter lists BARE ids for the current OpenAI lineup; the API returns dated
+# ones. `resolve_model` prefers the response's own name, so the dated form is what
+# reaches lookup.
+_BARE_OPENAI_TABLE = parse_openrouter(
+    {
+        "data": [
+            {"id": f"openai/{m}", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
+            for m in ("gpt-4.1", "gpt-4.1-mini", "gpt-5", "gpt-5-mini", "o3", "o4-mini")
+        ]
+    }
+)
+
+
+@pytest.mark.parametrize(
+    "dated",
+    [
+        "gpt-4.1-2025-04-14",
+        "gpt-4.1-mini-2025-04-14",
+        "gpt-5-2025-08-07",
+        "gpt-5-mini-2025-08-07",
+        "o3-2025-04-16",
+        "o4-mini-2025-04-16",
+    ],
+)
+def test_openai_hyphenated_date_suffix_strips_to_a_hit(dated: str) -> None:
+    """OpenAI stamps HYPHENATED dates ("gpt-5-2025-08-07"), Anthropic COMPACT ones
+    ("claude-sonnet-4-5-20250929"). Handling only the compact shape silently broke
+    price mode for every current OpenAI model — all six of these missed and fell
+    back to token events. Verified against the live 400-model OpenRouter table
+    before and after.
+    """
+    assert lookup_openrouter(_BARE_OPENAI_TABLE, "openai", dated) is not None
+
+
+@pytest.mark.parametrize(
+    "dated,bare",
+    [
+        ("claude-sonnet-4-5-20250929", "anthropic/claude-sonnet-4.5"),
+        ("claude-haiku-4-5-20251001", "anthropic/claude-haiku-4.5"),
+        ("claude-opus-4-5-20251101", "anthropic/claude-opus-4.5"),
+    ],
+)
+def test_anthropic_compact_date_suffix_still_strips(dated: str, bare: str) -> None:
+    """Regression guard: widening the pattern must not break the compact form."""
+    table = parse_openrouter({"data": [{"id": bare, "pricing": {"prompt": "0.000003"}}]})
+    assert lookup_openrouter(table, "anthropic", dated) is not None
+
+
+def test_non_date_suffix_is_not_stripped() -> None:
+    """`gpt-5.6-sol` resolves with a `-sol` suffix that is neither a date nor a
+    version tag. It must be left intact — OpenRouter lists it verbatim as
+    "openai/gpt-5.6-sol", so stripping would turn a hit into a miss."""
+    assert _strip_version("gpt-5.6-sol") == "gpt-5.6-sol"
+    table = parse_openrouter({"data": [{"id": "openai/gpt-5.6-sol", "pricing": {"prompt": "0.000005"}}]})
+    assert lookup_openrouter(table, "openai", "gpt-5.6-sol") is not None
+
+
+def test_workers_ai_model_names_are_never_date_stripped() -> None:
+    """Workers AI ids carry dotted versions and fp8 suffixes, not dates. The
+    widened pattern must leave them untouched or the Cloudflare catalog lookup
+    breaks."""
+    for m in (
+        "@cf/meta/llama-3.2-1b-instruct",
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "@cf/moonshotai/kimi-k2.7-code",
+    ):
+        assert _strip_version(m) == m
