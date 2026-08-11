@@ -70,6 +70,7 @@ uv lock --upgrade-package X  # bump a single package
 - `src/lago_agent_sdk/canonical.py` — the normalized usage shape sent to Lago
 - `src/lago_agent_sdk/queue.py` — async event queue with backoff
 - `src/lago_agent_sdk/lago_client.py` — thin HTTP client to `/events/batch`
+- `src/lago_agent_sdk/gateway/` — second front door: gateway usage logs → `CanonicalUsage`, for backfill
 - `tests/unit/` — unit tests, organized to mirror `src/`
 - `tests/unit/adapters/fixtures/` — captured real provider responses, used by adapter tests
 - `tests/integration/` — live tests, gated on credential env vars
@@ -83,6 +84,83 @@ uv lock --upgrade-package X  # bump a single package
 5. Update `sdk.py::wrap()` to dispatch to the new wrapper.
 6. Add unit tests against the captured fixtures.
 7. Add a live integration test gated on the provider's API key env var.
+
+## Adding a gateway
+
+`gateway/` is a **second front door** into the same kernel, separate from the provider-native
+`adapters/` used by `wrap()`. A gateway connector reads a gateway's own usage log and maps it into
+`CanonicalUsage` for backfill; there is no client to patch. Two exist: Cloudflare and Databricks.
+
+1. Capture real rows/entries from a live gateway into
+   `tests/unit/gateway/adapters/fixtures/<gateway>/`, one file per scenario. Cover both success and
+   every failure shape you can produce — failed calls are where the surprises live.
+2. Write `src/lago_agent_sdk/gateway/adapters/<gateway>.py` exporting
+   `extract_<gateway>_log(entry) -> CanonicalUsage` and `resolve_<gateway>_subscription(entry) -> str | None`.
+   Keep it a **pure function**: no HTTP, no SDK state.
+3. Export both from `gateway/adapters/__init__.py` under explicitly gateway-scoped names, so no
+   gateway is the implicit default.
+4. Add `tests/unit/gateway/adapters/test_<gateway>.py` against the captured fixtures.
+5. Add a `## <Gateway> AI Gateway` README section and a `CHANGELOG.md` entry.
+6. Add `examples/<gateway>_gateway_demo.ipynb` showing backfill and live calls.
+
+### A connector is only as good as the comparison
+
+The reason the Cloudflare connector reads well is that you can put the gateway's own
+dashboard beside Lago and see the same numbers. Two rules protect that, and both were
+learned the hard way on Databricks:
+
+- **Emit the gateway's own grouping key as a dimension.** Our `model` is normalized; the
+  gateway's page is not. Group Lago by one and the dashboard by the other and the
+  comparison fails on naming alone, before any number is even wrong. Attach the key the
+  gateway's surface aggregates by, and only keys that are true of the whole row — a
+  per-request field on an hourly aggregate is one sampled value dressed up as a property
+  of the bucket.
+- **Never bill from a surface the gateway UI doesn't show.** Databricks does expose exact
+  dollars for its hosted models, in `system.billing.usage` x `list_prices` — on a
+  different screen, with no attribution tags, about a day behind. Billing from it would
+  produce a number the customer cannot find anywhere, which costs more trust than the
+  feature adds. Hosted therefore bills token counts, matching the page they do look at.
+
+### Does the read itself belong in the SDK?
+
+Default: **no.** The adapters stay pure and the fetching lives in the example notebook, as Cloudflare's
+does — its whole read is one paginated GET, and an SDK wrapper around that would be indirection for
+nothing.
+
+Databricks earned the exception, in `gateway/databricks.py` (a sibling module, so the adapter stays
+pure). The bar it cleared, and the one to hold a third gateway to: the read is long enough that a
+customer will reimplement it wrong, and the ways it goes wrong lose money silently. Databricks needs a
+SQL warehouse, the Statement Execution API, columnar-to-dict zipping, chunked result fetching and two
+tables reconciled against each other — and the first hand-rolled version in the demo notebook truncated
+at chunk 0, which bills a fraction of a wide window with no error at all. If a gateway's read is a loop
+over one endpoint, leave it in the notebook.
+
+When it does clear the bar: name it `gateway/<gateway>.py`, expose a `<Gateway>Source` with an explicit
+window and a `read_usage()` that yields rows already shaped for `emit()`, add the `backfill_<gateway>()`
+one-liner to `LagoSDK`, and use a dependency that is already core (`requests` / `undici`). No scheduler,
+no cursor store, no credential store — that is the poller, and it stays out of the SDK.
+
+### Things both existing connectors had to get right
+
+These are the traps, and every one of them cost real debugging:
+
+- **Which cost is authoritative.** Gateway traffic bills from the *gateway's* metered cost, not one we
+  compute — it keeps Lago reconcilable against the dashboard the customer looks at. Note the gateway
+  may under-report: Cloudflare's `cost` omits additive reasoning tokens, measured at 22.8x low on a
+  real call.
+- **Token semantics are per-gateway, not per-vendor.** Cloudflare passes Anthropic's cache counts
+  through *additively*; Databricks' table folds them *into* `input_tokens`. Same provider, opposite
+  conventions. Never assume the vendor's own convention survives the gateway.
+- **`provider` must be unmatchable when you cannot price it.** If a gateway bills on its own rate card,
+  stamp a provider that hits nothing in `_VENDOR_MAP` so the lookup misses honestly. Stamping a real
+  vendor name lets a near-miss model string match at 2.5-5x the wrong rate, silently.
+- **Idempotency keys must be subscription-scoped.** `transaction_id` is unique org-wide, so
+  `f"{prefix}_{subscription}_{row_id}"` — an unscoped id silently blocks a row from ever reaching a
+  second subscription.
+- **Failed calls appear in the log.** Extract them to all-zero so `nonzero_numeric()` is empty and
+  nothing is emitted, rather than billing zeros.
+- **Drift.** An unrecognized field must reach `extras`, including one level down inside nested
+  `*_details` objects. `test_drift.py` pins it.
 
 ## Pull request checklist
 
