@@ -423,6 +423,89 @@ class LagoSDK:
         self._pricing.prime(providers)
         self._pricing.maybe_refresh()
 
+    def backfill_databricks(
+        self,
+        source: Any,
+        since: Any = "1 day",
+        *,
+        default_subscription: str | None = None,
+        unified: bool = False,
+        dimensions: dict[str, Any] | None = None,
+        event_id_prefix: str = "dbx",
+    ) -> dict[str, int]:
+        """Read a window of Databricks AI Gateway usage and bill all of it.
+
+        The one-call entrypoint: give it a window, it does the rest. Returns counts
+        of what it emitted, e.g. ``{"cost": 56, "tokens": 45, "skipped": 0}``.
+
+        ``source`` is normally a :class:`DatabricksSource`, and ``since`` the window.
+        It also accepts an already-read iterable of ``DatabricksUsageRow`` — pass one
+        when you have inspected the rows first, so the window is read ONCE. Reading
+        twice is not just slow: a SQL warehouse costs roughly 1,500x the model-serving
+        usage it reports on, and rows landing between the two reads make the summary
+        you printed disagree with what was billed.
+
+        Billing follows the rule the connector establishes rather than re-deriving
+        it: a BYOK row carries Databricks' own metered USD and bills as a dollar
+        cost; a Databricks-hosted row has no per-request dollar figure anywhere in
+        Databricks' system tables and bills as token counts.
+
+        ``unified=True`` bills everything to ``default_subscription``, ignoring
+        per-call ``request_tags`` — right when one gateway serves one customer.
+        Left False, each row goes to the subscription its own tags name, falling
+        back to ``default_subscription`` only when a row is untagged.
+
+        Every event also carries the Databricks-side grouping key for its row —
+        ``endpoint_name`` for hosted, ``bucket`` for BYOK — so grouping Lago the
+        same way the Databricks page groups puts the two side by side. See
+        ``DatabricksUsageRow.reconcile_dimensions``. Anything in ``dimensions``
+        is added on top and wins on a key collision.
+
+        Idempotent: every event id is derived from the source row's own id and
+        scoped by subscription, so re-running the same window has Lago reject the
+        duplicates rather than double-bill. Does not flush — call ``flush()`` when
+        you want to block on delivery.
+        """
+        counts = {"cost": 0, "tokens": 0, "skipped": 0}
+        rows = (
+            source.read_usage(since, event_id_prefix=event_id_prefix)
+            if hasattr(source, "read_usage")
+            else source
+        )
+        for row in rows:
+            sub = default_subscription if unified else (row.subscription or default_subscription)
+            if not sub:
+                # No attribution and no fallback — emit() would drop it anyway, but
+                # counting it here makes the gap visible instead of silent.
+                counts["skipped"] += 1
+                continue
+            # Row's own reconciliation key first, so an explicit caller dimension of
+            # the same name wins rather than being silently overwritten.
+            dims = {**row.reconcile_dimensions, **(dimensions or {})}
+            if row.usd_cost is not None:
+                self.emit(
+                    row.usage,
+                    subscription=sub,
+                    dimensions=dims,
+                    mode="price",
+                    usd_cost=row.usd_cost,
+                    # Keyed off the subscription actually billed, not the row's own
+                    # tag — an untagged row billed to the default must not carry an
+                    # id that blocks it from a different default on a later run.
+                    event_id=row.event_id_for(sub),
+                )
+                counts["cost"] += 1
+            else:
+                self.emit(
+                    row.usage,
+                    subscription=sub,
+                    dimensions=dims,
+                    mode="tokens",
+                    event_id=row.event_id_for(sub),
+                )
+                counts["tokens"] += 1
+        return counts
+
     def flush(self, timeout: float = 5.0) -> bool:
         return self._queue.flush(timeout=timeout)
 
