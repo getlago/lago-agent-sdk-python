@@ -78,7 +78,16 @@ PRICED_FIELDS = ("input", "output", "cache_read", "cache_write", "reasoning")
 # still OpenAI's. Omitting it billed the cached tokens twice: once at the full
 # input rate because they were never subtracted, and again at the cache-read
 # rate, which Cloudflare's catalog does publish for some models.
-_INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini", "workers-ai"})
+#
+# "mistral" belongs here for the same reason: the API is OpenAI-shaped and reports
+# `prompt_tokens_details.cached_tokens` as a SUBSET of `prompt_tokens`. Mistral's own
+# documented example is unambiguous — prompt_tokens=1013, cached_tokens=1008, and
+# total_tokens=1043 = prompt + completion, which only reconciles if the cached tokens
+# sit inside the prompt count. Omitting it double-billed the cached portion by 6.15x
+# on that payload. 13 of 18 Mistral models on OpenRouter publish a cache-read rate,
+# so the wrong path was reachable for most of them, including Mistral traffic routed
+# through a Cloudflare gateway (the gateway adapter leaves provider="mistral" as-is).
+_INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini", "workers-ai", "mistral"})
 
 # Providers whose reported `output` token count ALREADY includes the reasoning
 # tokens (reasoning is a subset of output). For these, reasoning is billed as

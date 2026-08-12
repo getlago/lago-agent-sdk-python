@@ -76,6 +76,17 @@
       "base": "0.02577823",
       "total": "0.02577823",
       "total_cents": "2.577823"
+    },
+    {
+      "name": "mistral: cache_read is a SUBSET of input, billed once",
+      "_note": "Counts from Mistral's own documented prompt-caching example (prompt_tokens=1013, cached_tokens=1008, completion_tokens=30) at live mistral-large-2512 OpenRouter rates. total_tokens=1043=prompt+completion in that payload, which only reconciles if the cached tokens sit INSIDE prompt_tokens. Only 1013-1008=5 tokens may be billed at the input rate; billing all 1013 double-charges the cached portion by 6.15x.",
+      "provider": "mistral",
+      "prices": { "input": "0.0000005", "output": "0.0000015", "cache_read": "0.00000005" },
+      "counts": { "input": 1013, "output": 30, "cache_read": 1008 },
+      "markup": "1",
+      "base": "0.0000979",
+      "total": "0.0000979",
+      "total_cents": "0.00979"
     }
   ],
   "precomputed_cases": [
