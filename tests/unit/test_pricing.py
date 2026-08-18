@@ -16,6 +16,7 @@ from lago_agent_sdk.pricing import (
     HttpPricingFetcher,
     PricingProvider,
     _parse_price,
+    _pick_mistral_canonical,
     bedrock_model_key,
     coerce_markup,
     compute_cost,
@@ -477,6 +478,61 @@ def test_mistral_two_way_aliasing_still_resolves() -> None:
     aliases = parse_mistral_aliases(_MISTRAL_MODELS_RAW_MUTUAL_ALIASING)
     assert aliases["voxtral-small-latest"] == "voxtral-small-2507"
     assert "voxtral-small-2507" not in aliases
+
+
+def test_mistral_family_resolves_to_the_NEWEST_dated_snapshot() -> None:
+    """Regression: the tie-break used to resolve on the date ASCENDING.
+
+    Every dated id in one family is the same length, so `(len(n), n)` fell
+    through to the alphabetical term — which for `-2402` / `-2407` / `-2411` is
+    the date, oldest first. The whole family collapsed onto `mistral-large-2402`
+    and got priced at a two-year-old rate.
+    """
+    family = [
+        "mistral-large-2402",
+        "mistral-large-2407",
+        "mistral-large-2411",
+        "mistral-large-latest",
+    ]
+    data = {"data": [{"id": n, "aliases": [x for x in family if x != n]} for n in family]}
+    aliases = parse_mistral_aliases(data)
+    assert aliases["mistral-large-latest"] == "mistral-large-2411"
+
+
+def test_mistral_explicit_dated_snapshot_is_never_remapped() -> None:
+    """An exact snapshot request is already the id OpenRouter lists, so it must
+    pass through untouched. Remapping it onto the group's canonical priced it at
+    a sibling's rate — a mispricing, not a miss."""
+    family = ["mistral-large-2402", "mistral-large-2411", "mistral-large-latest"]
+    data = {"data": [{"id": n, "aliases": [x for x in family if x != n]} for n in family]}
+    aliases = parse_mistral_aliases(data)
+    assert "mistral-large-2402" not in aliases
+    assert "mistral-large-2411" not in aliases
+    assert aliases["mistral-large-latest"] == "mistral-large-2411"
+
+
+@pytest.mark.parametrize(
+    ("names", "expected"),
+    [
+        # Mistral's own 4-digit YYMM convention.
+        (["m-2402", "m-2411", "m-latest"], "m-2411"),
+        # Mixed widths: "20250929" sorts BELOW "2411" as a raw string, so the
+        # normalization to one scale is what makes this come out right.
+        (["m-2411", "m-20250929", "m-latest"], "m-20250929"),
+        # No dated candidate at all — deterministic shortest-then-code-point.
+        (["mm-latest", "m-latest"], "m-latest"),
+    ],
+)
+def test_mistral_canonical_picks_newest_across_suffix_shapes(names: list[str], expected: str) -> None:
+    assert _pick_mistral_canonical(names) == expected
+
+
+def test_mistral_canonical_orders_by_code_point_not_locale() -> None:
+    """Cross-repo parity: the JS port must not use `localeCompare`, which is
+    ICU/locale-dependent. Both repos must pick the same canonical for a group
+    whose members differ only by case/separator — and the pick has to be the one
+    that still normalizes onto a name OpenRouter lists."""
+    assert _pick_mistral_canonical(["mistral-small-2603", "Mistral-Small-2603"]) == "Mistral-Small-2603"
 
 
 # ----------------------------------------------------------------------

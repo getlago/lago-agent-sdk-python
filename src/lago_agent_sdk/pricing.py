@@ -362,14 +362,44 @@ def parse_openrouter(data: Any) -> dict[str, Any]:
 _MISTRAL_DATED_ID = re.compile(r"-\d{4,8}$")
 
 
+def _mistral_date_key(name: str) -> int:
+    """Normalize a dated Mistral suffix to a comparable integer; newest = largest.
+
+    Mistral's own convention is a 4-digit YYMM ("-2411", "-2603"), but the regex
+    admits 4-8 digits and mixed widths do NOT compare correctly as raw strings:
+    "20241101" sorts *below* "2411" lexicographically. Widening YYMM to YYYYMM00
+    puts both shapes on one scale.
+    """
+    m = _MISTRAL_DATED_ID.search(name)
+    if m is None:
+        return -1
+    digits = m.group(0)[1:]  # drop the leading "-"
+    if len(digits) == 4:  # YYMM -> 20YY-MM, day unknown
+        return int(f"20{digits}00")
+    return int(digits)  # YYYYMMDD, or an unexpected width taken at face value
+
+
 def _pick_mistral_canonical(names: list[str]) -> str:
-    """Prefer a dated snapshot id (what OpenRouter actually lists models
-    under) over a "-latest"-style moniker. Falls back to shortest-then-
-    alphabetical so the choice is always deterministic even with no dated
-    candidate in the group."""
+    """Prefer the NEWEST dated snapshot id (what OpenRouter actually lists
+    models under) over a "-latest"-style moniker.
+
+    Newest, not shortest. Every dated id in one family is the same length, so a
+    shortest-then-alphabetical tie-break silently resolved on the DATE — and
+    ascending: `mistral-large-2402` / `-2407` / `-2411` / `-latest` all collapsed
+    onto `mistral-large-2402`, the OLDEST, so the whole family got priced at a
+    two-year-old rate. `-2411` had matched OpenRouter directly before alias
+    resolution existed, which makes that a regression rather than a gap.
+
+    Falls back to shortest-then-alphabetical only when the group has no dated
+    candidate at all, so the choice stays deterministic either way. Ordering is
+    by Unicode code point — the JS port must NOT use `localeCompare`, which is
+    ICU/locale-dependent and made the two repos pick different canonicals for
+    the same input.
+    """
     dated = [n for n in names if _MISTRAL_DATED_ID.search(n)]
-    pool = dated or names
-    return sorted(pool, key=lambda n: (len(n), n))[0]
+    if dated:
+        return sorted(dated, key=lambda n: (-_mistral_date_key(n), n))[0]
+    return sorted(names, key=lambda n: (len(n), n))[0]
 
 
 def parse_mistral_aliases(data: Any) -> dict[str, str]:
@@ -433,8 +463,16 @@ def parse_mistral_aliases(data: Any) -> dict[str, str]:
             continue  # no aliasing at all — nothing to resolve
         canonical = _pick_mistral_canonical(members)
         for name in members:
-            if name != canonical:
-                result[name] = canonical
+            if name == canonical:
+                continue
+            # An explicit dated snapshot is already the real id OpenRouter lists,
+            # so it must pass through untouched — never rewritten onto a sibling.
+            # Without this, requesting `mistral-large-2411` was remapped to the
+            # group's canonical and priced at THAT snapshot's rate instead of its
+            # own, which is a mispricing rather than a miss.
+            if _MISTRAL_DATED_ID.search(name):
+                continue
+            result[name] = canonical
     return result
 
 
