@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from lago_agent_sdk import CanonicalUsage, LagoConfig, LagoSDK, ModelPrice
+from lago_agent_sdk.adapters.openai_native import extract_openai_native
 from lago_agent_sdk.pricing import (
     HttpPricingFetcher,
     PricingProvider,
@@ -295,6 +296,51 @@ def test_cloudflare_lookup_version_suffix_fallback() -> None:
     mp = lookup_cloudflare_workers_ai(table, "@cf/meta/llama-3.3-70b-instruct-fp8-fast-v2")
     assert mp is not None
     assert mp.input == Decimal("0.000000293")
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        # The routing prefix and the version-suffix drift, together.
+        "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast-v2",
+    ],
+)
+def test_cloudflare_lookup_accepts_the_compat_routing_prefix(requested: str) -> None:
+    """Cloudflare's catalog lists bare "@cf/..." names, but reaching a model
+    through the gateway's OpenAI-compatible `/compat` endpoint requires the
+    "workers-ai/" prefix — the form the README prescribes and the only form a
+    streaming call reports. Both must price to the same rate."""
+    table = parse_cloudflare_workers_ai(_CLOUDFLARE_MODELS_RAW)
+    mp = lookup_cloudflare_workers_ai(table, requested)
+    assert mp is not None, f"{requested} should have priced"
+    assert mp.input == Decimal("0.000000293")
+
+
+def test_cloudflare_lookup_miss_is_still_a_miss_with_the_prefix() -> None:
+    """The prefix strip must not turn an unknown model into a false hit."""
+    table = parse_cloudflare_workers_ai(_CLOUDFLARE_MODELS_RAW)
+    assert lookup_cloudflare_workers_ai(table, "workers-ai/@cf/nope/not-a-model") is None
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    ],
+)
+def test_workers_ai_provider_inferred_from_both_spellings(requested: str) -> None:
+    """A streaming Workers AI call carries no response model, so the requested
+    string — which the docs give in prefixed form — is all `_infer_provider`
+    has. Stamping "openai" there priced it against OpenRouter, missed, and
+    silently degraded to token events."""
+    u = extract_openai_native({"usage": {"prompt_tokens": 10, "completion_tokens": 5}}, model_id=requested)
+    assert u.provider == "workers-ai"
+    # The model keeps the spelling the customer used — the strip happens at lookup,
+    # so reporting stays faithful to the request.
+    assert u.model == requested
 
 
 def test_cloudflare_fetcher_returns_empty_without_credentials() -> None:

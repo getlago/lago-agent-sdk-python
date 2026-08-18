@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 import time
 
+import pytest
+
 from lago_agent_sdk.exceptions import LagoApiError
 from lago_agent_sdk.queue import EventQueue
 
@@ -174,6 +176,109 @@ def test_transient_failure_during_isolation_still_gets_retried():
         assert attempts["flaky"] >= 2, "the transient failure should have been retried, not dropped"
     finally:
         q.shutdown(timeout=2.0)
+
+
+# ----------------------------------------------------------------------
+# The throttling 4xxs. 429 and 408 sit inside the 400-499 range but mean "try
+# again, later" — classifying them as permanent dropped billable events and
+# aimed `max_batch_size` extra requests at a server that had just asked us to
+# slow down.
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize("status", [429, 408])
+def test_throttling_4xx_is_retried_not_dropped(status: int):
+    """A rate-limited or timed-out batch must reach Lago eventually. Dropping
+    it loses revenue, and isolating it one-by-one multiplies the load on a
+    server that is already shedding it."""
+    attempts = {"n": 0}
+    delivered: list = []
+
+    def sender(batch):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise LagoApiError(status, '{"error":"too many requests"}')
+        delivered.extend(batch)  # succeeds once the throttle lifts
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        q.push({"id": "a"})
+        q.push({"id": "b"})
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not delivered:
+            time.sleep(0.05)
+        assert [e["id"] for e in delivered] == ["a", "b"], "throttled events must still be delivered"
+        # Delivered as one batch, i.e. never fanned out into per-event requests.
+        assert attempts["n"] == 2
+    finally:
+        q.shutdown(timeout=2.0)
+
+
+@pytest.mark.parametrize("status", [429, 408])
+def test_throttling_4xx_applies_backoff(status: int):
+    """The inverse of test_permanent_failure_does_not_apply_backoff: a
+    throttling failure is transient, so it MUST leave a backoff in place —
+    that pause is the whole point of respecting a rate limit."""
+
+    def sender(batch):
+        raise LagoApiError(status, "slow down")
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        q.push({"id": "a"})
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and q._backoff_seconds == 0.0:
+            time.sleep(0.05)
+        assert q._backoff_seconds > 0.0, "a throttling 4xx must back off, not isolate-and-drop"
+    finally:
+        q.shutdown(timeout=1.0)
+
+
+def test_unrecognized_4xx_is_treated_as_transient():
+    """Only the enumerated validation statuses are permanent. An unfamiliar 4xx
+    errs toward retrying: a needless delay costs latency, a wrong drop costs
+    revenue."""
+    attempts = {"n": 0}
+    delivered: list = []
+
+    def sender(batch):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise LagoApiError(418, "i am a teapot")
+        delivered.extend(batch)
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        q.push({"id": "a"})
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not delivered:
+            time.sleep(0.05)
+        assert [e["id"] for e in delivered] == ["a"]
+    finally:
+        q.shutdown(timeout=2.0)
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 422])
+def test_validation_4xx_still_isolates_and_drops(status: int):
+    """The statuses that genuinely cannot succeed on a re-send keep the
+    isolate-one-by-one behaviour, so a single bad transaction_id still doesn't
+    take the rest of its batch down with it."""
+    sent_individually: list = []
+
+    def sender(batch):
+        if len(batch) > 1:
+            raise LagoApiError(status, "batch rejected")
+        sent_individually.append(batch[0]["id"])
+        if batch[0]["id"].startswith("bad"):
+            raise LagoApiError(status, "this one really is invalid")
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        q.push({"id": "bad_1"})
+        q.push({"id": "good_1"})
+        assert q.flush(timeout=2.0)
+        assert set(sent_individually) == {"bad_1", "good_1"}
+        assert q._backoff_seconds == 0.0
+    finally:
+        q.shutdown(timeout=1.0)
 
 
 # ----------------------------------------------------------------------

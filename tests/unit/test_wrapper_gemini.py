@@ -18,6 +18,12 @@ class FakePydanticResponse:
         return self._payload
 
 
+# What Gemini resolves the requested "gemini-2.5-flash" alias to. Google
+# hot-swaps these server-side, so the chunk's own version is what OpenRouter
+# lists and what pricing must key off.
+_RESOLVED_STREAM_MODEL = "gemini-2.5-flash-002"
+
+
 class FakeStreamChunk:
     def __init__(self, payload: dict):
         self._payload = payload
@@ -55,11 +61,15 @@ class FakeModels:
                 {
                     "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
                     "usage_metadata": None,  # intermediate chunks don't carry usage
+                    # Gemini hot-swaps "-latest" aliases, so every chunk reports
+                    # the version that actually answered.
+                    "model_version": _RESOLVED_STREAM_MODEL,
                 }
             ),
             FakeStreamChunk(
                 {
                     "candidates": [{"content": {"parts": [{"text": "."}]}, "finish_reason": "STOP"}],
+                    "model_version": _RESOLVED_STREAM_MODEL,
                     "usage_metadata": {
                         "prompt_token_count": 9,
                         "candidates_token_count": 4,
@@ -166,6 +176,20 @@ def test_wrap_rejects_legacy_generativeai_sdk_with_migration_hint() -> None:
     assert "google-genai" in msg
     assert "migrate" in msg or "migrat" in msg
     sdk.shutdown(timeout=1.0)
+
+
+def test_stream_attributes_the_resolved_model_not_the_requested_alias() -> None:
+    """Gemini resolves "-latest" and short aliases server-side and reports the
+    real version as `model_version`. The stream wrapper rebuilt a usage-only
+    payload and dropped it, reverting attribution to the requested alias."""
+    sdk, received = _make_sdk()
+    client = sdk.wrap(FakeGeminiClient())
+    list(client.models.generate_content_stream(model="gemini-2.5-flash", contents="hi"))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    models = {e["properties"]["model"] for e in flat}
+    assert models == {_RESOLVED_STREAM_MODEL}, f"expected the resolved version, got {models}"
 
 
 def test_wrap_generate_content_stream_captures_usage_from_final_chunk() -> None:
@@ -277,11 +301,13 @@ class FakeAsyncModels:
                 {
                     "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
                     "usage_metadata": None,
+                    "model_version": _RESOLVED_STREAM_MODEL,
                 }
             )
             yield FakeStreamChunk(
                 {
                     "candidates": [{"content": {"parts": [{"text": "."}]}, "finish_reason": "STOP"}],
+                    "model_version": _RESOLVED_STREAM_MODEL,
                     "usage_metadata": {
                         "prompt_token_count": 9,
                         "candidates_token_count": 4,

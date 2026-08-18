@@ -42,6 +42,15 @@ from typing import Any, cast
 from ..canonical import CanonicalUsage
 from ._common import resolve_model
 
+# Cloudflare Workers AI names every model "@cf/<vendor>/<model>". Reaching one
+# through the gateway's OpenAI-compatible `/compat` endpoint additionally requires
+# the "workers-ai/" routing prefix, so the same model arrives under two spellings
+# depending on which surface the customer used. `pricing.lookup_cloudflare_workers_ai`
+# strips the routing prefix before matching, because Cloudflare's own catalog lists
+# only the bare form.
+_WORKERS_AI_MODEL_PREFIX = "@cf/"
+_WORKERS_AI_COMPAT_PREFIX = "workers-ai/"
+
 # Top-level usage fields we recognize across BOTH chat completions and responses APIs.
 _KNOWN_USAGE_FIELDS = {
     # chat completions
@@ -111,8 +120,19 @@ def _infer_provider(resolved_model: str) -> str:
     `provider` is what price-mode keys pricing off of, and Workers AI has a
     genuinely different price table (Cloudflare's own catalog) than real
     OpenAI models (OpenRouter); stamping "openai" on a Workers AI call would
-    have made it permanently unpriceable, quietly, at the extraction layer."""
-    if resolved_model.startswith("@cf/"):
+    have made it permanently unpriceable, quietly, at the extraction layer.
+
+    BOTH spellings have to match. Cloudflare's `/compat` endpoint takes the
+    provider-prefixed form — `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast`
+    — which is what the README and the demo notebook prescribe, and what a
+    streaming call always reports (the synthetic usage payload carries no model,
+    so `resolve_model` falls back to the requested string verbatim). Matching
+    only the bare `@cf/` left every documented Workers AI call stamped "openai",
+    priced against OpenRouter, missed, and silently degraded to token events.
+    """
+    if resolved_model.startswith(_WORKERS_AI_MODEL_PREFIX) or resolved_model.startswith(
+        f"{_WORKERS_AI_COMPAT_PREFIX}{_WORKERS_AI_MODEL_PREFIX}"
+    ):
         return "workers-ai"
     return "openai"
 

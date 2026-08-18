@@ -95,7 +95,15 @@ def wrap_gemini_client(
                     for chunk in src:
                         payload = chunk.model_dump() if hasattr(chunk, "model_dump") else chunk
                         if isinstance(payload, dict) and payload.get("usage_metadata"):
-                            last_with_usage = {"usage_metadata": payload["usage_metadata"]}
+                            # Carry `model_version` too. Gemini hot-swaps "-latest"
+                            # aliases server-side, so the chunk's own version is what
+                            # OpenRouter lists and what pricing must key off; a
+                            # usage-only payload silently reverted to the requested
+                            # alias on every streaming call.
+                            last_with_usage = {
+                                "usage_metadata": payload["usage_metadata"],
+                                "model_version": payload.get("model_version"),
+                            }
                         yield chunk
                 finally:
                     if last_with_usage is not None:
@@ -118,7 +126,15 @@ def wrap_gemini_client(
                     async for chunk in src:
                         payload = chunk.model_dump() if hasattr(chunk, "model_dump") else chunk
                         if isinstance(payload, dict) and payload.get("usage_metadata"):
-                            last_with_usage = {"usage_metadata": payload["usage_metadata"]}
+                            # Carry `model_version` too. Gemini hot-swaps "-latest"
+                            # aliases server-side, so the chunk's own version is what
+                            # OpenRouter lists and what pricing must key off; a
+                            # usage-only payload silently reverted to the requested
+                            # alias on every streaming call.
+                            last_with_usage = {
+                                "usage_metadata": payload["usage_metadata"],
+                                "model_version": payload.get("model_version"),
+                            }
                         yield chunk
                 finally:
                     if last_with_usage is not None:

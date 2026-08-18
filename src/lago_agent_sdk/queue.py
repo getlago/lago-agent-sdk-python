@@ -5,13 +5,17 @@ seconds or immediately when buffer reaches `max_batch_size`. On a TRANSIENT
 send failure (network error, 5xx), re-prepends the batch and applies
 exponential backoff (1s, 2s, 4s, 8s, capped at 60s). Resets on next success.
 
-A PERMANENT failure (Lago 4xx — e.g. a duplicate `transaction_id` from
-replaying/backfilling the same window twice) is different: retrying it will
-never succeed, so it is logged and dropped instead of re-queued. Without this
-distinction, one permanently-doomed batch sits at the front of the FIFO buffer
-and blocks every event queued behind it — including brand new, perfectly
-valid ones — for the full backoff ceiling, over and over, since a batch that
-can never succeed is retried exactly like one that might.
+A PERMANENT failure (a Lago *validation* 4xx — e.g. a duplicate
+`transaction_id` from replaying/backfilling the same window twice) is
+different: retrying it will never succeed, so it is logged and dropped instead
+of re-queued. Without this distinction, one permanently-doomed batch sits at
+the front of the FIFO buffer and blocks every event queued behind it —
+including brand new, perfectly valid ones — for the full backoff ceiling, over
+and over, since a batch that can never succeed is retried exactly like one
+that might.
+
+Note that "permanent" is a specific list of statuses, NOT the whole 4xx range —
+see `_PERMANENT_STATUSES`.
 """
 
 from __future__ import annotations
@@ -27,13 +31,28 @@ from typing import Any
 
 from .exceptions import LagoApiError
 
+# Statuses where re-sending the SAME batch can never succeed: the request itself
+# is the problem (malformed body, bad credentials, a transaction_id Lago has
+# already accepted). Deliberately an explicit list rather than the 400-499 range,
+# because two 4xx statuses mean "try again, later": 429 (rate limited) and 408
+# (request timeout). Treating those as permanent dropped billable events AND fanned
+# one throttled batch out into up to `max_batch_size` extra requests aimed at the
+# server that had just asked us to slow down.
+_PERMANENT_STATUSES = frozenset({400, 401, 403, 404, 409, 422})
+
 
 def _is_permanent_failure(exc: Exception) -> bool:
-    """A Lago 4xx (bad request, validation error, duplicate transaction_id,
-    ...) will never succeed by retrying the exact same batch. A 5xx or a
-    network-level exception (timeout, connection error, no LagoApiError at
-    all) might — those stay retryable."""
-    return isinstance(exc, LagoApiError) and 400 <= exc.status < 500
+    """True when re-sending this exact batch can never succeed.
+
+    A validation 4xx (bad request, duplicate transaction_id, revoked key) will
+    fail identically forever, so it is isolated and dropped. Everything else —
+    5xx, a network-level exception (timeout, connection error, no LagoApiError at
+    all), and the throttling 4xxs 429/408 — might succeed later and stays
+    retryable. An unrecognized 4xx is treated as transient: waiting on an event
+    that would have been dropped costs a delay, dropping one that would have been
+    accepted costs revenue.
+    """
+    return isinstance(exc, LagoApiError) and exc.status in _PERMANENT_STATUSES
 
 
 logger = logging.getLogger("lago_agent_sdk.queue")

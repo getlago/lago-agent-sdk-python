@@ -30,6 +30,12 @@ class FakeResponsesResponse:
         return self._payload
 
 
+# What OpenAI resolves the requested "gpt-4o-mini" alias to. Streaming chunks
+# report it on every frame; the wrapper must carry it through to the event, or
+# pricing looks up an alias OpenRouter doesn't list.
+_RESOLVED_STREAM_MODEL = "gpt-4o-mini-2024-07-18"
+
+
 class FakeStreamChunk:
     """Mimics a ChatCompletionChunk."""
 
@@ -96,13 +102,20 @@ class FakeCompletions:
         if kwargs.get("stream") is True:
             # Stream yields several chunks; the LAST one carries usage
             # (because the wrapper auto-injects stream_options.include_usage).
+            # Every real chunk carries the RESOLVED model — a short alias like
+            # "gpt-4o-mini" comes back as a dated snapshot. Pricing keys off it.
             chunks = [
                 FakeStreamChunk(
-                    {"choices": [{"delta": {"content": "hi"}}], "usage": None},
+                    {
+                        "choices": [{"delta": {"content": "hi"}}],
+                        "usage": None,
+                        "model": _RESOLVED_STREAM_MODEL,
+                    },
                 ),
                 FakeStreamChunk(
                     {
                         "choices": [],
+                        "model": _RESOLVED_STREAM_MODEL,
                         "usage": {
                             "prompt_tokens": 12,
                             "completion_tokens": 22,
@@ -238,6 +251,25 @@ def test_wrap_create_with_stream_captures_usage_from_final_chunk() -> None:
     by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
     assert by_code["llm_input_tokens"] == 12
     assert by_code["llm_output_tokens"] == 22
+
+
+def test_stream_attributes_the_resolved_model_not_the_requested_alias() -> None:
+    """The model-attribution fix has to reach the streaming path too.
+
+    The wrapper rebuilds a synthetic usage payload from the chunks, and dropping
+    the chunk's own `model` made `resolve_model` fall back to the requested alias
+    — so a streamed call was attributed (and priced) as "gpt-4o-mini" while the
+    identical non-streaming call correctly resolved to the dated snapshot. In
+    price mode that means the OpenRouter lookup misses and silently degrades to
+    token events.
+    """
+    sdk, received = _new_sdk()
+    client = sdk.wrap(FakeOpenAI())
+    list(client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    models = {e["properties"]["model"] for e in received}
+    assert models == {_RESOLVED_STREAM_MODEL}, f"expected the resolved snapshot, got {models}"
 
 
 def test_wrap_auto_injects_stream_options_include_usage() -> None:

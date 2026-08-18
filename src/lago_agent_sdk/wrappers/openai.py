@@ -132,18 +132,28 @@ def wrap_openai_client(
         Responses API:    usage sits under `event.response.usage` on the
         terminal `response.completed` event (`{"type": "response.completed",
         "response": {"usage": {...}}}`).
+
+        Carries the chunk's own `model` through alongside the usage. Rebuilding a
+        usage-ONLY payload made `resolve_model` fall back to the requested alias
+        on every streaming call, which is precisely the attribution bug the
+        non-streaming path was fixed for: a streamed `gpt-5-chat-latest` stayed
+        `gpt-5-chat-latest` instead of resolving to the dated snapshot OpenRouter
+        lists, so price mode missed and silently degraded to token events. It
+        matters most on a gateway, where the resolved name is what decides which
+        price table the call is even looked up in.
         """
         if not isinstance(payload, dict):
             return None
         usage = payload.get("usage")
         if isinstance(usage, dict) and usage:
-            return {"usage": usage}
-        # Responses API stream events nest usage under `.response.usage`
+            return {"usage": usage, "model": payload.get("model")}
+        # Responses API stream events nest usage under `.response.usage` — and the
+        # resolved model under `.response.model`, not at the event's top level.
         response = payload.get("response")
         if isinstance(response, dict):
             nested = response.get("usage")
             if isinstance(nested, dict) and nested:
-                return {"usage": nested}
+                return {"usage": nested, "model": response.get("model")}
         return None
 
     def _make_sync_create(original: Any, raw_create: Any | None, is_responses_api: bool = False) -> Any:
