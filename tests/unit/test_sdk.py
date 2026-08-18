@@ -92,3 +92,45 @@ def test_dimensions_merge_into_event_properties():
     flat = [e for batch in received for e in batch]
     assert flat[0]["properties"]["project"] == "demo"
     assert flat[0]["properties"]["tenant"] == "acme"
+
+
+def test_caller_dimensions_win_on_a_collision_on_both_emitters():
+    """One rule across both paths: a caller dimension overrides every
+    SDK-computed property of the same name.
+
+    The cost path used to spread dimensions into `base_properties`, i.e. BEFORE
+    `unit`/`value`/`base_cost`/`unit_price`, so those four silently overwrote a
+    same-named caller dimension there while the token path honoured it. Same
+    customer config, two different outcomes depending on the mode.
+    """
+    dims = {"unit": "seat", "value": "CUSTOM", "model": "my-label", "team": "platform"}
+    u = CanonicalUsage(input=100, output=50, model="claude-sonnet-4-5", provider="anthropic", api="native")
+
+    # Token path.
+    sdk_tok, got_tok = _new_sdk(default_sub="sub")
+    sdk_tok.emit(u, dimensions=dims, mode="tokens")
+    assert sdk_tok.flush(timeout=2.0)
+    sdk_tok.shutdown(timeout=1.0)
+    tok = [e for batch in got_tok for e in batch]
+
+    # Cost path (precomputed, so no price table needed).
+    sdk_cost, got_cost = _new_sdk(default_sub="sub")
+    sdk_cost.emit(u, dimensions=dims, mode="price", usd_cost=0.01)
+    assert sdk_cost.flush(timeout=2.0)
+    sdk_cost.shutdown(timeout=1.0)
+    cost = [e for batch in got_cost for e in batch]
+
+    assert tok and cost
+    for label, events in (("token", tok), ("cost", cost)):
+        for e in events:
+            p = e["properties"]
+            assert p["unit"] == "seat", f"{label}: caller `unit` must win"
+            assert p["value"] == "CUSTOM", f"{label}: caller `value` must win"
+            assert p["model"] == "my-label", f"{label}: caller `model` must win"
+            assert p["team"] == "platform"
+
+    # The accepted consequence of that rule, pinned deliberately: a dimension
+    # named `value` overrides the reported quantity. It is NOT able to touch the
+    # charged amount on a cost event, because `precise_total_amount_cents` is a
+    # sibling of `properties`, not a member of it.
+    assert cost[0]["precise_total_amount_cents"] == "1"

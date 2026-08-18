@@ -348,13 +348,18 @@ class LagoSDK:
         one.
         """
         now = int(time.time())
+        # Caller dimensions are spread LAST in each `properties` below, not here —
+        # they must win over every SDK-computed key, exactly as they already do in
+        # `_emit_token_events`. Spreading them into `base_properties` put them
+        # *before* `unit`/`value`/`base_cost`/`unit_price`, so those four silently
+        # overwrote a caller's same-named dimension on this path while honouring it
+        # on the token path — one customer config, two different outcomes.
         base_properties: dict[str, Any] = {
             "model": usage.model,
             "provider": usage.provider,
             "api": usage.api,
             "price_source": breakdown.source,
             "markup": breakdown.markup,
-            **(dimensions or {}),
         }
 
         if not breakdown.fields:
@@ -363,6 +368,7 @@ class LagoSDK:
                 "unit": str(usage.input + usage.output),
                 "value": breakdown.total,
                 "base_cost": breakdown.base,
+                **(dimensions or {}),
             }
             self._queue.push(
                 {
@@ -391,6 +397,7 @@ class LagoSDK:
                 "value": billed_cost,
                 "base_cost": parts["cost"],
                 "unit_price": parts["unit_price"],
+                **(dimensions or {}),
             }
             self._queue.push(
                 {
