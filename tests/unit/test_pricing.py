@@ -1297,7 +1297,8 @@ def test_event_id_used_as_transaction_id_in_price_mode() -> None:
 def test_event_id_suffixed_per_field_in_token_mode() -> None:
     """Token mode can push several events from one call (input, output, ...);
     reusing the same event_id verbatim for all of them would collide, so each
-    field gets its own suffix off the same base id."""
+    field gets its own suffix off the same base id — in the `_tok_` namespace,
+    which keeps it distinct from the cost path's suffix for the same field."""
     received: list = []
     cfg = LagoConfig(api_key="dummy", default_subscription_id="sub_default")
     sdk = LagoSDK(api_key="dummy", config=cfg)
@@ -1308,7 +1309,43 @@ def test_event_id_suffixed_per_field_in_token_mode() -> None:
     sdk.shutdown(timeout=1.0)
     flat = [e for batch in received for e in batch]
     ids = {e["transaction_id"] for e in flat}
-    assert ids == {"backfill_01ABC_input", "backfill_01ABC_output"}
+    assert ids == {"backfill_01ABC_tok_input", "backfill_01ABC_tok_output"}
+
+
+def test_token_fallback_and_cost_ids_never_collide_for_one_event_id() -> None:
+    """The bug this namespacing exists for.
+
+    A price miss falls back to token events; the SAME window re-run once the
+    table is warm takes the cost path. Under one shared namespace both emitted
+    `{event_id}_input`, so Lago rejected the second as a duplicate — and since
+    `/events/batch` is all-or-nothing, that rejection failed every other event
+    in the batch too. The dollar amounts for that window were never billed,
+    only the raw token counts, and nothing surfaced it.
+    """
+    u = CanonicalUsage(input=10, output=5, model="claude-opus-4-8", provider="anthropic", api="native")
+
+    # Run 1: cold table -> price miss -> token fallback, same event_id.
+    cold = PricingProvider(fetcher=StubFetcher(openrouter={}), ttl_seconds=3600)
+    sdk_cold, got_cold = _price_sdk(cold)
+    sdk_cold.emit(u, event_id="backfill_01ABC")
+    assert sdk_cold.flush(timeout=2.0)
+    sdk_cold.shutdown(timeout=1.0)
+    cold_ids = {e["transaction_id"] for batch in got_cold for e in batch}
+
+    # Run 2: warm table -> real per-field cost events, same event_id.
+    sdk_warm, got_warm = _price_sdk(_warm_provider())
+    sdk_warm.emit(u, event_id="backfill_01ABC")
+    assert sdk_warm.flush(timeout=2.0)
+    sdk_warm.shutdown(timeout=1.0)
+    warm_ids = {e["transaction_id"] for batch in got_warm for e in batch}
+
+    assert cold_ids, "cold run should have emitted token events"
+    assert warm_ids, "warm run should have emitted cost events"
+    assert not (cold_ids & warm_ids), (
+        f"token-fallback and cost ids must not collide; overlap={cold_ids & warm_ids}"
+    )
+    assert all("_tok_" in i for i in cold_ids)
+    assert all("_cost_" in i for i in warm_ids)
 
 
 def test_no_event_id_still_falls_back_to_random_uuid() -> None:

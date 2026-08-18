@@ -231,9 +231,24 @@ class LagoSDK:
         instead of a random UUID — pass the source log entry's own id when
         replaying/backfilling from a gateway's logs, so re-running against the
         same window never double-bills. A live, one-shot call has no natural
-        id to reuse and should leave this as None. In token mode, which can
-        push several events from one call, each field's event is suffixed
-        (``f"{event_id}_{field_name}"``) so they don't collide with each other.
+        id to reuse and should leave this as None.
+
+        Both multi-event paths suffix per field so they don't collide with each
+        other, and they use DIFFERENT namespaces so they can't collide across
+        modes either:
+
+          * token events      ``f"{event_id}_tok_{field_name}"``
+          * split cost events ``f"{event_id}_cost_{field_name}"``
+          * single cost event ``event_id`` (one event, nothing to disambiguate)
+
+        The namespaces are load-bearing. Both paths are reachable for the SAME
+        `event_id`: a price lookup that misses falls back to token events, and
+        the same window re-run once the table is warm takes the cost path. Under
+        one shared namespace the second run re-sent `{event_id}_input` under a
+        different metric code, Lago rejected it as a duplicate — and because
+        `/events/batch` is all-or-nothing, that rejection failed every other
+        event in the batch too. Net effect: the dollar amounts for that window
+        were never billed, only the raw token counts, and nothing surfaced it.
         """
         try:
             sub = self._resolve_subscription(subscription)
@@ -288,7 +303,11 @@ class LagoSDK:
             if not code:
                 continue
             event = {
-                "transaction_id": f"{event_id}_{field_name}" if event_id else str(uuid.uuid4()),
+                # `_tok_` namespace: the cost path suffixes with the same field
+                # vocabulary, and both are reachable for one `event_id` (price
+                # miss -> token fallback, then the cost path once the table is
+                # warm). See emit()'s docstring for what a shared namespace cost.
+                "transaction_id": f"{event_id}_tok_{field_name}" if event_id else str(uuid.uuid4()),
                 "external_subscription_id": sub,
                 "code": code,
                 "timestamp": now,
@@ -347,6 +366,9 @@ class LagoSDK:
             }
             self._queue.push(
                 {
+                    # Unsuffixed: this branch pushes exactly ONE event, so there is
+                    # nothing to disambiguate. It cannot collide with the namespaced
+                    # multi-event ids below or in _emit_token_events.
                     "transaction_id": event_id or str(uuid.uuid4()),
                     "external_subscription_id": sub,
                     "code": self.config.cost_metric_code,
@@ -372,7 +394,8 @@ class LagoSDK:
             }
             self._queue.push(
                 {
-                    "transaction_id": f"{event_id}_{field_name}" if event_id else str(uuid.uuid4()),
+                    # `_cost_` namespace — see the `_tok_` note in _emit_token_events.
+                    "transaction_id": f"{event_id}_cost_{field_name}" if event_id else str(uuid.uuid4()),
                     "external_subscription_id": sub,
                     "code": self.config.cost_metric_code,
                     "timestamp": now,
