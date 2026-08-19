@@ -185,6 +185,38 @@ def test_no_usd_cost_in_token_mode_reports_nothing():
     assert errors == []
 
 
+def test_no_resolvable_subscription_is_reported_not_just_logged():
+    """Dropping a call for lack of a subscription loses its billing entirely, so it
+    must reach on_error — the documented channel for every other billing gap. It
+    was logger.error only, while the JS port already reported it."""
+    errors: list = []
+    cfg = LagoConfig(
+        api_key="dummy",
+        default_subscription_id=None,
+        on_error=lambda exc, where: errors.append((str(exc), where)),
+    )
+    sdk = LagoSDK(api_key="dummy", config=cfg)
+    sdk._queue._sender = lambda b: None  # type: ignore[attr-defined]
+    sdk.emit(CanonicalUsage(input=10, model="m", provider="p", api="x"))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert errors, "a dropped call must reach on_error"
+    assert "subscription" in errors[0][0]
+
+
+def test_negative_counts_are_never_emitted():
+    """`nonzero_numeric` filtered on truthiness, so a negative survived and was
+    emitted verbatim as value="-100" — a negative billable quantity. JS already
+    filtered on > 0."""
+    sdk, received = _new_sdk(default_sub="sub")
+    sdk.emit(CanonicalUsage(input=-100, output=5, model="m", provider="p", api="x"))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert {e["code"] for e in flat} == {"llm_output_tokens"}
+    assert all(float(e["properties"]["value"]) > 0 for e in flat)
+
+
 def test_dimensions_merge_into_event_properties():
     sdk, received = _new_sdk(default_sub="sub")
     u = CanonicalUsage(input=1, model="m", provider="p", api="bedrock_invoke")

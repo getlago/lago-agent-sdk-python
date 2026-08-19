@@ -199,8 +199,22 @@ def apply_markup(usd: str, markup: str) -> str:
     summed `total` has markup applied. Splitting a breakdown into one event
     per field (per token_type) needs markup applied to each field individually,
     with the same floor-to-12dp convention as everywhere else, or a markup
-    != 1.0 would silently vanish from every per-field/token_type event."""
-    return _fmt_money((Decimal(usd) * Decimal(markup)).quantize(_Q, rounding=ROUND_DOWN))
+    != 1.0 would silently vanish from every per-field/token_type event.
+
+    Parsed through `_parse_price` rather than `Decimal()` directly. A bare
+    `Decimal("abc")` raises `InvalidOperation` — and this is called from inside
+    `_push_cost_event`, under `emit()`'s catch-all, so the whole cost event was
+    dropped and reported as an unknown "emit" error instead of taking the
+    documented no-price path. It was also the one money helper in this module that
+    could raise at all, past every caller relying on the `None`-on-bad-input
+    convention. The JS port already defaulted to zero here, so the two repos were
+    differently wrong on the same input.
+    """
+    base = _parse_price(usd)
+    mult = _parse_price(markup)
+    if base is None or mult is None:
+        return _fmt_money(Decimal(0))
+    return _fmt_money((base * mult).quantize(_Q, rounding=ROUND_DOWN))
 
 
 def _fmt_money(d: Decimal) -> str:

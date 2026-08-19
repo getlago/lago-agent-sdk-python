@@ -269,9 +269,20 @@ class LagoSDK:
         try:
             sub = self._resolve_subscription(subscription)
             if not sub:
+                # Reported as well as logged: this drops the call's billing entirely,
+                # and a customer watching on_error — the documented channel for every
+                # other billing gap — saw nothing. The JS port already reported it.
                 logger.error(
                     "lago: dropping events for model=%s — no resolvable subscription",
                     usage.model,
+                )
+                self._report_error(
+                    ValueError(
+                        f"no resolvable subscription for model={usage.model!r}; events dropped. "
+                        f"Pass subscription=..., use with_subscription(), or set "
+                        f"LagoConfig.default_subscription_id."
+                    ),
+                    "emit",
                 )
                 return
 

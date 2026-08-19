@@ -178,6 +178,28 @@ def test_transient_failure_during_isolation_still_gets_retried():
         q.shutdown(timeout=2.0)
 
 
+def test_overflow_is_reported_through_on_error():
+    """An overflow drops BILLABLE events. It was logger.warning only, so a customer
+    watching on_error never learned revenue had been lost; the JS port already
+    reported it."""
+    errors: list = []
+    q = EventQueue(
+        sender=lambda b: None,
+        flush_interval=10.0,  # keep the worker idle so the buffer really fills
+        max_batch_size=1000,
+        max_buffer_size=2,
+        on_error=lambda exc, where: errors.append((str(exc), where)),
+    )
+    try:
+        for i in range(5):
+            q.push({"id": i})
+        assert errors, "overflow must reach on_error"
+        assert any(w == "overflow" for _, w in errors)
+        assert any("overflow" in m for m, _ in errors)
+    finally:
+        q.shutdown(timeout=1.0)
+
+
 # ----------------------------------------------------------------------
 # The throttling 4xxs. 429 and 408 sit inside the 400-499 range but mean "try
 # again, later" — classifying them as permanent dropped billable events and

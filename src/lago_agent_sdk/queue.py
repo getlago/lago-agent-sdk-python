@@ -124,6 +124,17 @@ class EventQueue:
             if len(self._buffer) >= self._max_buffer_size:
                 self._buffer.popleft()
                 logger.warning("lago queue overflow at %d events; dropping oldest", self._max_buffer_size)
+                # Also through on_error: an overflow drops BILLABLE events, and a
+                # customer watching only the error hook — the documented channel for
+                # every other billing gap — never learned revenue had been lost. The
+                # JS port already reported this, so the two disagreed on whether a
+                # dropped event is visible.
+                self._report_error(
+                    RuntimeError(
+                        f"queue overflow at {self._max_buffer_size} events; dropped the oldest event"
+                    ),
+                    "overflow",
+                )
             self._buffer.append(event)
             should_wake = len(self._buffer) >= self._max_batch_size
         if should_wake:
