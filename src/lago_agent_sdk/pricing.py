@@ -146,7 +146,13 @@ _BEDROCK_VENDOR_WORDS = {
 
 _SCALE = 12
 _Q = Decimal(1).scaleb(-_SCALE)  # Decimal("1E-12")
-_VERSION_DATE_SUFFIX = re.compile(r"-(?:\d{8}|v\d+)$")
+# A trailing version/revision marker OpenRouter usually omits from its own ids.
+# Shapes seen live: Anthropic's compact date ("-20250929"), an explicit "-v2", and
+# Gemini's 3-digit revision ("-002", which `model_version` can report where
+# OpenRouter lists only the bare name). Verified safe against the live 415-model
+# catalog: ZERO ids have a model part ending in exactly three digits, so the
+# "-\d{3}" arm cannot shorten a real listing.
+_VERSION_DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{3}|v\d+)$")
 
 
 # ----------------------------------------------------------------------
@@ -381,9 +387,23 @@ def parse_openrouter(data: Any) -> dict[str, Any]:
             cache_write=_parse_price(pricing.get(_OPENROUTER_FIELD_MAP["cache_write"])),
             reasoning=_parse_price(pricing.get(_OPENROUTER_FIELD_MAP["reasoning"])),
         )
+        # OpenRouter marks a MOVING alias with a leading "~" on the vendor —
+        # "~anthropic/claude-sonnet-latest", "~openai/gpt-latest",
+        # "~google/gemini-flash-latest". Measured live: 11 such ids across 6
+        # vendors, every one a "-latest" moniker, every one carrying real token
+        # pricing. Indexed verbatim they were ALL unpriceable, because the vendor
+        # parsed as "~anthropic"/"~openai"/"~google" — none of which appear in
+        # _VENDOR_MAP — so a customer in price mode asking for a plain "-latest"
+        # alias missed and fell back to token events, billing nothing at all in an
+        # llm_cost-only setup. Stripping the marker indexes them under their real
+        # vendor. Verified collision-free against the live catalog: no un-prefixed
+        # id duplicates a "~"-prefixed one, so nothing is overwritten.
+        bare = mid[1:] if mid.startswith("~") else mid
         exact[mid] = mp
-        if "/" in mid:
-            vendor, _, suffix = mid.partition("/")
+        if bare != mid:
+            exact[bare] = mp
+        if "/" in bare:
+            vendor, _, suffix = bare.partition("/")
             norm[(vendor.lower(), _norm(suffix))] = mp
     return {"exact": exact, "norm": norm}
 

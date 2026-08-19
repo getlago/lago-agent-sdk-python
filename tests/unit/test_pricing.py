@@ -253,6 +253,58 @@ def test_openrouter_miss_returns_none() -> None:
 # ----------------------------------------------------------------------
 # Cloudflare Workers AI parsing + matching
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# OpenRouter's "~" moving-alias marker. Measured live: 11 ids across 6 vendors,
+# every one a "-latest" moniker with real token pricing, and every one
+# unpriceable before this — the vendor parsed as "~anthropic"/"~openai"/"~google",
+# which match nothing in _VENDOR_MAP.
+# ----------------------------------------------------------------------
+_TILDE_RAW = {
+    "data": [
+        {
+            "id": "~anthropic/claude-sonnet-latest",
+            "pricing": {"prompt": "0.000002", "completion": "0.00001"},
+        },
+        {"id": "~openai/gpt-latest", "pricing": {"prompt": "0.0000025", "completion": "0.000015"}},
+        {
+            "id": "~google/gemini-flash-latest",
+            "pricing": {"prompt": "0.000000375", "completion": "0.000001875"},
+        },
+    ]
+}
+
+
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [
+        ("anthropic", "claude-sonnet-latest"),
+        ("openai", "gpt-latest"),
+        ("gemini", "gemini-flash-latest"),
+    ],
+)
+def test_moving_alias_ids_are_priceable(provider: str, model: str) -> None:
+    """A "-latest" alias a customer plausibly requests must resolve. Billing
+    nothing at all is the outcome in an llm_cost-only setup."""
+    t = parse_openrouter(_TILDE_RAW)
+    assert lookup_openrouter(t, provider, model) is not None
+
+
+def test_moving_alias_still_indexed_under_its_verbatim_id() -> None:
+    """Stripping the marker must ADD a key, not replace one — the raw id stays
+    resolvable so nothing that already worked breaks."""
+    t = parse_openrouter(_TILDE_RAW)
+    assert "~openai/gpt-latest" in t["exact"]
+    assert "openai/gpt-latest" in t["exact"]
+
+
+def test_three_digit_revision_suffix_strips_to_a_hit() -> None:
+    """Gemini's `model_version` can report a "-002" revision where OpenRouter
+    lists only the bare name. Verified against the live catalog that no real id's
+    model part ends in exactly three digits, so this arm is safe."""
+    t = parse_openrouter(_TILDE_RAW)
+    assert lookup_openrouter(t, "gemini", "gemini-flash-latest-002") is not None
+
+
 def test_cloudflare_parses_real_price_shape() -> None:
     table = parse_cloudflare_workers_ai(_CLOUDFLARE_MODELS_RAW)
     mp = lookup_cloudflare_workers_ai(table, "@cf/meta/llama-3.3-70b-instruct-fp8-fast")
