@@ -123,6 +123,13 @@ _CLOUDFLARE_UNIT_FIELD_MAP = {
 # which decides the provider from the same two spellings.
 _WORKERS_AI_COMPAT_PREFIX = "workers-ai/"
 
+# Cloudflare's catalog page size, and a hard bound on the paging loop. The loop runs
+# on the queue's flush tick ahead of the drain, so it must terminate even if the
+# endpoint keeps returning full pages. 40 pages covers ~2000 models against a real
+# catalog of 64.
+_CF_PER_PAGE = 50
+_CF_MAX_PAGES = 40
+
 # Bedrock cross-region inference prefix -> a representative AWS region.
 _BEDROCK_REGION_PREFIX = {
     "us": "us-east-1",
@@ -586,8 +593,19 @@ def parse_cloudflare_workers_ai(models: Any) -> dict[str, ModelPrice]:
         name = m.get("name")
         if not isinstance(name, str) or not name:
             continue
+        # `.get("properties", [])` only defaults when the key is ABSENT — an
+        # explicit JSON null returns None, and `for p in None` raises TypeError
+        # straight out of this function into `maybe_refresh`'s handler, which leaves
+        # `_cloudflare_workers_ai` at None. One malformed entry would therefore
+        # unprice EVERY Workers AI model, not just its own. The JS port already
+        # isinstance-guarded here and dropped only the bad entry.
+        props = m.get("properties")
         price_prop = next(
-            (p for p in m.get("properties", []) if isinstance(p, dict) and p.get("property_id") == "price"),
+            (
+                p
+                for p in (props if isinstance(props, list) else [])
+                if isinstance(p, dict) and p.get("property_id") == "price"
+            ),
             None,
         )
         if not isinstance(price_prop, dict):
@@ -833,14 +851,34 @@ class HttpPricingFetcher:
         page = 1
         while True:
             resp = requests.get(
-                url, headers=headers, params={"per_page": 50, "page": page}, timeout=self._timeout
+                url,
+                headers=headers,
+                params={"per_page": _CF_PER_PAGE, "page": page},
+                timeout=self._timeout,
             )
             resp.raise_for_status()
             body = resp.json()
             batch = body.get("result") or []
             models.extend(batch)
-            total = body.get("result_info", {}).get("total_count", len(models))
-            if len(batch) < 50 or len(models) >= total:
+            # A SHORT page is the only reliable end-of-catalog signal here.
+            # `result_info.total_count` is not: measured live it reports 291 while
+            # the endpoint serves 64 (50 then 14 then 0), so a `len(models) >= total`
+            # test never fires. It must also never be defaulted to `len(models)` —
+            # that made an ABSENT total_count break after page one, silently keeping
+            # 50 of the 64 available.
+            if len(batch) < _CF_PER_PAGE:
+                break
+            if page >= _CF_MAX_PAGES:
+                # Bounded because this runs on the queue's flush tick, ahead of the
+                # drain — an endpoint that always returns a full page must not stall
+                # event delivery indefinitely. Truncation is reported rather than
+                # silent, since a short catalog reads as "these models are unpriced".
+                logger.warning(
+                    "lago: cloudflare model catalog truncated at %d pages (%d models); "
+                    "prices for later models are unavailable",
+                    _CF_MAX_PAGES,
+                    len(models),
+                )
                 break
             page += 1
         return parse_cloudflare_workers_ai(models)

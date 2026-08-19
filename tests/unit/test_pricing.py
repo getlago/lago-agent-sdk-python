@@ -477,6 +477,115 @@ def test_precomputed_unit_matches_the_split_path_basis() -> None:
     _ = received
 
 
+def test_cloudflare_entry_with_null_properties_does_not_unprice_everything() -> None:
+    """`.get("properties", [])` only defaults when the key is ABSENT — an explicit
+    JSON null returns None and `for p in None` raised TypeError out of this
+    function into maybe_refresh's handler, leaving the whole table None. One
+    malformed entry would unprice EVERY Workers AI model, not just its own."""
+    raw = [
+        {"name": "@cf/broken/model", "properties": None},
+        {
+            "name": "@cf/good/model",
+            "properties": [
+                {
+                    "property_id": "price",
+                    "value": [{"unit": "per M input tokens", "price": 1.0, "currency": "USD"}],
+                }
+            ],
+        },
+    ]
+    table = parse_cloudflare_workers_ai(raw)
+    assert "@cf/good/model" in table, "a sibling entry must survive a malformed one"
+    assert "@cf/broken/model" not in table
+
+
+def _cf_pages(*counts: int, total_count: int | None = None) -> list[dict]:
+    """Fake paged responses: `counts[i]` models on page i+1."""
+    pages = []
+    for n in counts:
+        info: dict = {"page": len(pages) + 1, "per_page": 50, "count": n}
+        if total_count is not None:
+            info["total_count"] = total_count
+        pages.append(
+            {
+                "result": [
+                    {
+                        "name": f"@cf/m/p{len(pages) + 1}-{i}",
+                        "properties": [
+                            {
+                                "property_id": "price",
+                                "value": [{"unit": "per M input tokens", "price": 1.0, "currency": "USD"}],
+                            }
+                        ],
+                    }
+                    for i in range(n)
+                ],
+                "result_info": info,
+            }
+        )
+    return pages
+
+
+def _run_cf_fetch(pages: list[dict]) -> tuple[int, list[int]]:
+    """Drive fetch_cloudflare_workers_ai against faked pages; return (models, pages hit)."""
+    import requests as _rq
+
+    seen: list[int] = []
+    orig = _rq.get
+
+    class _Resp:
+        def __init__(self, body):
+            self._b = body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._b
+
+    def fake(url, **kw):
+        page = int((kw.get("params") or {}).get("page", 1))
+        seen.append(page)
+        return _Resp(pages[page - 1] if page - 1 < len(pages) else {"result": [], "result_info": {}})
+
+    _rq.get = fake
+    try:
+        f = HttpPricingFetcher(cloudflare_account_id="acct", cloudflare_api_token="tok")
+        table = f.fetch_cloudflare_workers_ai()
+    finally:
+        _rq.get = orig
+    return len(table), seen
+
+
+def test_cloudflare_pagination_walks_until_a_short_page() -> None:
+    """Matches the real endpoint, which serves 50 then 14 then 0."""
+    n, seen = _run_cf_fetch(_cf_pages(50, 14, total_count=291))
+    assert seen == [1, 2], f"should stop after the short page, hit {seen}"
+    assert n == 64
+
+
+def test_cloudflare_pagination_survives_a_missing_total_count() -> None:
+    """The bug: `total_count` defaulting to len(models) made an absent count break
+    after page one, silently keeping 50 of the 64 available."""
+    n, seen = _run_cf_fetch(_cf_pages(50, 14, total_count=None))
+    assert seen == [1, 2], f"a missing total_count must not stop paging, hit {seen}"
+    assert n == 64
+
+
+def test_cloudflare_pagination_ignores_a_wrong_total_count() -> None:
+    """Measured live: the endpoint reports total_count=291 while serving 64, so a
+    `len(models) >= total` test can never be the terminator."""
+    n, _ = _run_cf_fetch(_cf_pages(50, 14, total_count=291))
+    assert n == 64
+
+
+def test_cloudflare_pagination_is_bounded() -> None:
+    """This runs on the queue's flush tick ahead of the drain, so an endpoint that
+    always returns a full page must not stall event delivery."""
+    n, seen = _run_cf_fetch(_cf_pages(*([50] * 60), total_count=100000))
+    assert len(seen) <= 40, f"loop must be bounded, hit {len(seen)} pages"
+
+
 def test_cloudflare_fetcher_returns_empty_without_credentials() -> None:
     """No account id / token set — Workers AI pricing is simply unavailable,
     not an error; the fetch never even makes a request."""
