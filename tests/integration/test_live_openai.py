@@ -139,17 +139,32 @@ def test_live_openai_chat_completions_tool_use_emits_tool_calls() -> None:
 
 def test_live_openai_reasoning_model_emits_reasoning_tokens() -> None:
     """o-series models populate completion_tokens_details.reasoning_tokens.
-    First provider to actually expose this metric."""
+    First provider to actually expose this metric.
+
+    Asserted against what the PROVIDER reported, not against the model choosing to
+    reason. `o4-mini` spends a variable number of reasoning tokens on the same
+    prompt — measured 0 on some calls and non-zero on others, minutes apart — and
+    since the SDK only emits non-zero fields, a hardcoded assertion made this test
+    a coin flip. It failed and passed on identical input in both repos, alternating
+    between them, which is exactly the kind of noise that hides a real regression.
+
+    The SDK's contract is "emit reasoning tokens WHEN the provider reports them",
+    so that is what this checks; a call the model answered without reasoning has
+    nothing to assert and skips.
+    """
     from openai import OpenAI
 
     server, url = _spawn_lago()
     try:
         sdk = LagoSDK(api_key="x", api_url=url, default_subscription_id="sub_int")
         client = sdk.wrap(OpenAI(api_key=os.environ["OPENAI_API_KEY"]))
-        client.chat.completions.create(
+        resp = client.chat.completions.create(
             model="o4-mini",
             messages=[{"role": "user", "content": "What is 17 * 23? Just the number."}],
             max_completion_tokens=2000,
+        )
+        reported = int(
+            getattr(getattr(resp.usage, "completion_tokens_details", None), "reasoning_tokens", 0) or 0
         )
         assert sdk.flush(timeout=30.0)
         sdk.shutdown(timeout=2.0)
@@ -157,7 +172,11 @@ def test_live_openai_reasoning_model_emits_reasoning_tokens() -> None:
         codes = _codes(events)
         assert "llm_input_tokens" in codes
         assert "llm_output_tokens" in codes
+        if reported == 0:
+            pytest.skip("o4-mini reported reasoning_tokens=0 for this call — nothing to emit")
         assert "llm_reasoning_tokens" in codes  # ← the key win for OpenAI
+        emitted = {e["code"]: int(float(e["properties"]["value"])) for e in events}
+        assert emitted["llm_reasoning_tokens"] == reported
     finally:
         server.shutdown()
 
