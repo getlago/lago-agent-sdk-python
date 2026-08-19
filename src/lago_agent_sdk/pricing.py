@@ -300,6 +300,39 @@ def _finalize_breakdown(
     )
 
 
+def deoverlapped_token_total(usage: Any) -> int:
+    """Total tokens a call actually consumed, with per-provider overlaps removed.
+
+    Sums the same PRICED_FIELDS the split cost path emits one event each for, so
+    the single-event `unit` equals the sum of the split path's `unit`s instead of
+    reporting a different basis. Both `_INCLUDES_` sets are applied, because a
+    subset counted twice inflates the reported quantity exactly as it would inflate
+    a price:
+
+      * reasoning ⊆ output for providers in _OUTPUT_INCLUDES_REASONING
+      * cache_read ⊆ input  for providers in _INPUT_INCLUDES_CACHE_READ
+
+    Deliberately NOT gated on a unit price existing, unlike `compute_cost`'s
+    subtraction — this is a token count, so whether a rate happens to be published
+    cannot change how many tokens were consumed. The two still agree: when a
+    cache-inclusive provider has no cache_read price, `compute_cost` leaves the
+    cached tokens inside `input` and emits no cache_read event, and this skips
+    cache_read for the same reason.
+
+    Deliberately limited to PRICED_FIELDS — the five text fields. `tool_calls` is a
+    count of calls rather than tokens, and `cache_write_5m` / `cache_write_1h` are
+    a breakdown OF `cache_write`, so including any of them would not be a token
+    total. This mirrors price mode's documented five-field scope.
+    """
+    provider = (getattr(usage, "provider", "") or "").lower()
+    counts = {f: (getattr(usage, f, 0) or 0) for f in PRICED_FIELDS}
+    if provider in _OUTPUT_INCLUDES_REASONING:
+        counts["reasoning"] = 0
+    if provider in _INPUT_INCLUDES_CACHE_READ:
+        counts["cache_read"] = 0
+    return sum(int(v or 0) for v in counts.values())
+
+
 def compute_precomputed_cost(usd_cost: Any, markup: Decimal) -> CostBreakdown:
     """Build a CostBreakdown from a cost the CALLER already knows.
 

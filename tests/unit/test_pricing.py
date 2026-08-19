@@ -21,6 +21,7 @@ from lago_agent_sdk.pricing import (
     coerce_markup,
     compute_cost,
     compute_precomputed_cost,
+    deoverlapped_token_total,
     lookup_bedrock,
     lookup_cloudflare_workers_ai,
     lookup_openrouter,
@@ -342,6 +343,86 @@ def test_workers_ai_provider_inferred_from_both_spellings(requested: str) -> Non
     # The model keeps the spelling the customer used — the strip happens at lookup,
     # so reporting stays faithful to the request.
     assert u.model == requested
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected", "why"),
+    [
+        # Ancor's cited case: a real captured Gemini row. `input + output` dropped
+        # 852 additive reasoning tokens and published unit="30" for 882 consumed.
+        (
+            CanonicalUsage(input=9, output=21, reasoning=852, provider="gemini", api="x", model="m"),
+            882,
+            "gemini reasoning is additive",
+        ),
+        # Cache-inclusive provider: cache_read sits INSIDE input, so counting both
+        # would double it.
+        (
+            CanonicalUsage(input=10000, output=100, cache_read=9000, provider="openai", api="x", model="m"),
+            10100,
+            "openai cache_read is a subset of input",
+        ),
+        # Additive provider: cache_read/cache_write are real extra consumption, and
+        # the old basis under-reported this by 9.6x.
+        (
+            CanonicalUsage(
+                input=1000,
+                output=100,
+                cache_read=9000,
+                cache_write=500,
+                provider="anthropic",
+                api="x",
+                model="m",
+            ),
+            10600,
+            "anthropic cache is additive",
+        ),
+        # reasoning ⊆ output for openai — must not be added on top.
+        (
+            CanonicalUsage(input=10, output=100, reasoning=80, provider="openai", api="x", model="m"),
+            110,
+            "openai reasoning is a subset of output",
+        ),
+        # tool_calls is a CALL COUNT, not tokens, so it must never land in a token total.
+        (
+            CanonicalUsage(input=10, output=20, tool_calls=3, provider="openai", api="x", model="m"),
+            30,
+            "tool_calls excluded",
+        ),
+    ],
+)
+def test_deoverlapped_token_total(usage: CanonicalUsage, expected: int, why: str) -> None:
+    assert deoverlapped_token_total(usage) == expected, why
+
+
+def test_precomputed_unit_matches_the_split_path_basis() -> None:
+    """The two cost branches must report the same quantity for one call — that was
+    the actual complaint: `unit` on the single-event path used a different basis
+    from `parts["tokens"]` on the split path."""
+    received: list = []
+    provider = _warm_provider()
+    sdk, got = _price_sdk(provider)
+    u = CanonicalUsage(
+        input=1000, output=100, cache_read=900, model="claude-opus-4-8", provider="anthropic", api="native"
+    )
+    # Split path (real per-field breakdown).
+    sdk.emit(u)
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    split = [e for batch in got for e in batch]
+    split_total = sum(int(e["properties"]["unit"]) for e in split)
+
+    # Single-event path (precomputed cost).
+    sdk2, got2 = _price_sdk(_warm_provider())
+    sdk2.emit(u, usd_cost=0.05)
+    assert sdk2.flush(timeout=2.0)
+    sdk2.shutdown(timeout=1.0)
+    single = [e for batch in got2 for e in batch]
+    assert len(single) == 1
+    assert int(single[0]["properties"]["unit"]) == split_total, (
+        f"single-event unit {single[0]['properties']['unit']} != split total {split_total}"
+    )
+    _ = received
 
 
 def test_cloudflare_fetcher_returns_empty_without_credentials() -> None:
