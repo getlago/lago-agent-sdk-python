@@ -36,21 +36,36 @@ class LagoSDK:
     def __init__(
         self,
         api_key: str,
-        api_url: str = "https://api.getlago.com/api/v1",
+        api_url: str | None = None,
         default_subscription_id: str | None = None,
         config: LagoConfig | None = None,
+        verify_ssl: bool | None = None,
     ) -> None:
-        self.config = config or LagoConfig(
-            api_key=api_key,
-            api_url=api_url,
-            default_subscription_id=default_subscription_id,
-        )
-        # explicit args win over `config`
+        """Explicit args win over anything set on ``config``; ``config`` supplies
+        every field they don't mention.
+
+        ``api_url`` defaults to None, NOT to the production URL. That distinction
+        is load-bearing: with a truthy default, ``if api_url:`` always fired and
+        overwrote ``config.api_url``, so
+        ``LagoSDK(api_key=k, config=LagoConfig(api_url="http://localhost:3000/api/v1"))``
+        silently sent every event to PRODUCTION Lago. That is the shortest path to
+        the bug, too — a custom ``api_url`` and ``verify_ssl=False`` go together in
+        exactly the local-dev-Lago setup ``verify_ssl`` exists to serve.
+
+        ``verify_ssl`` is accepted directly so that setup needs no ``LagoConfig``
+        at all: a local instance behind a self-signed cert (Traefik's default) is
+        reachable with ``LagoSDK(api_key=..., api_url=..., verify_ssl=False)``.
+        """
+        self.config = config or LagoConfig(api_key=api_key)
+        # explicit args win over `config` — each guarded on "was it actually
+        # passed?", never on truthiness, so a config value survives when it wasn't.
         self.config.api_key = api_key or self.config.api_key
-        if api_url:
+        if api_url is not None:
             self.config.api_url = api_url
         if default_subscription_id is not None:
             self.config.default_subscription_id = default_subscription_id
+        if verify_ssl is not None:
+            self.config.verify_ssl = verify_ssl
 
         self._lago_client = LagoClient(
             api_key=self.config.api_key,

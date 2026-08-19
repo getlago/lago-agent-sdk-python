@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from lago_agent_sdk import CanonicalUsage, LagoSDK
+from lago_agent_sdk import CanonicalUsage, LagoConfig, LagoSDK
 from lago_agent_sdk.exceptions import UnknownClientError
 
 
@@ -81,6 +81,63 @@ def test_wrap_unknown_client_raises_at_wrap_time():
     with pytest.raises(UnknownClientError):
         sdk.wrap(object())
     sdk.shutdown(timeout=1.0)
+
+
+# ----------------------------------------------------------------------
+# Constructor precedence. `api_url`'s default used to be the production URL, so
+# `if api_url:` always fired and clobbered a config-supplied one — sending a
+# local-dev customer's events to production Lago.
+# ----------------------------------------------------------------------
+def test_config_only_api_url_survives():
+    """The bug: a customer who configures ONLY via LagoConfig must not have their
+    events redirected to production."""
+    sdk = LagoSDK(api_key="k", config=LagoConfig(api_url="http://localhost:3000/api/v1"))
+    try:
+        assert sdk.config.api_url == "http://localhost:3000/api/v1"
+    finally:
+        sdk.shutdown(timeout=1.0)
+
+
+def test_explicit_api_url_still_wins_over_config():
+    """The documented rule — explicit args beat config — must still hold."""
+    sdk = LagoSDK(
+        api_key="k",
+        api_url="http://explicit:3000/api/v1",
+        config=LagoConfig(api_url="http://fromconfig:3000/api/v1"),
+    )
+    try:
+        assert sdk.config.api_url == "http://explicit:3000/api/v1"
+    finally:
+        sdk.shutdown(timeout=1.0)
+
+
+def test_default_api_url_is_still_production_when_nothing_is_passed():
+    """Changing the parameter default to None must not change this."""
+    sdk = LagoSDK(api_key="k")
+    try:
+        assert sdk.config.api_url == "https://api.getlago.com/api/v1"
+    finally:
+        sdk.shutdown(timeout=1.0)
+
+
+def test_verify_ssl_needs_no_config_object():
+    """A local Lago on a self-signed cert is reachable without building a
+    LagoConfig — which is what pushed callers toward the clobber in the first
+    place, since a custom api_url and verify_ssl=False go together."""
+    sdk = LagoSDK(api_key="k", api_url="https://api.lago.dev/api/v1", verify_ssl=False)
+    try:
+        assert sdk.config.verify_ssl is False
+        assert sdk._lago_client.verify_ssl is False
+    finally:
+        sdk.shutdown(timeout=1.0)
+
+
+def test_explicit_verify_ssl_wins_over_config():
+    sdk = LagoSDK(api_key="k", verify_ssl=True, config=LagoConfig(verify_ssl=False))
+    try:
+        assert sdk.config.verify_ssl is True
+    finally:
+        sdk.shutdown(timeout=1.0)
 
 
 def test_dimensions_merge_into_event_properties():
