@@ -277,6 +277,24 @@ class LagoSDK:
 
             effective_mode = mode or self.config.pricing_mode
             if effective_mode != "price":
+                if usd_cost is not None:
+                    # A caller who went to the trouble of supplying a real metered
+                    # cost gets told it was dropped, rather than discovering later
+                    # that a whole backfill billed token counts only. Reported per
+                    # occurrence, deliberately not deduped: the number of discarded
+                    # costs is exactly what a caller reconciling on `on_error`
+                    # needs, and the documented backfill pattern passes an explicit
+                    # `mode="price"`, so reaching this at volume means a real
+                    # misconfiguration rather than normal operation.
+                    self._report_error(
+                        ValueError(
+                            f"usd_cost={usd_cost!r} ignored: effective pricing mode is "
+                            f"{effective_mode!r}, not 'price' — emitting token counts "
+                            f"instead. Pass mode='price' per call, or set "
+                            f"LagoConfig.pricing_mode='price'."
+                        ),
+                        "pricing",
+                    )
                 self._emit_token_events(usage, sub, dimensions, event_id)
                 return
 

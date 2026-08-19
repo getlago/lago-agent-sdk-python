@@ -140,6 +140,51 @@ def test_explicit_verify_ssl_wins_over_config():
         sdk.shutdown(timeout=1.0)
 
 
+def test_ignored_usd_cost_is_reported_not_silently_dropped():
+    """A caller who supplies a real metered cost while the effective mode isn't
+    'price' had it discarded with no log and no on_error — so a hand-rolled
+    backfill could bill token counts only and look successful."""
+    errors: list = []
+    received: list = []
+    cfg = LagoConfig(
+        api_key="dummy",
+        default_subscription_id="sub",
+        pricing_mode="tokens",
+        on_error=lambda exc, where: errors.append((str(exc), where)),
+    )
+    sdk = LagoSDK(api_key="dummy", config=cfg)
+    sdk._queue._sender = lambda b: received.extend(b)  # type: ignore[attr-defined]
+    u = CanonicalUsage(input=10, output=5, model="m", provider="anthropic", api="native")
+    sdk.emit(u, usd_cost=0.0123)
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+
+    assert errors, "an ignored usd_cost must reach on_error"
+    msg, where = errors[0]
+    assert "usd_cost" in msg and "0.0123" in msg
+    assert where == "pricing"
+    # And the call is still billed as token counts — reporting must not drop events.
+    assert {e["code"] for e in received} == {"llm_input_tokens", "llm_output_tokens"}
+
+
+def test_no_usd_cost_in_token_mode_reports_nothing():
+    """The common case must stay silent — only an explicitly supplied cost that
+    gets discarded is worth reporting."""
+    errors: list = []
+    cfg = LagoConfig(
+        api_key="dummy",
+        default_subscription_id="sub",
+        pricing_mode="tokens",
+        on_error=lambda exc, where: errors.append((str(exc), where)),
+    )
+    sdk = LagoSDK(api_key="dummy", config=cfg)
+    sdk._queue._sender = lambda b: None  # type: ignore[attr-defined]
+    sdk.emit(CanonicalUsage(input=10, output=5, model="m", provider="anthropic", api="native"))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert errors == []
+
+
 def test_dimensions_merge_into_event_properties():
     sdk, received = _new_sdk(default_sub="sub")
     u = CanonicalUsage(input=1, model="m", provider="p", api="bedrock_invoke")
