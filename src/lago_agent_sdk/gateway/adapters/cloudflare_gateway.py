@@ -55,6 +55,35 @@ def _safe_str(v: Any) -> str:
     return v if isinstance(v, str) else ""
 
 
+def _first_int(meta: dict[str, Any], *names: str) -> int:
+    """First of `names` present in `meta` with a usable value, as an int.
+
+    The gateway does NOT normalize every key it forwards. Its own counters are
+    consistently snake_case across every captured fixture (`input_tokens`,
+    `output_tokens`, `total_tokens`, `input_cached_tokens`,
+    `input_cache_creation_tokens`), but a provider's native key can come through
+    untouched: the real Gemini entry carries `reasoningTokens`, camelCase, and an
+    unmapped `input_text_tokens` alongside it. So the spelling of a cache key on a
+    provider we have no cached capture for is genuinely unknown.
+
+    Checking every plausible spelling is close to free and the downside is
+    lopsided. A silent 0 here does not merely lose a field — `gemini` is in
+    `_INPUT_INCLUDES_CACHE_READ`, so `compute_cost` relies on `cache_read` being
+    populated in order to SUBTRACT the cached portion out of `input`. A missed
+    cache key therefore bills those tokens at the full prompt rate instead of the
+    cache rate: an over-bill, not an omission.
+
+    Uses `or`-style fallthrough (not "first key present"), so a provider that sends
+    both its own name and the gateway's with one of them zeroed still resolves to
+    the real count.
+    """
+    for name in names:
+        v = _safe_int(meta.get(name))
+        if v:
+            return v
+    return 0
+
+
 # Cloudflare AI Gateway logs its OWN provider vocabulary, which is not the name
 # the pricing tables and token-semantics tables key off — and not always its own
 # URL slug either (the logs say "workers-ai" where the endpoint path says
@@ -100,9 +129,21 @@ def extract_cloudflare_log(entry: dict[str, Any]) -> CanonicalUsage:
     return CanonicalUsage(
         input=_safe_int(entry.get("tokens_in")),
         output=_safe_int(entry.get("tokens_out")),
-        cache_read=_safe_int(usage_meta.get("input_cached_tokens")),
-        cache_write=_safe_int(usage_meta.get("input_cache_creation_tokens")),
-        reasoning=_safe_int(usage_meta.get("reasoningTokens") or usage_meta.get("reasoning_tokens")),
+        # Gateway's own snake_case first (present in 8 of the 14 captured
+        # fixtures), then its camelCase form, then the providers' own native names
+        # — Gemini calls it `cachedContentTokenCount`, Anthropic
+        # `cache_creation_input_tokens`, and the `reasoningTokens` fixture proves
+        # native keys do reach us unnormalized.
+        cache_read=_first_int(
+            usage_meta, "input_cached_tokens", "inputCachedTokens", "cachedContentTokenCount"
+        ),
+        cache_write=_first_int(
+            usage_meta,
+            "input_cache_creation_tokens",
+            "inputCacheCreationTokens",
+            "cache_creation_input_tokens",
+        ),
+        reasoning=_first_int(usage_meta, "reasoningTokens", "reasoning_tokens"),
         model=_safe_str(entry.get("model")),
         provider=_normalize_provider(entry.get("provider")),
         api="cloudflare_gateway",
