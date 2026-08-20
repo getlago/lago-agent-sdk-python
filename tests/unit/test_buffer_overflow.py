@@ -14,10 +14,18 @@ def test_overflow_drops_oldest_at_exact_boundary():
     def slow_sender(batch):
         paused.wait(timeout=30.0)
 
+    # max_batch_size > max_buffer_size keeps the background worker from ever being
+    # woken by push (the buffer can't reach max_batch_size), the same determinism
+    # fix test_repeated_overflow_keeps_window_sliding already carries. Without it
+    # push() signals the worker on the 10_000th event and the worker then races the
+    # assertions below for `_lock` — it is entitled to drain at any point once woken,
+    # so "the buffer still holds what I just pushed" is not a property the test can
+    # rely on. Nothing here needs the worker to run; every assertion is about buffer
+    # contents, and the finally block only unpauses so shutdown can finish.
     q = EventQueue(
         sender=slow_sender,
         flush_interval=10.0,  # never timer-flush during the test
-        max_batch_size=10_000,  # match buffer so worker takes everything once unpaused
+        max_batch_size=20_000,
         max_buffer_size=10_000,
     )
     try:

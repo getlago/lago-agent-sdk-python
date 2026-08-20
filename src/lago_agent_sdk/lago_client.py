@@ -20,11 +20,20 @@ class LagoClient:
             # The customer explicitly opted out via config — they've already
             # accepted the risk; requests/urllib3's warning on every single
             # request would just be noise at that point, not new information.
-            # Access urllib3 via requests' own re-export — it's only a
-            # transitive dependency for us, not one we declare directly.
-            requests.packages.urllib3.disable_warnings(  # type: ignore[attr-defined]
-                requests.packages.urllib3.exceptions.InsecureRequestWarning  # type: ignore[attr-defined]
-            )
+            # Import urllib3 directly rather than through `requests.packages`,
+            # which is a legacy compatibility shim that is not guaranteed to exist.
+            # Wrapped because this is an optional convenience: suppressing a warning
+            # must never be able to fail construction of the SDK itself. That is not
+            # hypothetical — `verify_ssl=False` is now a first-class constructor
+            # argument that the docstring recommends for local dev, so this line sits
+            # on an advertised path, and an ImportError/AttributeError here would
+            # take down `LagoSDK()` for the exact setup the flag was added to serve.
+            try:
+                import urllib3
+
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            except Exception:  # noqa: BLE001
+                pass
 
     def __repr__(self) -> str:
         if not self.api_key:

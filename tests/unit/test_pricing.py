@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -12,11 +13,13 @@ import pytest
 
 from lago_agent_sdk import CanonicalUsage, LagoConfig, LagoSDK, ModelPrice
 from lago_agent_sdk.adapters.openai_native import extract_openai_native
+from lago_agent_sdk.canonical import WORKERS_AI_COMPAT_PREFIX
 from lago_agent_sdk.pricing import (
     HttpPricingFetcher,
     PricingProvider,
     _parse_price,
     _pick_mistral_canonical,
+    apply_markup,
     bedrock_model_key,
     coerce_markup,
     compute_cost,
@@ -243,6 +246,60 @@ def test_openrouter_date_version_stripped_match() -> None:
     assert mp.input == Decimal("0.000001")
 
 
+@pytest.mark.parametrize("alias_first", [True, False])
+def test_openrouter_moving_alias_never_overwrites_a_real_listing(alias_first: bool) -> None:
+    """A "~" alias and a real listing can collide on the same key. Which one wins
+    must not depend on catalog order — with plain assignment it did, and the moving
+    alias's rate (0.009) could replace the real listing's (0.001) purely by
+    arriving later in the response."""
+    real = {"id": "google/gemini-flash-latest", "pricing": {"prompt": "0.001"}}
+    alias = {"id": "~google/gemini-flash-latest", "pricing": {"prompt": "0.009"}}
+    data = [alias, real] if alias_first else [real, alias]
+    table = parse_openrouter({"data": data})
+    mp = lookup_openrouter(table, "gemini", "gemini-flash-latest")
+    assert mp is not None
+    assert mp.input == Decimal("0.001"), (
+        f"real listing must win regardless of order (alias_first={alias_first})"
+    )
+    # the "~"-spelled id still resolves to its own entry
+    assert table["exact"]["~google/gemini-flash-latest"].input == Decimal("0.009")
+
+
+def test_three_digit_revision_is_stripped_for_openrouter_only() -> None:
+    """The "-002" arm exists for Gemini's revision, which only OpenRouter omits.
+
+    It must NOT reach the AWS/Bedrock key builder: there a shortened key does not
+    merely miss, it collapses two models onto one key whose per-direction prices
+    are assigned in place, so one silently overwrites the other's rate.
+    """
+    table = parse_openrouter({"data": [{"id": "google/gemini-2.5-flash", "pricing": {"prompt": "0.001"}}]})
+    assert lookup_openrouter(table, "gemini", "gemini-2.5-flash-002") is not None
+
+    # shared helper keeps a 3-digit tail, so distinct Bedrock ids stay distinct
+    assert bedrock_model_key("amazon.titan-text-001") == "titantext001"
+    assert bedrock_model_key("amazon.titan-text-002") == "titantext002"
+    assert bedrock_model_key("amazon.titan-text-001") != bedrock_model_key("amazon.titan-text-002")
+    # real dated/versioned ids are unaffected
+    assert bedrock_model_key("anthropic.claude-haiku-4-5-20251001-v1:0") == "claudehaiku45"
+    assert bedrock_model_key("eu.anthropic.claude-sonnet-4-6") == "claudesonnet46"
+
+
+def test_unparseable_markup_keeps_the_cost_instead_of_zeroing_it() -> None:
+    """Defence in depth, and cross-port parity — `coerce_markup` means neither
+    branch is reachable through `emit()` (see the coerce test further down).
+
+    The two bad inputs are not interchangeable: a bad COST leaves nothing to bill,
+    but a bad MARKUP only loses the multiplier, and returning 0 for it would
+    discard a good cost. JS already fell back to 1.0 here; Python returned "0", so
+    the ports would have billed differently had anything reached it.
+    """
+    assert apply_markup("0.0042", "1.5") == "0.0063"
+    for bad in ("abc", "", "1,5", "None"):
+        assert apply_markup("0.0042", bad) == "0.0042", f"markup={bad!r} must not zero the cost"
+    # an unparseable COST is different: there is nothing to bill
+    assert apply_markup("abc", "1.5") == "0"
+
+
 def test_openrouter_miss_returns_none() -> None:
     table = parse_openrouter(_OPENROUTER_RAW)
     assert lookup_openrouter(table, "anthropic", "totally-made-up-model") is None
@@ -445,6 +502,15 @@ def test_workers_ai_provider_inferred_from_both_spellings(requested: str) -> Non
 )
 def test_deoverlapped_token_total(usage: CanonicalUsage, expected: int, why: str) -> None:
     assert deoverlapped_token_total(usage) == expected, why
+
+
+@pytest.mark.parametrize("provider", ["openai", "workers-ai"])
+def test_openai_shaped_providers_treat_reasoning_as_a_subset(provider: str) -> None:
+    """workers-ai is reached ONLY through Cloudflare's OpenAI-compatible endpoint, so
+    reasoning is a subset of output there exactly as it is for real OpenAI. Omitting it
+    from _OUTPUT_INCLUDES_REASONING counted the subset twice — 1900 against 1100."""
+    u = CanonicalUsage(input=100, output=1000, reasoning=800, model="m", provider=provider, api="chat")
+    assert deoverlapped_token_total(u) == 1100
 
 
 def test_precomputed_unit_matches_the_split_path_basis() -> None:
@@ -1346,6 +1412,38 @@ def test_warm_pricing_closes_the_cold_start_race() -> None:
     assert all(e["code"] == "llm_cost" for e in flat)  # priced, not a token-event fallback
 
 
+def test_bad_markup_is_coerced_to_one_reported_and_still_bills_the_cost() -> None:
+    """`markup` is customer input (`extra_lago={"markup": ...}`), so a comma decimal
+    like "1,5" genuinely arrives. `coerce_markup` is the guard that catches it; this
+    pins the end-to-end consequence, which no test covered: the cost is still billed
+    at 1.0 rather than zeroed, and the lost markup reaches on_error."""
+    seen: list[tuple[Exception, str]] = []
+    sdk, received = _price_sdk(_warm_provider(), on_error=lambda e, c: seen.append((e, c)))
+    try:
+        u = CanonicalUsage(
+            input=1000, output=500, model="claude-opus-4-8", provider="anthropic", api="native"
+        )
+        # annotated `float | None`, but it arrives from untyped customer input
+        sdk.emit(u, markup="1,5")  # type: ignore[arg-type]
+        assert sdk.flush(timeout=2.0)
+    finally:
+        sdk.shutdown(timeout=1.0)
+
+    events = _by_token_type(received)
+    assert events, "a bad markup must not drop the cost events"
+    for token_type, ev in events.items():
+        props = ev["properties"]
+        assert props["markup"] == "1", f"{token_type}: bad markup should coerce to 1.0"
+        assert props["value"] == props["base_cost"], (
+            f"{token_type}: should bill the un-marked-up cost, not {props['value']!r}"
+        )
+        assert Decimal(props["value"]) > 0, f"{token_type}: a bad markup must not zero the bill"
+
+    contexts = [c for _, c in seen]
+    assert "pricing" in contexts, f"the invalid markup must reach on_error; got {contexts}"
+    assert any("markup" in str(e) and "1,5" in str(e) for e, _ in seen)
+
+
 def test_price_mode_emits_one_event_per_token_type() -> None:
     """A real per-field breakdown (OpenRouter has both input/output prices for
     this model) splits into one llm_cost event per token_type, so Lago's
@@ -1702,3 +1800,22 @@ def test_default_mode_is_tokens_unchanged() -> None:
     sdk.shutdown(timeout=1.0)
     flat = [e for batch in received for e in batch]
     assert {e["code"] for e in flat} == {"llm_input_tokens", "llm_output_tokens"}
+
+
+def test_workers_ai_compat_prefix_is_defined_exactly_once() -> None:
+    """Two unrelated layers must agree on this string: `adapters/openai_native`
+    decides the PROVIDER from it, `pricing` strips it before a catalog lookup. They
+    must never import each other, so it lives in `canonical`. A drift between two
+    copies is a silently unpriced call, not a crash — which is why this is asserted
+    rather than left to review."""
+    src = pathlib.Path(__file__).resolve().parents[2] / "src" / "lago_agent_sdk"
+    definitions = [
+        f"{path.relative_to(src)}:{i}"
+        for path in src.rglob("*.py")
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if re.match(r"\s*_?WORKERS_AI_COMPAT_PREFIX\s*=", line)
+    ]
+    assert definitions == ["canonical.py:19"] or len(definitions) == 1, (
+        f"expected one definition, found {definitions}"
+    )
+    assert WORKERS_AI_COMPAT_PREFIX == "workers-ai/"
