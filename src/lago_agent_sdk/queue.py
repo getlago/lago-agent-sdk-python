@@ -33,22 +33,44 @@ from .exceptions import LagoApiError
 
 # Statuses where re-sending the SAME batch can never succeed: the request itself
 # is the problem (malformed body, bad credentials, a transaction_id Lago has
-# already accepted). Deliberately an explicit list rather than the 400-499 range,
-# because two 4xx statuses mean "try again, later": 429 (rate limited) and 408
-# (request timeout). Treating those as permanent dropped billable events AND fanned
-# one throttled batch out into up to `max_batch_size` extra requests aimed at the
-# server that had just asked us to slow down.
+# already accepted — which Lago reports as 422 `value_already_exist`, verified live,
+# NOT as 409; 409 is in the set only as defence against an intermediary that uses it).
+# Deliberately an explicit list rather than the 400-499 range, because two 4xx statuses
+# mean "try again, later": 429 (rate limited) and 408 (request timeout). Treating those
+# as permanent dropped billable events AND fanned one throttled batch out into up to
+# `max_batch_size` extra requests aimed at the server that had just asked us to slow
+# down.
 #
-# 413/402/415 are in the set for the OPPOSITE reason to 429: re-sending the same batch
-# provably cannot succeed (too large, payment required, wrong media type), so treating
-# them as transient re-prepended the identical batch at the head of the FIFO and backed
-# off to 60s forever, blocking every event behind it until the buffer overflowed. Being
-# "permanent" here routes them to `_send_individually`, which SPLITS the batch and
-# delivers what is deliverable — so a 413 on a 100-event batch becomes 100 single-event
-# sends rather than a stalled queue. That is the behaviour we want, and the batch that
-# most needs splitting was the one that never reached it. 405/410 stay transient: they
-# usually indicate a misrouted or retired endpoint, which a deploy can fix.
-_PERMANENT_STATUSES = frozenset({400, 401, 402, 403, 404, 409, 413, 415, 422})
+# 413/415 are in the set for the OPPOSITE reason to 429: re-sending the same batch
+# provably cannot succeed, because what makes it fail is a property OF THE BATCH (its
+# size, its media type) and that is constant across retries. Treating them as transient
+# re-prepended the identical batch at the head of the FIFO and backed off to 60s
+# forever, blocking every event behind it until the buffer overflowed. Being "permanent"
+# here routes them to `_send_individually`, which SPLITS the batch and delivers what is
+# deliverable — so a 413 on a 100-event batch becomes 100 single-event sends rather than
+# a stalled queue.
+#
+# Neither is reachable from Lago itself: its API surface is 400/401/403/404/405/422/429,
+# and an oversized batch comes back 422 `too_many_events` (verified live against a real
+# instance) which already routes to the split path. They are kept for an intermediary in
+# front of Lago — nginx's `client_max_body_size` genuinely does answer 413 without the
+# request ever reaching Rails.
+#
+# 402 was in this set and is NOT, deliberately. It fails the same test: "payment
+# required" is a property of the ACCOUNT, not of the batch, so it stops being true the
+# moment someone pays — the same shape as 429, recoverable by an out-of-band change
+# rather than by sending something different. Classified permanent it was actively
+# destructive: the batch 402s, routes to `_send_individually`, every isolated send 402s
+# too, and each one is logged and dropped, so a lapsed account silently discarded every
+# billable event for the whole outage with one `on_error` for the lot. Measured against a
+# server returning 402: 5 events in, 6 HTTP calls out, 0 recoverable. As transient they
+# are held and retried instead — a lapsed account head-of-line-blocks at the 60s ceiling
+# until `max_buffer_size` overflows, which is bounded, oldest-first and reported, and
+# fully recoverable if the account is fixed inside the buffer window.
+#
+# 405/410 stay transient: they usually indicate a misrouted or retired endpoint, which a
+# deploy can fix.
+_PERMANENT_STATUSES = frozenset({400, 401, 403, 404, 409, 413, 415, 422})
 
 
 def _is_permanent_failure(exc: Exception) -> bool:

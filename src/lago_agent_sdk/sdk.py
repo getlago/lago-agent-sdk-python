@@ -70,12 +70,33 @@ class LagoSDK:
         # classifies it transient, re-prepends the batch and retries at the 60s ceiling
         # forever. All billing stops, nothing is dropped or escalated, and the only
         # symptom is a growing buffer.
+        #
+        # Falling back is right, but it must not be SILENT — see the report below.
         if api_url:
             self.config.api_url = api_url
         if default_subscription_id is not None:
             self.config.default_subscription_id = default_subscription_id
         if verify_ssl is not None:
             self.config.verify_ssl = verify_ssl
+
+        # A caller who passed `api_url` explicitly MEANT to point somewhere specific.
+        # Discarding a falsy one is the safe choice for delivery, but doing it silently
+        # is the one outcome that must not happen here: `LagoConfig`'s default is
+        # PRODUCTION, so `api_url=os.environ.get("LAGO_API_URL", "")` with the var unset
+        # now resolves to production Lago and every event is accepted. For a CI job or a
+        # developer holding a real production key that writes live billing data, and
+        # ingested events cannot be un-ingested. `on_error` is opt-in, so this reports
+        # through the same log-plus-callback floor as every other drop path rather than
+        # trusting a callback to exist.
+        if api_url is not None and not api_url:
+            self._report_error(
+                ValueError(
+                    f"api_url was explicitly set to an empty value; falling back to "
+                    f"{self.config.api_url}. Set LAGO_API_URL (or pass config.api_url) "
+                    f"if you did not intend to send events there."
+                ),
+                "config.api_url",
+            )
 
         self._lago_client = LagoClient(
             api_key=self.config.api_key,

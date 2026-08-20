@@ -273,7 +273,10 @@ def test_overflow_is_reported_through_on_error():
 # aimed `max_batch_size` extra requests at a server that had just asked us to
 # slow down.
 # ----------------------------------------------------------------------
-@pytest.mark.parametrize("status", [413, 402, 415])
+# 402 is deliberately NOT here — see `test_402_is_held_not_dropped`. What makes a
+# 413/415 batch fail is a property of the batch itself; a 402 is a property of the
+# account and resolves out-of-band, so splitting it only drops every event faster.
+@pytest.mark.parametrize("status", [413, 415])
 def test_batch_only_4xx_is_split_not_head_of_line_blocked(status: int):
     """For these the SAME batch can never succeed, but its events can individually.
 
@@ -303,7 +306,45 @@ def test_batch_only_4xx_is_split_not_head_of_line_blocked(status: int):
         q.shutdown(timeout=1.0)
 
 
-@pytest.mark.parametrize("status", [429, 408])
+def test_402_is_held_not_dropped():
+    """A 402 must survive to be re-sent — it resolves out-of-band.
+
+    Regression: 402 used to be permanent, which routed the batch to
+    `_send_individually`, where every isolated send 402ed too and was dropped for good.
+    Measured against a server returning 402: 5 events in, 6 HTTP calls out, 0
+    recoverable — a lapsed Lago account silently discarded every billable event for the
+    whole outage. "Payment required" is a property of the ACCOUNT: it stops being true
+    the moment someone pays.
+    """
+    attempts = {"n": 0}
+    delivered: list = []
+    per_request_sizes: list = []
+
+    def sender(batch):
+        attempts["n"] += 1
+        per_request_sizes.append(len(batch))
+        # Account is lapsed for the first two attempts, then someone pays.
+        if attempts["n"] <= 2:
+            raise LagoApiError(402, '{"error":"payment required"}')
+        delivered.extend(batch)
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        for i in "abcde":
+            q.push({"id": i})
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not delivered:
+            time.sleep(0.05)
+        # Nothing lost: all five arrive once the account is current again.
+        assert [e["id"] for e in delivered] == list("abcde")
+        # Never fanned out — every request carried the whole batch, so no event was
+        # ever isolated and dropped.
+        assert all(n == 5 for n in per_request_sizes), per_request_sizes
+    finally:
+        q.shutdown(timeout=2.0)
+
+
+@pytest.mark.parametrize("status", [429, 408, 402])
 def test_throttling_4xx_is_retried_not_dropped(status: int):
     """A rate-limited or timed-out batch must reach Lago eventually. Dropping
     it loses revenue, and isolating it one-by-one multiplies the load on a
@@ -331,7 +372,7 @@ def test_throttling_4xx_is_retried_not_dropped(status: int):
         q.shutdown(timeout=2.0)
 
 
-@pytest.mark.parametrize("status", [429, 408])
+@pytest.mark.parametrize("status", [429, 408, 402])
 def test_throttling_4xx_applies_backoff(status: int):
     """The inverse of test_permanent_failure_does_not_apply_backoff: a
     throttling failure is transient, so it MUST leave a backoff in place —
