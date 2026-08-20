@@ -6,6 +6,7 @@ import contextvars
 import logging
 import time
 import uuid
+from collections.abc import Iterable
 from typing import Any
 
 from .canonical import CanonicalUsage
@@ -13,7 +14,16 @@ from .config import LagoConfig
 from .detector import detect_client_kind
 from .exceptions import PricingUnavailableError, UnknownClientError
 from .lago_client import LagoClient
-from .pricing import PricingProvider, coerce_markup, compute_cost
+from .pricing import (
+    CostBreakdown,
+    PricingProvider,
+    apply_markup,
+    coerce_markup,
+    compute_cost,
+    compute_precomputed_cost,
+    deoverlapped_token_total,
+    money_str_to_cents,
+)
 from .queue import EventQueue
 
 logger = logging.getLogger("lago_agent_sdk")
@@ -27,26 +37,51 @@ class LagoSDK:
     def __init__(
         self,
         api_key: str,
-        api_url: str = "https://api.getlago.com/api/v1",
+        api_url: str | None = None,
         default_subscription_id: str | None = None,
         config: LagoConfig | None = None,
+        verify_ssl: bool | None = None,
     ) -> None:
-        self.config = config or LagoConfig(
-            api_key=api_key,
-            api_url=api_url,
-            default_subscription_id=default_subscription_id,
-        )
-        # explicit args win over `config`
+        """Explicit args win over anything set on ``config``; ``config`` supplies
+        every field they don't mention.
+
+        ``api_url`` defaults to None, NOT to the production URL. That distinction
+        is load-bearing: with a truthy default, ``if api_url:`` always fired and
+        overwrote ``config.api_url``, so
+        ``LagoSDK(api_key=k, config=LagoConfig(api_url="http://localhost:3000/api/v1"))``
+        silently sent every event to PRODUCTION Lago. That is the shortest path to
+        the bug, too — a custom ``api_url`` and ``verify_ssl=False`` go together in
+        exactly the local-dev-Lago setup ``verify_ssl`` exists to serve.
+
+        ``verify_ssl`` is accepted directly so that setup needs no ``LagoConfig``
+        at all: a local instance behind a self-signed cert (Traefik's default) is
+        reachable with ``LagoSDK(api_key=..., api_url=..., verify_ssl=False)``.
+        """
+        self.config = config or LagoConfig(api_key=api_key)
+        # explicit args win over `config` — guarded on "was it actually passed?"
+        # rather than on truthiness, so a config value survives when it wasn't.
         self.config.api_key = api_key or self.config.api_key
+        # `api_url` is the one exception: an EMPTY string must not win either. The bug
+        # this guard was written for was a *truthy default* overwriting config, so
+        # accepting "" swapped one silent misroute for a worse one —
+        # `api_url=os.environ.get("LAGO_API_URL", "")` with the var unset used to keep
+        # the production URL and instead wrote "". Downstream that is unrecoverable:
+        # `requests` raises MissingSchema, which is not a LagoApiError, so the queue
+        # classifies it transient, re-prepends the batch and retries at the 60s ceiling
+        # forever. All billing stops, nothing is dropped or escalated, and the only
+        # symptom is a growing buffer.
         if api_url:
             self.config.api_url = api_url
         if default_subscription_id is not None:
             self.config.default_subscription_id = default_subscription_id
+        if verify_ssl is not None:
+            self.config.verify_ssl = verify_ssl
 
         self._lago_client = LagoClient(
             api_key=self.config.api_key,
             api_url=self.config.api_url,
             timeout=self.config.request_timeout_seconds,
+            verify_ssl=self.config.verify_ssl,
         )
         # Pricing provider (price mode). Default does no network until a
         # price-mode lookup flags a source stale; refreshes run on the queue
@@ -55,6 +90,9 @@ class LagoSDK:
             ttl_seconds=self.config.pricing_ttl_seconds,
             default_region=self.config.bedrock_default_region,
             on_error=self.config.on_error,
+            cloudflare_account_id=self.config.cloudflare_account_id,
+            cloudflare_api_token=self.config.cloudflare_api_token,
+            mistral_api_key=self.config.mistral_api_key,
         )
         if self.config.pricing_mode == "price":
             self._pricing.prime()  # eager warm when price mode is the global default
@@ -80,6 +118,63 @@ class LagoSDK:
     def _resolve_subscription(self, override: str | None) -> str | None:
         return override or _subscription_var.get() or self.config.default_subscription_id
 
+    def _auto_prime_pricing_for(self, kind: str, client: Any) -> None:
+        """Best-effort, automatic, non-blocking warm-up for the two
+        credential-gated pricing sources — triggered by `wrap()` itself,
+        which the customer already calls, so there's no separate function to
+        remember. `wrap()` almost always happens some real time before the
+        customer's first actual completion call (building the prompt,
+        setting up messages, etc.), so kicking the fetch off here — instead
+        of waiting for that first completion call to flag it stale — gives
+        it a real head start: often enough to be warm before that first call
+        even lands, not just for every call after it.
+
+        Only runs when `pricing_mode == "price"` is the global default —
+        otherwise there's nothing to warm for. `prime()`/`wake()` are both
+        pure in-memory (no I/O on this thread); the actual HTTP fetch still
+        happens on the queue's background thread, never here.
+        """
+        if self.config.pricing_mode != "price":
+            return
+        provider: str | None = None
+        if kind == "mistral":
+            # The client being wrapped already carries the exact Mistral API
+            # key needed to call Mistral's own /v1/models for alias
+            # resolution — no separate LagoConfig.mistral_api_key required.
+            key = self._extract_mistral_api_key(client)
+            if key:
+                self._pricing.learn_mistral_api_key(key)
+            provider = "mistral"
+        elif kind == "openai":
+            # A generic OpenAI-shaped client can point at real OpenAI OR, via
+            # Cloudflare's `.../compat` endpoint, at Workers AI — the client
+            # kind alone can't tell them apart. `base_url` is the one signal
+            # that can, without waiting for a response to resolve a model
+            # string. Defensive: some client variants may not expose it.
+            try:
+                base_url = str(getattr(client, "base_url", "") or "")
+            except Exception:  # noqa: BLE001
+                base_url = ""
+            if "gateway.ai.cloudflare.com" in base_url:
+                provider = "workers-ai"
+        if provider:
+            self._pricing.prime([provider])
+            self._queue.wake()
+
+    @staticmethod
+    def _extract_mistral_api_key(client: Any) -> str | None:
+        """The mistralai SDK stores the constructor's `api_key=...` at
+        `client.sdk_configuration.security.api_key` (verified against a real
+        client instance). Defensive: an SDK version change to this internal
+        path degrades to "no key learned" (falls back to
+        `LagoConfig.mistral_api_key` if set, else the existing lazy-miss
+        behavior) rather than raising."""
+        try:
+            key = client.sdk_configuration.security.api_key
+        except Exception:  # noqa: BLE001
+            return None
+        return key if isinstance(key, str) and key else None
+
     # ------------------------------------------------------------------
     # Wrap()
     # ------------------------------------------------------------------
@@ -87,6 +182,7 @@ class LagoSDK:
         self, client: Any, dimensions: dict[str, Any] | None = None, subscription: str | None = None
     ) -> Any:
         kind = detect_client_kind(client)
+        self._auto_prime_pricing_for(kind, client)
         if kind == "bedrock":
             from .wrappers.boto3_bedrock import wrap_boto3_bedrock_client
 
@@ -138,6 +234,8 @@ class LagoSDK:
         dimensions: dict[str, Any] | None = None,
         mode: str | None = None,
         markup: float | None = None,
+        usd_cost: float | None = None,
+        event_id: str | None = None,
     ) -> None:
         """Emit usage to Lago.
 
@@ -145,26 +243,77 @@ class LagoSDK:
         In ``price`` mode, pushes a single dollar-cost event; if no price is
         available it falls back to token events and reports via on_error.
         Precedence for mode/markup: per-call arg > config default.
+
+        ``usd_cost``: skip this SDK's own OpenRouter/Bedrock price lookup and
+        bill this exact amount instead. For a gateway that reports its own
+        real, metered cost per call (e.g. Cloudflare AI Gateway's `cost`
+        field on a log entry), that number is more accurate than anything we'd
+        compute ourselves — this is the connector's one-call entrypoint rather
+        than hand-building a `precise_total_amount_cents` event. Only consulted
+        when the effective mode is "price"; ignored in token mode.
+
+        ``event_id``: use this as Lago's idempotency key (`transaction_id`)
+        instead of a random UUID — pass the source log entry's own id when
+        replaying/backfilling from a gateway's logs, so re-running against the
+        same window never double-bills. A live, one-shot call has no natural
+        id to reuse and should leave this as None.
+
+        Both multi-event paths suffix per field so they don't collide with each
+        other, and they use DIFFERENT namespaces so they can't collide across
+        modes either:
+
+          * token events      ``f"{event_id}_tok_{field_name}"``
+          * split cost events ``f"{event_id}_cost_{field_name}"``
+          * single cost event ``event_id`` (one event, nothing to disambiguate)
+
+        The namespaces are load-bearing. Both paths are reachable for the SAME
+        `event_id`: a price lookup that misses falls back to token events, and
+        the same window re-run once the table is warm takes the cost path. Under
+        one shared namespace the second run re-sent `{event_id}_input` under a
+        different metric code, Lago rejected it as a duplicate — and because
+        `/events/batch` is all-or-nothing, that rejection failed every other
+        event in the batch too. Net effect: the dollar amounts for that window
+        were never billed, only the raw token counts, and nothing surfaced it.
         """
         try:
             sub = self._resolve_subscription(subscription)
             if not sub:
-                logger.error(
-                    "lago: dropping events for model=%s — no resolvable subscription",
-                    usage.model,
+                # `_report_error` is the single channel: it invokes on_error AND
+                # logs. An extra logger.error here emitted the same drop twice under
+                # two different levels, so a customer grepping logs counted one lost
+                # call as two — and the JS port logged nothing at all, so the two
+                # repos reported 2 lines vs 0 for the same event.
+                self._report_error(
+                    ValueError(
+                        f"no resolvable subscription for model={usage.model!r}; events dropped. "
+                        f"Pass subscription=..., use with_subscription(), or set "
+                        f"LagoConfig.default_subscription_id."
+                    ),
+                    "emit",
                 )
                 return
 
             effective_mode = mode or self.config.pricing_mode
             if effective_mode != "price":
-                self._emit_token_events(usage, sub, dimensions)
-                return
-
-            price = self._pricing.lookup(usage.provider, usage.model, usage.api)
-            if price is None:
-                # Don't silently under-bill: fall back to token events + report.
-                self._report_error(PricingUnavailableError(usage.provider, usage.model, usage.api), "pricing")
-                self._emit_token_events(usage, sub, dimensions)
+                if usd_cost is not None:
+                    # A caller who went to the trouble of supplying a real metered
+                    # cost gets told it was dropped, rather than discovering later
+                    # that a whole backfill billed token counts only. Reported per
+                    # occurrence, deliberately not deduped: the number of discarded
+                    # costs is exactly what a caller reconciling on `on_error`
+                    # needs, and the documented backfill pattern passes an explicit
+                    # `mode="price"`, so reaching this at volume means a real
+                    # misconfiguration rather than normal operation.
+                    self._report_error(
+                        ValueError(
+                            f"usd_cost={usd_cost!r} ignored: effective pricing mode is "
+                            f"{effective_mode!r}, not 'price' — emitting token counts "
+                            f"instead. Pass mode='price' per call, or set "
+                            f"LagoConfig.pricing_mode='price'."
+                        ),
+                        "pricing",
+                    )
+                self._emit_token_events(usage, sub, dimensions, event_id)
                 return
 
             markup_value, ok = coerce_markup(markup if markup is not None else self.config.markup)
@@ -175,12 +324,40 @@ class LagoSDK:
                     ),
                     "pricing",
                 )
-            self._emit_cost_event(usage, price, markup_value, sub, dimensions)
+
+            if usd_cost is not None:
+                breakdown = compute_precomputed_cost(usd_cost, markup_value)
+            else:
+                price = self._pricing.lookup(usage.provider, usage.model, usage.api)
+                if price is None:
+                    # Don't silently under-bill: fall back to token events + report.
+                    self._report_error(
+                        PricingUnavailableError(usage.provider, usage.model, usage.api), "pricing"
+                    )
+                    self._emit_token_events(usage, sub, dimensions, event_id)
+                    return
+                breakdown = compute_cost(usage, price, markup_value)
+
+            self._push_cost_event(usage, breakdown, sub, dimensions, event_id)
         except Exception as exc:  # noqa: BLE001 — never raise from emit
             self._report_error(exc, "emit")
 
-    def _emit_token_events(self, usage: CanonicalUsage, sub: str, dimensions: dict[str, Any] | None) -> None:
+    def _emit_token_events(
+        self, usage: CanonicalUsage, sub: str, dimensions: dict[str, Any] | None, event_id: str | None = None
+    ) -> None:
         nonzero = usage.nonzero_numeric()
+        # A negative count is silently unbillable — Lago would otherwise sum it into
+        # a negative quantity. It was the only drop path in the SDK that never
+        # reached on_error, so a caller who built a CanonicalUsage with a bad delta
+        # saw nothing at all. Reported before the empty-check, because an event whose
+        # only fields were negative leaves `nonzero` empty and would return below
+        # without a word.
+        negatives = usage.negative_numeric()
+        if negatives:
+            self._report_error(
+                ValueError(f"dropped negative token counts for model={usage.model!r}: {negatives}"),
+                "negative_tokens",
+            )
         if not nonzero:
             # Mistral legacy / empty — nothing to bill
             return
@@ -190,7 +367,11 @@ class LagoSDK:
             if not code:
                 continue
             event = {
-                "transaction_id": str(uuid.uuid4()),
+                # `_tok_` namespace: the cost path suffixes with the same field
+                # vocabulary, and both are reachable for one `event_id` (price
+                # miss -> token fallback, then the cost path once the table is
+                # warm). See emit()'s docstring for what a shared namespace cost.
+                "transaction_id": f"{event_id}_tok_{field_name}" if event_id else str(uuid.uuid4()),
                 "external_subscription_id": sub,
                 "code": code,
                 "timestamp": now,
@@ -204,49 +385,102 @@ class LagoSDK:
             }
             self._queue.push(event)
 
-    def _emit_cost_event(
+    def _push_cost_event(
         self,
         usage: CanonicalUsage,
-        price: Any,
-        markup: Any,
+        breakdown: CostBreakdown,
         sub: str,
         dimensions: dict[str, Any] | None,
+        event_id: str | None = None,
     ) -> None:
-        breakdown = compute_cost(usage, price, markup)
-        # `unit` = total tokens for the call — the quantity the sum-aggregation
-        # billable metric sums (the dynamic charge's fee comes from
-        # precise_total_amount_cents; unit is the displayed usage quantity).
-        # Sum the *billed* per-field counts from the breakdown, which compute_cost
-        # has already de-overlapped (e.g. cache_read carved out of input), so
-        # subset fields aren't double-counted in the displayed total.
-        unit = sum(int(parts["tokens"]) for parts in breakdown.fields.values())
-        properties: dict[str, Any] = {
-            "unit": str(unit),
-            "value": breakdown.total,
-            "base_cost": breakdown.base,
-            "markup": breakdown.markup,
+        """Push one llm_cost event — or several, one per token_type, when a
+        real per-field breakdown exists.
+
+        `breakdown.fields` only exists when we priced via our own per-token
+        table (`compute_cost`): the live wrap() path, where an OpenRouter/
+        Bedrock unit price is available for input/output/cache/reasoning
+        separately. There, billing is split one event per field, each tagged
+        `token_type`, so Lago's `grouped_by: ["model", "token_type"]` charge
+        can break llm_cost down by both dimensions.
+
+        A precomputed breakdown (`usd_cost` — e.g. Cloudflare AI Gateway's own
+        already-metered `cost` per call) has no such split: the gateway gives
+        one lump sum, not "$X of this was input tokens" — inventing a
+        proportional split would substitute our own guess for the real number
+        we specifically avoided guessing at. That path bills a single event,
+        grouped by model only; no `token_type` at all rather than a fabricated
+        one.
+        """
+        now = int(time.time())
+        # Caller dimensions are spread LAST in each `properties` below, not here —
+        # they must win over every SDK-computed key, exactly as they already do in
+        # `_emit_token_events`. Spreading them into `base_properties` put them
+        # *before* `unit`/`value`/`base_cost`/`unit_price`, so those four silently
+        # overwrote a caller's same-named dimension on this path while honouring it
+        # on the token path — one customer config, two different outcomes.
+        base_properties: dict[str, Any] = {
             "model": usage.model,
             "provider": usage.provider,
             "api": usage.api,
             "price_source": breakdown.source,
+            "markup": breakdown.markup,
         }
-        for field_name, parts in breakdown.fields.items():
-            properties[f"{field_name}_tokens"] = parts["tokens"]
-            properties[f"{field_name}_unit_price"] = parts["unit_price"]
-            properties[f"{field_name}_cost"] = parts["cost"]
-        properties.update(dimensions or {})
-        self._queue.push(
-            {
-                "transaction_id": str(uuid.uuid4()),
-                "external_subscription_id": sub,
-                "code": self.config.cost_metric_code,
-                "timestamp": int(time.time()),
-                # Top-level amount (in cents) for Lago's dynamic charge model —
-                # the charge sums these into a single fee.
-                "precise_total_amount_cents": breakdown.total_cents,
-                "properties": properties,
+
+        if not breakdown.fields:
+            properties = {
+                **base_properties,
+                # Same basis as the split path below (which reports the
+                # de-overlapped per-field `parts["tokens"]`), so the two branches
+                # can't report different quantities for one call. `input + output`
+                # dropped `reasoning` and `cache_write` entirely — on a real
+                # captured Gemini row with 9 in / 21 out / 852 reasoning it
+                # published unit="30" for a call that consumed 882 — and counted a
+                # cache-inclusive provider's cached tokens at full weight.
+                "unit": str(deoverlapped_token_total(usage)),
+                "value": breakdown.total,
+                "base_cost": breakdown.base,
+                **(dimensions or {}),
             }
-        )
+            self._queue.push(
+                {
+                    # Unsuffixed: this branch pushes exactly ONE event, so there is
+                    # nothing to disambiguate. It cannot collide with the namespaced
+                    # multi-event ids below or in _emit_token_events.
+                    "transaction_id": event_id or str(uuid.uuid4()),
+                    "external_subscription_id": sub,
+                    "code": self.config.cost_metric_code,
+                    "timestamp": now,
+                    "precise_total_amount_cents": breakdown.total_cents,
+                    "properties": properties,
+                }
+            )
+            return
+
+        for field_name, parts in breakdown.fields.items():
+            # parts["cost"] is PRE-markup (compute_cost only applies markup to
+            # the summed total) — apply it here or a markup != 1.0 silently
+            # vanishes from every split event.
+            billed_cost = apply_markup(parts["cost"], breakdown.markup)
+            properties = {
+                **base_properties,
+                "token_type": field_name,
+                "unit": parts["tokens"],
+                "value": billed_cost,
+                "base_cost": parts["cost"],
+                "unit_price": parts["unit_price"],
+                **(dimensions or {}),
+            }
+            self._queue.push(
+                {
+                    # `_cost_` namespace — see the `_tok_` note in _emit_token_events.
+                    "transaction_id": f"{event_id}_cost_{field_name}" if event_id else str(uuid.uuid4()),
+                    "external_subscription_id": sub,
+                    "code": self.config.cost_metric_code,
+                    "timestamp": now,
+                    "precise_total_amount_cents": money_str_to_cents(billed_cost),
+                    "properties": properties,
+                }
+            )
 
     def _report_error(self, exc: Exception, where: str) -> None:
         if self.config.on_error:
@@ -255,6 +489,40 @@ class LagoSDK:
             except Exception:  # noqa: BLE001
                 pass
         logger.warning("lago %s failed: %s", where, exc)
+
+    def warm_pricing(self, providers: Iterable[str] = ()) -> None:
+        """Block until the given price table(s) are fetched, instead of
+        waiting for the queue's background thread to pick them up on its
+        next tick (up to `flush_interval` seconds later, by default ~1s).
+
+        A call made immediately after construction — the common shape in a
+        script, notebook, or one-shot job, as opposed to a long-running server
+        where the first real call naturally lands well after that first tick
+        — races a still-cold cache. `emit()` never silently under-bills, so a
+        miss falls back to token events; but with no token-metric charge
+        configured at all (a single `llm_cost`-only billing setup), there is
+        nowhere left to fall back to and the event is lost. Call this once,
+        right after constructing the SDK with `pricing_mode="price"`, to close
+        that window deterministically for OpenRouter — the table nearly every
+        native provider prices against — which is always warmed regardless
+        of `providers`.
+
+        Cloudflare Workers AI and Mistral alias resolution are NOT warmed by
+        default: both are credential-gated and provider-specific, and
+        eagerly hitting either's API at construction time regardless of
+        whether that provider is ever actually called would be pure waste
+        for the common case. Left alone, they stay reactive — the first real
+        call to that provider triggers the fetch, and every call after that
+        (even the one a moment later) is cached — so only a session's first
+        Workers AI or Mistral call can race a cold cache.
+
+        If you already know you're about to call one or both this session,
+        say so and skip that one-time cost too: `providers=["mistral"]`
+        and/or `["workers-ai"]`. A no-op for any source that isn't stale
+        (e.g. the SDK isn't in price mode, was already warmed, or the
+        provider name wasn't recognized)."""
+        self._pricing.prime(providers)
+        self._pricing.maybe_refresh()
 
     def flush(self, timeout: float = 5.0) -> bool:
         return self._queue.flush(timeout=timeout)

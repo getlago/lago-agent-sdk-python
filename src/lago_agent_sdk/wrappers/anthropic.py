@@ -9,6 +9,18 @@ Methods wrapped:
   - AsyncMessages.create(...)      — async non-streaming and stream=True
   - AsyncMessages.stream(...)      — async context-manager helper
 
+Gateway cache-hit detection (non-streaming .create(...) only):
+  Non-streaming calls go through `.with_raw_response.create(...)` instead of
+  `.create(...)` so we can see response headers before parsing the body. If a
+  gateway in front of the provider (e.g. Cloudflare AI Gateway) marks the
+  response `cf-aig-cache-status: HIT`, the provider served it from cache at zero
+  cost to the customer — we skip billing it. `.parse()` on the raw response
+  returns the exact same object `.create()` would, so nothing downstream changes.
+  This is a no-op when there's no gateway in the path: the header is simply
+  absent. `.stream()` is NOT covered — Anthropic recommends
+  `.with_streaming_response` for that, which behaves differently and hasn't been
+  verified end-to-end.
+
 Per-call override: pop `extra_lago={"subscription": ..., "dimensions": ...}` from kwargs
 before forwarding so Anthropic's strict validation doesn't reject it.
 """
@@ -46,7 +58,21 @@ def _is_message_like(obj: Any) -> bool:
         return False
 
 
-def _merge_stream_usage(accumulated: dict[str, Any], payload: Any) -> None:
+def _is_cache_hit(raw_response: Any) -> bool:
+    """True if a gateway in front of the provider served this from cache.
+
+    A cache hit (Cloudflare AI Gateway: `cf-aig-cache-status: HIT`) costs the
+    provider — and the customer — nothing. Billing it would overcharge for a
+    call that never actually happened. Safe no-op with no gateway in the path:
+    `.headers.get(...)` simply returns None.
+    """
+    try:
+        return bool(raw_response.headers.get("cf-aig-cache-status") == "HIT")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _merge_stream_usage(accumulated: dict[str, Any], payload: Any) -> str | None:
     """Fold one streaming event's usage into the running accumulator.
 
     Anthropic splits authoritative usage across two events:
@@ -60,19 +86,30 @@ def _merge_stream_usage(accumulated: dict[str, Any], payload: Any) -> None:
     would bill ``input_tokens=0``. Merge both locations; ``dict.update`` lets the
     more complete / more recent values win while preserving the input counts from
     ``message_start`` when a delta omits them.
+
+    Returns the model this event reported, if any. ``message_start`` carries the
+    RESOLVED snapshot under ``message.model`` — e.g. "claude-sonnet-4-5-20250929"
+    for a requested "claude-sonnet-4-5" — and discarding it made every streaming
+    call attribute (and price) the alias instead, the same bug the non-streaming
+    path was fixed for. The caller keeps the first one it sees.
     """
     if not isinstance(payload, dict):
-        return
-    # message_start: input/cache live under message.usage
+        return None
+    found: str | None = None
+    # message_start: input/cache live under message.usage, resolved model alongside
     message = payload.get("message")
     if isinstance(message, dict):
         nested = message.get("usage")
         if isinstance(nested, dict):
             accumulated.update(nested)
+        model = message.get("model")
+        if isinstance(model, str) and model:
+            found = model
     # message_delta (and others): cumulative usage at the top level
     top = payload.get("usage")
     if isinstance(top, dict):
         accumulated.update(top)
+    return found
 
 
 def wrap_anthropic_client(
@@ -95,6 +132,7 @@ def wrap_anthropic_client(
         return client
 
     original_create = getattr(messages, "create", None)
+    raw_create = getattr(getattr(messages, "with_raw_response", None), "create", None)
     original_stream = getattr(messages, "stream", None)
     is_async = type(client).__name__.startswith("Async")
 
@@ -121,6 +159,18 @@ def wrap_anthropic_client(
         lago_opts = _pop_lago_kwarg(kwargs)
         model_id = kwargs.get("model", "")
         opts = _resolve_opts(lago_opts)
+
+        if not kwargs.get("stream") and raw_create is not None:
+            # Non-streaming with `.with_raw_response` available: see gateway
+            # headers before parsing — `.parse()` returns the identical object
+            # `.create()` would have, so the customer sees no difference.
+            raw = raw_create(*args, **kwargs)
+            response = raw.parse()
+            if _is_message_like(response) and not _is_cache_hit(raw):
+                _emit_from(response, model_id, opts)
+            return response
+
+        # Streaming, or `.with_raw_response` unavailable (older/custom client).
         response = original_create(*args, **kwargs)
 
         if _is_message_like(response):
@@ -131,14 +181,15 @@ def wrap_anthropic_client(
         # (input/cache) and message_delta (cumulative output) before emitting.
         def _wrap_stream(src: Iterator[Any]) -> Iterator[Any]:
             accumulated: dict[str, Any] = {}
+            resolved_model: str | None = None
             try:
                 for event in src:
                     payload = event.model_dump() if hasattr(event, "model_dump") else event
-                    _merge_stream_usage(accumulated, payload)
+                    resolved_model = _merge_stream_usage(accumulated, payload) or resolved_model
                     yield event
             finally:
                 if accumulated:
-                    _emit_from({"usage": accumulated}, model_id, opts)
+                    _emit_from({"usage": accumulated, "model": resolved_model}, model_id, opts)
 
         return _wrap_stream(response)
 
@@ -150,6 +201,14 @@ def wrap_anthropic_client(
         lago_opts = _pop_lago_kwarg(kwargs)
         model_id = kwargs.get("model", "")
         opts = _resolve_opts(lago_opts)
+
+        if not kwargs.get("stream") and raw_create is not None:
+            raw = await raw_create(*args, **kwargs)
+            response = raw.parse()
+            if _is_message_like(response) and not _is_cache_hit(raw):
+                _emit_from(response, model_id, opts)
+            return response
+
         response = await original_create(*args, **kwargs)
 
         if _is_message_like(response):
@@ -158,14 +217,15 @@ def wrap_anthropic_client(
 
         async def _wrap_async_stream(src: AsyncIterator[Any]) -> AsyncIterator[Any]:
             accumulated: dict[str, Any] = {}
+            resolved_model: str | None = None
             try:
                 async for event in src:
                     payload = event.model_dump() if hasattr(event, "model_dump") else event
-                    _merge_stream_usage(accumulated, payload)
+                    resolved_model = _merge_stream_usage(accumulated, payload) or resolved_model
                     yield event
             finally:
                 if accumulated:
-                    _emit_from({"usage": accumulated}, model_id, opts)
+                    _emit_from({"usage": accumulated, "model": resolved_model}, model_id, opts)
 
         return _wrap_async_stream(response)
 

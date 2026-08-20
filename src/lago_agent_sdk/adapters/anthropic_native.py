@@ -53,6 +53,20 @@ def _to_dict(obj: Any) -> dict[str, Any]:
     return {}
 
 
+def _resolve_model(response_model: Any, requested_model: str) -> str:
+    """Prefer the model the response reports over the one requested.
+
+    Anthropic can resolve a short alias to a more specific name — e.g.
+    "claude-sonnet-4-5" → "claude-sonnet-4-5-20250929" — with no gateway or
+    fallback involved at all. Pricing and attribution must key off what actually
+    answered. Falls back to the requested model only when the response is silent
+    about its own model (e.g. a synthetic streaming usage blob).
+    """
+    if isinstance(response_model, str) and response_model:
+        return response_model
+    return requested_model or ""
+
+
 def extract_anthropic_native(response: Any, model_id: str = "") -> CanonicalUsage:
     """Translate an Anthropic native response (Message or dict) → CanonicalUsage.
 
@@ -84,7 +98,7 @@ def extract_anthropic_native(response: Any, model_id: str = "") -> CanonicalUsag
         cache_write_5m=_safe_int(cache_creation.get("ephemeral_5m_input_tokens")),
         cache_write_1h=_safe_int(cache_creation.get("ephemeral_1h_input_tokens")),
         tool_calls=tool_calls,
-        model=model_id or (resp.get("model") if isinstance(resp.get("model"), str) else "") or "",
+        model=_resolve_model(resp.get("model"), model_id),
         provider="anthropic",
         api="native",
         extras=extras,

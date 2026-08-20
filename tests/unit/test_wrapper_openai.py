@@ -30,6 +30,12 @@ class FakeResponsesResponse:
         return self._payload
 
 
+# What OpenAI resolves the requested "gpt-4o-mini" alias to. Streaming chunks
+# report it on every frame; the wrapper must carry it through to the event, or
+# pricing looks up an alias OpenRouter doesn't list.
+_RESOLVED_STREAM_MODEL = "gpt-4o-mini-2024-07-18"
+
+
 class FakeStreamChunk:
     """Mimics a ChatCompletionChunk."""
 
@@ -40,10 +46,52 @@ class FakeStreamChunk:
         return self._payload
 
 
+class FakeRawResponse:
+    """Mimics the return value of `.with_raw_response.create(...)`: `.headers` + `.parse()`."""
+
+    def __init__(self, parsed: Any, headers: dict[str, str] | None = None) -> None:
+        self._parsed = parsed
+        self.headers = headers or {}
+
+    def parse(self) -> Any:
+        return self._parsed
+
+
+class _RawResponseProxy:
+    """Mimics `.with_raw_response` — delegates to the owner's `.create()`, wraps the
+    result with whatever headers the test configured on `owner.raw_response_headers`.
+
+    Captures the owner's `.create` bound method at construction time (i.e. before
+    `sdk.wrap()` can monkey-patch it) — looking it up dynamically via
+    `self._owner.create` at call time would resolve to the *wrapped* method once
+    `sdk.wrap()` reassigns it, causing infinite recursion.
+    """
+
+    def __init__(self, owner: Any) -> None:
+        self._owner = owner
+        self._original_create = owner.create
+
+    def create(self, **kwargs: Any) -> FakeRawResponse:
+        parsed = self._original_create(**kwargs)
+        return FakeRawResponse(parsed, self._owner.raw_response_headers)
+
+
+class _AsyncRawResponseProxy:
+    def __init__(self, owner: Any) -> None:
+        self._owner = owner
+        self._original_create = owner.create
+
+    async def create(self, **kwargs: Any) -> FakeRawResponse:
+        parsed = await self._original_create(**kwargs)
+        return FakeRawResponse(parsed, self._owner.raw_response_headers)
+
+
 class FakeCompletions:
     def __init__(self) -> None:
         self.create_calls = 0
         self.last_kwargs: dict[str, Any] | None = None
+        self.raw_response_headers: dict[str, str] = {}
+        self.with_raw_response = _RawResponseProxy(self)
 
     def create(self, **kwargs: Any) -> Any:
         self.create_calls += 1
@@ -54,13 +102,20 @@ class FakeCompletions:
         if kwargs.get("stream") is True:
             # Stream yields several chunks; the LAST one carries usage
             # (because the wrapper auto-injects stream_options.include_usage).
+            # Every real chunk carries the RESOLVED model — a short alias like
+            # "gpt-4o-mini" comes back as a dated snapshot. Pricing keys off it.
             chunks = [
                 FakeStreamChunk(
-                    {"choices": [{"delta": {"content": "hi"}}], "usage": None},
+                    {
+                        "choices": [{"delta": {"content": "hi"}}],
+                        "usage": None,
+                        "model": _RESOLVED_STREAM_MODEL,
+                    },
                 ),
                 FakeStreamChunk(
                     {
                         "choices": [],
+                        "model": _RESOLVED_STREAM_MODEL,
                         "usage": {
                             "prompt_tokens": 12,
                             "completion_tokens": 22,
@@ -98,6 +153,8 @@ class FakeChat:
 class FakeResponsesNamespace:
     def __init__(self) -> None:
         self.create_calls = 0
+        self.raw_response_headers: dict[str, str] = {}
+        self.with_raw_response = _RawResponseProxy(self)
 
     def create(self, **kwargs: Any) -> Any:
         self.create_calls += 1
@@ -196,6 +253,25 @@ def test_wrap_create_with_stream_captures_usage_from_final_chunk() -> None:
     assert by_code["llm_output_tokens"] == 22
 
 
+def test_stream_attributes_the_resolved_model_not_the_requested_alias() -> None:
+    """The model-attribution fix has to reach the streaming path too.
+
+    The wrapper rebuilds a synthetic usage payload from the chunks, and dropping
+    the chunk's own `model` made `resolve_model` fall back to the requested alias
+    — so a streamed call was attributed (and priced) as "gpt-4o-mini" while the
+    identical non-streaming call correctly resolved to the dated snapshot. In
+    price mode that means the OpenRouter lookup misses and silently degrades to
+    token events.
+    """
+    sdk, received = _new_sdk()
+    client = sdk.wrap(FakeOpenAI())
+    list(client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    models = {e["properties"]["model"] for e in received}
+    assert models == {_RESOLVED_STREAM_MODEL}, f"expected the resolved snapshot, got {models}"
+
+
 def test_wrap_auto_injects_stream_options_include_usage() -> None:
     """Customer passes stream=True without stream_options — wrapper injects include_usage:True."""
     sdk, _ = _new_sdk()
@@ -261,6 +337,58 @@ def test_wrap_responses_create_emits_input_output_and_tool_calls() -> None:
 
 
 # --------------------------------------------------------------------------
+# Gateway cache-hit detection (non-streaming only)
+# --------------------------------------------------------------------------
+def test_wrap_cache_miss_still_bills_normally() -> None:
+    """No gateway, or a MISS: bills exactly as before — .with_raw_response is the
+    new code path, but must be behaviorally invisible with no cache header set."""
+    sdk, received = _new_sdk()
+    fake = FakeOpenAI()
+    client = sdk.wrap(fake)
+    client.chat.completions.create(model="gpt-4o-mini", messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code["llm_input_tokens"] == 8
+    assert by_code["llm_output_tokens"] == 16
+
+
+def test_wrap_cache_hit_skips_billing_chat_completions() -> None:
+    """A gateway-served cache HIT cost the customer nothing — bill nothing for it."""
+    sdk, received = _new_sdk()
+    fake = FakeOpenAI()
+    fake.chat.completions.raw_response_headers = {"cf-aig-cache-status": "HIT"}
+    client = sdk.wrap(fake)
+    resp = client.chat.completions.create(model="gpt-4o-mini", messages=[])
+    assert resp.usage["prompt_tokens"] == 8  # customer still gets the real response
+    sdk.shutdown(timeout=1.0)
+    assert received == []
+
+
+def test_wrap_cache_hit_skips_billing_responses_api() -> None:
+    sdk, received = _new_sdk()
+    fake = FakeOpenAI()
+    fake.responses.raw_response_headers = {"cf-aig-cache-status": "HIT"}
+    client = sdk.wrap(fake)
+    resp = client.responses.create(model="gpt-4o-mini", input="hi")
+    assert resp.usage["input_tokens"] == 53
+    sdk.shutdown(timeout=1.0)
+    assert received == []
+
+
+def test_wrap_cache_status_other_than_hit_still_bills() -> None:
+    """Only an exact "HIT" suppresses billing — "MISS", "EXPIRED", or anything else bills."""
+    sdk, received = _new_sdk()
+    fake = FakeOpenAI()
+    fake.chat.completions.raw_response_headers = {"cf-aig-cache-status": "MISS"}
+    client = sdk.wrap(fake)
+    client.chat.completions.create(model="gpt-4o-mini", messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert len(received) == 2
+
+
+# --------------------------------------------------------------------------
 # Failure isolation
 # --------------------------------------------------------------------------
 def test_instrumentation_failure_does_not_break_call() -> None:
@@ -308,6 +436,8 @@ class FakeAsyncCompletions:
     def __init__(self) -> None:
         self.create_calls = 0
         self.last_kwargs: dict[str, Any] | None = None
+        self.raw_response_headers: dict[str, str] = {}
+        self.with_raw_response = _AsyncRawResponseProxy(self)
 
     async def create(self, **kwargs: Any) -> Any:
         self.create_calls += 1
@@ -358,6 +488,8 @@ class FakeAsyncResponsesNamespace:
     def __init__(self) -> None:
         self.create_calls = 0
         self.last_kwargs: dict[str, Any] | None = None
+        self.raw_response_headers: dict[str, str] = {}
+        self.with_raw_response = _AsyncRawResponseProxy(self)
 
     async def create(self, **kwargs: Any) -> Any:
         self.create_calls += 1
@@ -416,6 +548,18 @@ async def test_async_wrap_chat_completions_emits() -> None:
     by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
     assert by_code["llm_input_tokens"] == 8
     assert by_code["llm_output_tokens"] == 16
+
+
+@pytest.mark.asyncio
+async def test_async_wrap_cache_hit_skips_billing() -> None:
+    sdk, received = _new_sdk()
+    fake = FakeAsyncOpenAI()
+    fake.chat.completions.raw_response_headers = {"cf-aig-cache-status": "HIT"}
+    client = sdk.wrap(fake)
+    resp = await client.chat.completions.create(model="gpt-4o-mini", messages=[])
+    assert resp.usage["prompt_tokens"] == 8
+    sdk.shutdown(timeout=1.0)
+    assert received == []
 
 
 @pytest.mark.asyncio

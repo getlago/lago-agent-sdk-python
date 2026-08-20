@@ -18,6 +18,12 @@ class FakePydanticResponse:
         return self._payload
 
 
+# What Gemini resolves the requested "gemini-2.5-flash" alias to. Google
+# hot-swaps these server-side, so the chunk's own version is what OpenRouter
+# lists and what pricing must key off.
+_RESOLVED_STREAM_MODEL = "gemini-2.5-flash-002"
+
+
 class FakeStreamChunk:
     def __init__(self, payload: dict):
         self._payload = payload
@@ -55,11 +61,15 @@ class FakeModels:
                 {
                     "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
                     "usage_metadata": None,  # intermediate chunks don't carry usage
+                    # Gemini hot-swaps "-latest" aliases, so every chunk reports
+                    # the version that actually answered.
+                    "model_version": _RESOLVED_STREAM_MODEL,
                 }
             ),
             FakeStreamChunk(
                 {
                     "candidates": [{"content": {"parts": [{"text": "."}]}, "finish_reason": "STOP"}],
+                    "model_version": _RESOLVED_STREAM_MODEL,
                     "usage_metadata": {
                         "prompt_token_count": 9,
                         "candidates_token_count": 4,
@@ -166,6 +176,79 @@ def test_wrap_rejects_legacy_generativeai_sdk_with_migration_hint() -> None:
     assert "google-genai" in msg
     assert "migrate" in msg or "migrat" in msg
     sdk.shutdown(timeout=1.0)
+
+
+def test_stream_attributes_the_resolved_model_not_the_requested_alias() -> None:
+    """Gemini resolves "-latest" and short aliases server-side and reports the
+    real version as `model_version`. The stream wrapper rebuilt a usage-only
+    payload and dropped it, reverting attribution to the requested alias."""
+    sdk, received = _make_sdk()
+    client = sdk.wrap(FakeGeminiClient())
+    list(client.models.generate_content_stream(model="gemini-2.5-flash", contents="hi"))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    models = {e["properties"]["model"] for e in flat}
+    assert models == {_RESOLVED_STREAM_MODEL}, f"expected the resolved version, got {models}"
+
+
+class _VersionOnlyOnEarlyChunk:
+    """A SYNTHETIC stream: the resolved version arrives on an early chunk, usage on
+    the last one, with no version on it.
+
+    This is deliberately NOT what real Gemini does — verified live 2026-08-20 that
+    every streaming chunk carries BOTH `model_version` and `usage_metadata`, which
+    is why `FakeGeminiClient` puts the version on both and why this hazard is
+    invisible there. The point of this case is the robustness property, not a
+    captured shape: `model_version` must be remembered across chunks rather than
+    read off whichever chunk happens to carry usage. Python read it from the
+    usage-bearing chunk alone, so on this input it reverted to the requested alias
+    while the JS port (which already persisted it) reported the resolved version —
+    the two repos priced the same call differently.
+    """
+
+    __module__ = "google.genai.client"  # so the detector routes it to the gemini wrapper
+
+    def __init__(self) -> None:
+        self.models = self
+
+    def generate_content_stream(self, **kwargs: Any) -> Any:
+        return iter(
+            [
+                FakeStreamChunk(
+                    {
+                        "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
+                        "model_version": _RESOLVED_STREAM_MODEL,
+                        "usage_metadata": None,
+                    }
+                ),
+                FakeStreamChunk(
+                    {
+                        "candidates": [{"content": {"parts": [{"text": "."}]}, "finish_reason": "STOP"}],
+                        # no model_version here
+                        "usage_metadata": {
+                            "prompt_token_count": 9,
+                            "candidates_token_count": 4,
+                            "thoughts_token_count": 0,
+                            "total_token_count": 13,
+                        },
+                    }
+                ),
+            ]
+        )
+
+
+def test_stream_remembers_the_resolved_version_from_an_earlier_chunk() -> None:
+    sdk, received = _make_sdk()
+    client = sdk.wrap(_VersionOnlyOnEarlyChunk())
+    list(client.models.generate_content_stream(model="gemini-flash-latest", contents="hi"))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    models = {e["properties"]["model"] for e in flat}
+    assert models == {_RESOLVED_STREAM_MODEL}, (
+        f"the version from the earlier chunk must survive to the usage chunk; got {models}"
+    )
 
 
 def test_wrap_generate_content_stream_captures_usage_from_final_chunk() -> None:
@@ -277,11 +360,13 @@ class FakeAsyncModels:
                 {
                     "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
                     "usage_metadata": None,
+                    "model_version": _RESOLVED_STREAM_MODEL,
                 }
             )
             yield FakeStreamChunk(
                 {
                     "candidates": [{"content": {"parts": [{"text": "."}]}, "finish_reason": "STOP"}],
+                    "model_version": _RESOLVED_STREAM_MODEL,
                     "usage_metadata": {
                         "prompt_token_count": 9,
                         "candidates_token_count": 4,

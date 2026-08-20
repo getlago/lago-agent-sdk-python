@@ -1,0 +1,49 @@
+{
+  "id": "01KZ8KG4JMCZNH73Q8ENDS1MJ3",
+  "created_at": "2026-08-05T09:19:01.892Z",
+  "updated_at": "2026-08-05 09:19:02",
+  "event_id": "73af6f65-e9fc-4f56-a50e-daa5092e55e8",
+  "provider": "mistral",
+  "model": "mistral-small-latest",
+  "model_type": "text-generation",
+  "path": "v1/chat/completions",
+  "duration": 1069,
+  "request_type": "provider",
+  "request_content_type": "application/json",
+  "status_code": 200,
+  "response_content_type": "application/json",
+  "success": true,
+  "cached": false,
+  "tokens_in": 23,
+  "tokens_out": 30,
+  "metadata": null,
+  "step": 0,
+  "timings": {
+    "total": 1068.4983109980822,
+    "latency": 1065.597853999585
+  },
+  "location": {
+    "region": "\u00cele-de-France",
+    "colo": "CDG"
+  },
+  "cost": 2.145e-05,
+  "custom_cost": false,
+  "feedback": null,
+  "score": null,
+  "request": "",
+  "response": "",
+  "prompts": null,
+  "guardrails": null,
+  "authentication": true,
+  "wholesale": false,
+  "byok": null,
+  "user_agent": "mistral-client-python/2.4.5",
+  "usage_metadata": {
+    "input_tokens": 23,
+    "output_tokens": 30,
+    "total_tokens": 53,
+    "input_cached_tokens": 0
+  },
+  "dlp_action": null,
+  "dlp_profiles": null
+}

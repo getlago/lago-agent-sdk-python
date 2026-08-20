@@ -1,0 +1,50 @@
+{
+  "id": "01KZ8DWFHB5BEEB4VMKF25YCYX",
+  "created_at": "2026-08-05T07:40:54.076Z",
+  "updated_at": "2026-08-05 07:40:54",
+  "event_id": "94b6195b-5bef-430f-9784-6fec3b9e5783",
+  "provider": "workers-ai",
+  "model": "@cf/meta/llama-3.2-3b-instruct",
+  "model_type": "text-generation",
+  "path": "@cf/meta/llama-3.2-3b-instruct",
+  "duration": 331,
+  "request_type": "workers-ai",
+  "request_content_type": "application/json",
+  "status_code": 200,
+  "response_content_type": "application/json",
+  "success": true,
+  "cached": false,
+  "tokens_in": 38,
+  "tokens_out": 8,
+  "metadata": null,
+  "step": 0,
+  "timings": {
+    "total": 330.33441799879074,
+    "latency": 325.5145410001278
+  },
+  "location": {
+    "region": "",
+    "colo": ""
+  },
+  "cost": 4.658e-06,
+  "custom_cost": false,
+  "feedback": null,
+  "score": null,
+  "request": "",
+  "response": "",
+  "prompts": null,
+  "guardrails": null,
+  "authentication": true,
+  "wholesale": false,
+  "byok": null,
+  "user_agent": "curl/8.7.1",
+  "usage_metadata": {
+    "input_tokens": 38,
+    "output_tokens": 8,
+    "total_tokens": 46,
+    "input_cached_tokens": 0,
+    "neurons": 0.41953223943710327
+  },
+  "dlp_action": null,
+  "dlp_profiles": null
+}

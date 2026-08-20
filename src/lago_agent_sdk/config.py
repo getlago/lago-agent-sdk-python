@@ -49,6 +49,14 @@ class LagoConfig:
     request_timeout_seconds: float = 10.0
     max_retry_seconds: float = 60.0
     on_error: Callable[[Exception, str], None] | None = None
+    # TLS certificate verification for requests to `api_url`. Defaults to True
+    # (always verify — never disable this against a real Lago instance). The
+    # one legitimate reason to set False: a local dev Lago instance behind a
+    # self-signed certificate (e.g. Traefik's default local cert), where the
+    # alternative is routing through a public tunnel (ngrok, etc.) purely to
+    # get a browser-trusted cert — adding a flaky, unnecessary network hop for
+    # a problem this flag solves directly.
+    verify_ssl: bool = True
 
     # --- pricing (price mode) ---
     # Global default mode. "tokens" preserves the existing behavior exactly.
@@ -61,6 +69,17 @@ class LagoConfig:
     pricing_ttl_seconds: float = 3600.0
     # Region used for Bedrock pricing when the model id carries no region prefix.
     bedrock_default_region: str = "us-east-1"
+    # Cloudflare account id + API token for pricing "workers-ai" calls in price
+    # mode, via Cloudflare's own model catalog (not a public/no-auth source the
+    # way OpenRouter/AWS are — without both set, Workers AI pricing is simply
+    # unavailable and falls back to token events, same as any other miss).
+    cloudflare_account_id: str | None = None
+    cloudflare_api_token: str | None = field(default=None, repr=False)
+    # Usually NOT needed — wrap()-ing a mistralai client auto-detects this
+    # (see LagoSDK._auto_prime_pricing_for). Set it explicitly only when
+    # pricing Mistral usage without ever calling wrap() (e.g. a log-backfill
+    # path); an explicit value here always wins over an auto-detected one.
+    mistral_api_key: str | None = field(default=None, repr=False)
     # Optional injected PricingProvider (or a stub) — primarily for tests/overrides.
     # Typed Any to avoid a config→pricing import cycle.
     pricing_provider: Any | None = field(default=None, repr=False)
@@ -79,5 +98,7 @@ class LagoConfig:
             f"markup={self.markup}, "
             f"cost_metric_code={self.cost_metric_code!r}, "
             f"pricing_ttl_seconds={self.pricing_ttl_seconds}, "
-            f"bedrock_default_region={self.bedrock_default_region!r})"
+            f"bedrock_default_region={self.bedrock_default_region!r}, "
+            f"cloudflare_account_id={self.cloudflare_account_id!r}, "
+            f"verify_ssl={self.verify_ssl})"
         )

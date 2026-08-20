@@ -1,0 +1,50 @@
+{
+  "id": "01KZ8GQQ25SC32YT1PXJBXQS61",
+  "created_at": "2026-08-05T08:30:43.414Z",
+  "updated_at": "2026-08-05 08:30:43",
+  "event_id": "a2acb8fb-063d-4831-8215-91f74a984386",
+  "provider": "workers-ai",
+  "model": "@cf/meta/llama-guard-3-8b",
+  "model_type": "text-generation",
+  "path": "@cf/meta/llama-guard-3-8b",
+  "duration": 96,
+  "request_type": "workers-ai",
+  "request_content_type": "application/json",
+  "status_code": 200,
+  "response_content_type": "application/json",
+  "success": true,
+  "cached": false,
+  "tokens_in": 203,
+  "tokens_out": 3,
+  "metadata": null,
+  "step": 0,
+  "timings": {
+    "total": 95.55636099912226,
+    "latency": 92.99995299987495
+  },
+  "location": {
+    "region": "",
+    "colo": ""
+  },
+  "cost": 9.753e-05,
+  "custom_cost": false,
+  "feedback": null,
+  "score": null,
+  "request": "",
+  "response": "",
+  "prompts": null,
+  "guardrails": null,
+  "authentication": true,
+  "wholesale": false,
+  "byok": null,
+  "user_agent": "python-requests/2.34.2",
+  "usage_metadata": {
+    "input_tokens": 203,
+    "output_tokens": 3,
+    "total_tokens": 206,
+    "input_cached_tokens": 0,
+    "neurons": 8.940808348928998
+  },
+  "dlp_action": null,
+  "dlp_profiles": null
+}

@@ -213,3 +213,32 @@ def test_traffic_type_lands_in_known_fields_not_extras() -> None:
     }
     u = extract_gemini_native(resp, model_id="gemini-2.5-flash")
     assert "traffic_type" not in u.extras
+
+
+# --------------------------------------------------------------------------
+# Model attribution — bill on what answered, not the alias that was requested
+# --------------------------------------------------------------------------
+def test_model_resolves_to_response_value_not_request_alias() -> None:
+    """Gemini hot-swaps "-latest" aliases (e.g. "gemini-flash-latest") to a
+    dated snapshot server-side and reports the resolved id in
+    `model_version`. Pricing must key off that, not the alias requested —
+    same failure mode as OpenAI's alias resolution, and previously mishandled
+    here: the field was available in every response but ignored in favor of
+    the requested string."""
+    resp = {
+        "model_version": "gemini-flash-latest-002",
+        "usage_metadata": {"prompt_token_count": 10, "candidates_token_count": 20},
+    }
+    u = extract_gemini_native(resp, model_id="gemini-flash-latest")
+    assert u.model == "gemini-flash-latest-002"
+
+
+def test_model_falls_back_to_request_when_response_is_silent() -> None:
+    """The synthetic usage blob the streaming wrapper builds when no final
+    chunk carries `model_version` — fall back to the requested model rather
+    than emitting an empty string."""
+    u = extract_gemini_native(
+        {"usage_metadata": {"prompt_token_count": 10, "candidates_token_count": 20}},
+        model_id="gemini-2.5-flash",
+    )
+    assert u.model == "gemini-2.5-flash"

@@ -145,6 +145,30 @@ def test_responses_api_shape_detected() -> None:
 
 
 # --------------------------------------------------------------------------
+# Model attribution — bill on what answered, not what was requested
+# --------------------------------------------------------------------------
+def test_model_resolves_to_response_value_not_request_alias() -> None:
+    """OpenAI resolves a short alias to a dated snapshot in the response.
+
+    Every non-streaming fixture in this suite shows this exact mismatch — e.g.
+    `model_id="gpt-4o-mini"` was requested, but the response reports
+    "gpt-4o-mini-2024-07-18". Pricing/attribution must key off what actually
+    answered, or every alias-based call gets billed under the wrong model.
+    """
+    model_id, resp = _load("01_plain_chat.json")
+    assert model_id == "gpt-4o-mini"  # sanity: the alias that was requested
+    u = extract_openai_native(resp, model_id=model_id)
+    assert u.model == "gpt-4o-mini-2024-07-18"  # the resolved model that actually answered
+
+
+def test_model_falls_back_to_request_when_response_is_silent() -> None:
+    """The synthetic usage blob the streaming wrapper builds carries no top-level
+    `model` — fall back to the requested model rather than emitting an empty string."""
+    u = extract_openai_native({"usage": {"prompt_tokens": 1, "completion_tokens": 1}}, model_id="gpt-4o-mini")
+    assert u.model == "gpt-4o-mini"
+
+
+# --------------------------------------------------------------------------
 # Robustness
 # --------------------------------------------------------------------------
 def test_handles_pydantic_via_model_dump() -> None:
@@ -226,3 +250,27 @@ def test_audio_output_mapped_from_completion_details() -> None:
     u = extract_openai_native(resp, model_id="gpt-4o-audio")
     assert u.audio_input == 0
     assert u.audio_output == 33
+
+
+def test_workers_ai_model_via_openai_sdk_infers_correct_provider() -> None:
+    """Real shape: the openai SDK pointed at Cloudflare's `.../compat` endpoint,
+    routed to a Workers AI model. The SDK shape looks identical to a real
+    OpenAI response — "provider" can only be told apart by the resolved model
+    string itself. Getting this wrong made Workers AI calls permanently
+    unpriceable in price mode (stamped "openai", which has no Workers AI
+    entries in its price table) — this is what fixed it."""
+    resp = {
+        "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "usage": {"prompt_tokens": 38, "completion_tokens": 2},
+    }
+    u = extract_openai_native(resp, model_id="workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast")
+    assert u.provider == "workers-ai"
+    assert u.model == "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
+
+def test_real_openai_model_still_gets_openai_provider() -> None:
+    """The inference rule must not become over-eager — a genuine OpenAI model
+    (no "@cf/" prefix) still gets "openai", unchanged."""
+    resp = {"model": "gpt-4o-mini-2024-07-18", "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+    u = extract_openai_native(resp, model_id="gpt-4o-mini")
+    assert u.provider == "openai"

@@ -39,7 +39,16 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from ..canonical import CanonicalUsage
+from ..canonical import WORKERS_AI_COMPAT_PREFIX, CanonicalUsage
+from ._common import resolve_model
+
+# Cloudflare Workers AI names every model "@cf/<vendor>/<model>". Reaching one
+# through the gateway's OpenAI-compatible `/compat` endpoint additionally requires
+# the "workers-ai/" routing prefix, so the same model arrives under two spellings
+# depending on which surface the customer used. `pricing.lookup_cloudflare_workers_ai`
+# strips the routing prefix before matching, because Cloudflare's own catalog lists
+# only the bare form.
+_WORKERS_AI_MODEL_PREFIX = "@cf/"
 
 # Top-level usage fields we recognize across BOTH chat completions and responses APIs.
 _KNOWN_USAGE_FIELDS = {
@@ -101,6 +110,32 @@ def _count_responses_tool_calls(resp: dict[str, Any]) -> int:
     return sum(1 for item in output if isinstance(item, dict) and item.get("type") == "function_call")
 
 
+def _infer_provider(resolved_model: str) -> str:
+    """The SDK shape only ever tells you "this looks like an OpenAI response" —
+    it can't tell you who actually served it. Going through a gateway's
+    OpenAI-compatible endpoint (e.g. Cloudflare's `.../compat`), the resolved
+    model string is the only real signal: "@cf/..." is Cloudflare Workers AI's
+    own naming convention, never a real OpenAI model. This isn't cosmetic —
+    `provider` is what price-mode keys pricing off of, and Workers AI has a
+    genuinely different price table (Cloudflare's own catalog) than real
+    OpenAI models (OpenRouter); stamping "openai" on a Workers AI call would
+    have made it permanently unpriceable, quietly, at the extraction layer.
+
+    BOTH spellings have to match. Cloudflare's `/compat` endpoint takes the
+    provider-prefixed form — `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast`
+    — which is what the README and the demo notebook prescribe, and what a
+    streaming call always reports (the synthetic usage payload carries no model,
+    so `resolve_model` falls back to the requested string verbatim). Matching
+    only the bare `@cf/` left every documented Workers AI call stamped "openai",
+    priced against OpenRouter, missed, and silently degraded to token events.
+    """
+    if resolved_model.startswith(_WORKERS_AI_MODEL_PREFIX) or resolved_model.startswith(
+        f"{WORKERS_AI_COMPAT_PREFIX}{_WORKERS_AI_MODEL_PREFIX}"
+    ):
+        return "workers-ai"
+    return "openai"
+
+
 def extract_openai_native(response: Any, model_id: str = "") -> CanonicalUsage:
     """Translate an OpenAI response (chat completion or responses API) → CanonicalUsage.
 
@@ -142,6 +177,7 @@ def extract_openai_native(response: Any, model_id: str = "") -> CanonicalUsage:
         if k not in _KNOWN_USAGE_FIELDS:
             extras[k] = v
 
+    resolved_model = resolve_model(resp.get("model"), model_id)
     return CanonicalUsage(
         input=input_tokens,
         output=output_tokens,
@@ -150,8 +186,8 @@ def extract_openai_native(response: Any, model_id: str = "") -> CanonicalUsage:
         audio_input=audio_input,
         audio_output=audio_output,
         tool_calls=tool_calls,
-        model=model_id or (resp.get("model") if isinstance(resp.get("model"), str) else "") or "",
-        provider="openai",
+        model=resolved_model,
+        provider=_infer_provider(resolved_model),
         api=api,
         extras=extras,
     )

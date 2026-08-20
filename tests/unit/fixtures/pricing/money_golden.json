@@ -1,5 +1,5 @@
 {
-  "_comment": "Cross-repo golden money cases. Python (Decimal) and JS (scaled BigInt) must produce identical base/total/total_cents strings. Money is floored to 12 decimal places (ROUND_DOWN). Prices are USD per token (strings); markup is a string multiplier. total_cents = total USD x 100 (Lago dynamic charge precise_total_amount_cents).",
+  "_comment": "Cross-repo golden money cases. Python (Decimal) and JS (scaled BigInt) must produce identical base/total/total_cents strings. Money is floored to 12 decimal places (ROUND_DOWN). Prices are USD per token (strings); markup is a string multiplier. total_cents = total USD x 100 (Lago dynamic charge precise_total_amount_cents). `cases` drive compute_cost (optional `provider` selects the provider's token semantics, default 'p'); `precomputed_cases` drive compute_precomputed_cost, where usd_cost is a gateway-reported lump sum and may be a JSON number in exponential notation.",
   "cases": [
     {
       "name": "input+output, no markup",
@@ -54,6 +54,87 @@
       "base": "0.001",
       "total": "0.001333333333",
       "total_cents": "0.1333333333"
+    },
+    {
+      "name": "workers-ai: cache_read is a SUBSET of input, billed once",
+      "_note": "Real counts from a live OpenAI-shaped cached call (prompt 23233, cached 23168) at live Cloudflare @cf/moonshotai/kimi-k2.6 rates. Only 23233-23168=65 tokens may be billed at the input rate; billing all 23233 double-charges the cached portion.",
+      "provider": "workers-ai",
+      "prices": { "input": "0.00000095", "cache_read": "0.00000016" },
+      "counts": { "input": 23233, "cache_read": 23168 },
+      "markup": "1",
+      "base": "0.00376863",
+      "total": "0.00376863",
+      "total_cents": "0.376863"
+    },
+    {
+      "name": "anthropic: cache_read is ADDITIVE, input not reduced",
+      "_note": "Same counts and rates as the workers-ai case above; the only difference is the provider's token semantics. Anthropic reports input exclusive of cache, so all 23233 input tokens are billed.",
+      "provider": "anthropic",
+      "prices": { "input": "0.00000095", "cache_read": "0.00000016" },
+      "counts": { "input": 23233, "cache_read": 23168 },
+      "markup": "1",
+      "base": "0.02577823",
+      "total": "0.02577823",
+      "total_cents": "2.577823"
+    }
+  ],
+  "precomputed_cases": [
+    {
+      "name": "real Cloudflare gateway cost below 1e-6 (JSON number -> exponential)",
+      "_note": "Verbatim `cost` from a real AI Gateway log entry for @cf/meta/llama-3.2-1b-instruct (14 in / 3 out). String(n) in JS renders this as '9.807224944233895e-7', which a decimal-only parser rejected and then billed as zero.",
+      "usd_cost": 9.807224944233895e-7,
+      "markup": "1",
+      "base": "0.000000980722",
+      "total": "0.000000980722",
+      "total_cents": "0.0000980722"
+    },
+    {
+      "name": "same sub-1e-6 cost with 1.5x markup",
+      "usd_cost": 9.807224944233895e-7,
+      "markup": "1.5",
+      "base": "0.000000980722",
+      "total": "0.000001471083",
+      "total_cents": "0.0001471083"
+    },
+    {
+      "name": "real sub-1e-6 cost, second sample",
+      "usd_cost": 8.91e-7,
+      "markup": "1",
+      "base": "0.000000891",
+      "total": "0.000000891",
+      "total_cents": "0.0000891"
+    },
+    {
+      "name": "exponential supplied as a STRING",
+      "usd_cost": "9.78e-07",
+      "markup": "1",
+      "base": "0.000000978",
+      "total": "0.000000978",
+      "total_cents": "0.0000978"
+    },
+    {
+      "name": "plain decimal notation still works (real anthropic gateway cost)",
+      "usd_cost": 0.002839,
+      "markup": "1",
+      "base": "0.002839",
+      "total": "0.002839",
+      "total_cents": "0.2839"
+    },
+    {
+      "name": "below the 12dp floor -> zero",
+      "usd_cost": 1e-13,
+      "markup": "1",
+      "base": "0",
+      "total": "0",
+      "total_cents": "0"
+    },
+    {
+      "name": "negative is rejected -> zero",
+      "usd_cost": -5,
+      "markup": "1",
+      "base": "0",
+      "total": "0",
+      "total_cents": "0"
     }
   ]
 }

@@ -45,7 +45,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.10",
     "types-requests>=2.31",
-    # every provider SDK (so unit + live integration tests can import them)
+    # every provider SDK (so the unit + wrapper tests can import them)
     "boto3>=1.34",
     "mistralai>=2.0",
     "anthropic>=0.30",

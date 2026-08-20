@@ -35,6 +35,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from ..canonical import CanonicalUsage
+from ._common import resolve_model
 
 _KNOWN_USAGE_FIELDS = {
     "prompt_token_count",
@@ -126,9 +127,7 @@ def extract_gemini_native(response: Any, model_id: str = "") -> CanonicalUsage:
         audio_output=_modality_token_count(candidates_details, "AUDIO"),
         image_input=_modality_token_count(prompt_details, "IMAGE"),
         tool_calls=_count_tool_calls(resp),
-        model=model_id
-        or (resp.get("model_version") if isinstance(resp.get("model_version"), str) else "")
-        or "",
+        model=resolve_model(resp.get("model_version"), model_id),
         provider="gemini",
         api="native",
         extras=extras,
