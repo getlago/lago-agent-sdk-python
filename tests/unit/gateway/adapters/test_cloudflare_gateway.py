@@ -420,3 +420,45 @@ def test_cache_read_still_zero_when_genuinely_absent() -> None:
     )
     assert u.cache_read == 0
     assert u.cache_write == 0
+
+
+def test_provider_native_cache_and_reasoning_spellings_are_accepted() -> None:
+    """SYNTHETIC entries — no provider-native key appears in ANY of the 14 captured
+    fixtures (they carry only Cloudflare's own vocabulary). These pin the unobserved
+    insurance spellings so the fallthrough list cannot be trimmed by accident.
+
+    The direction of the harm differs by provider, which is why both matter:
+    Anthropic's cache_read is ADDITIVE, so a missed key means those tokens are never
+    billed (under-bill); Gemini's is SUBTRACTIVE, so a missed key bills them at the
+    full prompt rate (over-bill).
+    """
+    anthropic_native = extract_cloudflare_log(
+        {
+            "tokens_in": 100,
+            "tokens_out": 10,
+            "provider": "anthropic",
+            "usage_metadata": {"cache_read_input_tokens": 4242},
+        }
+    )
+    assert anthropic_native.cache_read == 4242
+
+    gemini_native = extract_cloudflare_log(
+        {
+            "tokens_in": 100,
+            "tokens_out": 10,
+            "provider": "google-ai-studio",
+            "usage_metadata": {"thoughtsTokenCount": 852},
+        }
+    )
+    assert gemini_native.reasoning == 852
+
+    # Cloudflare's own spelling still wins when both are present
+    both = extract_cloudflare_log(
+        {
+            "tokens_in": 100,
+            "tokens_out": 10,
+            "provider": "anthropic",
+            "usage_metadata": {"input_cached_tokens": 11, "cache_read_input_tokens": 4242},
+        }
+    )
+    assert both.cache_read == 11

@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from ..canonical import CanonicalUsage
+from ..canonical import WORKERS_AI_COMPAT_PREFIX, CanonicalUsage
 from ._common import resolve_model
 
 # Cloudflare Workers AI names every model "@cf/<vendor>/<model>". Reaching one
@@ -49,7 +49,6 @@ from ._common import resolve_model
 # strips the routing prefix before matching, because Cloudflare's own catalog lists
 # only the bare form.
 _WORKERS_AI_MODEL_PREFIX = "@cf/"
-_WORKERS_AI_COMPAT_PREFIX = "workers-ai/"
 
 # Top-level usage fields we recognize across BOTH chat completions and responses APIs.
 _KNOWN_USAGE_FIELDS = {
@@ -131,7 +130,7 @@ def _infer_provider(resolved_model: str) -> str:
     priced against OpenRouter, missed, and silently degraded to token events.
     """
     if resolved_model.startswith(_WORKERS_AI_MODEL_PREFIX) or resolved_model.startswith(
-        f"{_WORKERS_AI_COMPAT_PREFIX}{_WORKERS_AI_MODEL_PREFIX}"
+        f"{WORKERS_AI_COMPAT_PREFIX}{_WORKERS_AI_MODEL_PREFIX}"
     ):
         return "workers-ai"
     return "openai"

@@ -58,10 +58,19 @@ class LagoSDK:
         reachable with ``LagoSDK(api_key=..., api_url=..., verify_ssl=False)``.
         """
         self.config = config or LagoConfig(api_key=api_key)
-        # explicit args win over `config` — each guarded on "was it actually
-        # passed?", never on truthiness, so a config value survives when it wasn't.
+        # explicit args win over `config` — guarded on "was it actually passed?"
+        # rather than on truthiness, so a config value survives when it wasn't.
         self.config.api_key = api_key or self.config.api_key
-        if api_url is not None:
+        # `api_url` is the one exception: an EMPTY string must not win either. The bug
+        # this guard was written for was a *truthy default* overwriting config, so
+        # accepting "" swapped one silent misroute for a worse one —
+        # `api_url=os.environ.get("LAGO_API_URL", "")` with the var unset used to keep
+        # the production URL and instead wrote "". Downstream that is unrecoverable:
+        # `requests` raises MissingSchema, which is not a LagoApiError, so the queue
+        # classifies it transient, re-prepends the batch and retries at the 60s ceiling
+        # forever. All billing stops, nothing is dropped or escalated, and the only
+        # symptom is a growing buffer.
+        if api_url:
             self.config.api_url = api_url
         if default_subscription_id is not None:
             self.config.default_subscription_id = default_subscription_id
@@ -269,13 +278,11 @@ class LagoSDK:
         try:
             sub = self._resolve_subscription(subscription)
             if not sub:
-                # Reported as well as logged: this drops the call's billing entirely,
-                # and a customer watching on_error — the documented channel for every
-                # other billing gap — saw nothing. The JS port already reported it.
-                logger.error(
-                    "lago: dropping events for model=%s — no resolvable subscription",
-                    usage.model,
-                )
+                # `_report_error` is the single channel: it invokes on_error AND
+                # logs. An extra logger.error here emitted the same drop twice under
+                # two different levels, so a customer grepping logs counted one lost
+                # call as two — and the JS port logged nothing at all, so the two
+                # repos reported 2 lines vs 0 for the same event.
                 self._report_error(
                     ValueError(
                         f"no resolvable subscription for model={usage.model!r}; events dropped. "
@@ -339,6 +346,18 @@ class LagoSDK:
         self, usage: CanonicalUsage, sub: str, dimensions: dict[str, Any] | None, event_id: str | None = None
     ) -> None:
         nonzero = usage.nonzero_numeric()
+        # A negative count is silently unbillable — Lago would otherwise sum it into
+        # a negative quantity. It was the only drop path in the SDK that never
+        # reached on_error, so a caller who built a CanonicalUsage with a bad delta
+        # saw nothing at all. Reported before the empty-check, because an event whose
+        # only fields were negative leaves `nonzero` empty and would return below
+        # without a word.
+        negatives = usage.negative_numeric()
+        if negatives:
+            self._report_error(
+                ValueError(f"dropped negative token counts for model={usage.model!r}: {negatives}"),
+                "negative_tokens",
+            )
         if not nonzero:
             # Mistral legacy / empty — nothing to bill
             return

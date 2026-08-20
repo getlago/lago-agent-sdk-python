@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from lago_agent_sdk import CanonicalUsage, LagoConfig, LagoSDK
@@ -107,6 +109,19 @@ def test_explicit_api_url_still_wins_over_config():
     )
     try:
         assert sdk.config.api_url == "http://explicit:3000/api/v1"
+    finally:
+        sdk.shutdown(timeout=1.0)
+
+
+@pytest.mark.parametrize("empty", ["", None])
+def test_empty_or_absent_api_url_keeps_the_production_default(empty):
+    """`api_url=os.environ.get("LAGO_API_URL", "")` with the var unset must NOT write
+    "". Downstream that is unrecoverable: requests raises MissingSchema, which is not a
+    LagoApiError, so the queue treats it as transient and retries at the 60s ceiling
+    forever — all billing stops with only a growing buffer as the symptom."""
+    sdk = LagoSDK(api_key="k", api_url=empty)
+    try:
+        assert sdk.config.api_url == "https://api.getlago.com/api/v1"
     finally:
         sdk.shutdown(timeout=1.0)
 
@@ -268,3 +283,73 @@ def test_caller_dimensions_win_on_a_collision_on_both_emitters():
     # charged amount on a cost event, because `precise_total_amount_cents` is a
     # sibling of `properties`, not a member of it.
     assert cost[0]["precise_total_amount_cents"] == "1"
+
+
+def test_negative_token_counts_are_reported_not_just_dropped(caplog) -> None:
+    """`CanonicalUsage` is exported and `emit()` takes one directly — the documented
+    way to backfill usage the SDK did not intercept — so a caller computing a delta
+    wrongly really can hand us a negative. Dropping it was correct (Lago would sum a
+    negative billable quantity) but it was the only drop path that never reached
+    on_error."""
+    seen: list[tuple[Exception, str]] = []
+    received: list = []
+    cfg = LagoConfig(api_key="k", default_subscription_id="sub", on_error=lambda e, c: seen.append((e, c)))
+    sdk = LagoSDK(api_key="k", config=cfg)
+    sdk._queue._sender = lambda b: received.append(list(b))  # type: ignore[attr-defined]
+    try:
+        sdk.emit(CanonicalUsage(input=-100, output=50, model="m", provider="anthropic", api="native"))
+        assert sdk.flush(timeout=2.0)
+    finally:
+        sdk.shutdown(timeout=1.0)
+
+    flat = [e for batch in received for e in batch]
+    values = [e["properties"]["value"] for e in flat]
+    assert all(not str(v).startswith("-") for v in values), f"a negative was billed: {values}"
+    assert "negative_tokens" in [c for _, c in seen], f"drop must reach on_error; got {seen}"
+    assert "input" in str(next(e for e, c in seen if c == "negative_tokens"))
+
+
+def test_a_dropped_event_logs_exactly_once(caplog) -> None:
+    """`_report_error` invokes on_error AND logs. An extra logger.error alongside it
+    emitted the same drop twice under two levels, so a customer grepping logs counted
+    one lost call as two — while the JS port logged nothing at all for it."""
+    cfg = LagoConfig(api_key="k")  # no default subscription -> the drop path
+    sdk = LagoSDK(api_key="k", config=cfg)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="lago_agent_sdk"):
+            sdk.emit(CanonicalUsage(input=10, output=5, model="m", provider="anthropic", api="native"))
+        drop_lines = [r for r in caplog.records if "subscription" in r.getMessage()]
+        assert len(drop_lines) == 1, f"expected one line per drop, got {[r.getMessage() for r in drop_lines]}"
+    finally:
+        sdk.shutdown(timeout=1.0)
+
+
+def test_verify_ssl_false_survives_a_broken_urllib3(monkeypatch) -> None:
+    """Suppressing the InsecureRequestWarning is an optional convenience; it must
+    never be able to fail construction. This sits on an advertised path — `verify_ssl`
+    is a first-class constructor arg the docstring recommends for local dev — so an
+    ImportError/AttributeError here would take down `LagoSDK()` for exactly the setup
+    the flag exists to serve. The old code reached through `requests.packages`, a
+    legacy shim with no guarantee of existing."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def boom(name, *args, **kwargs):
+        if name == "urllib3":
+            raise ImportError("no urllib3 for you")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", boom)
+    # Also remove the legacy shim the old code reached through, so this test fails
+    # against that version instead of silently passing: `requests.packages` is a
+    # compatibility alias, not API, and nothing guarantees it is present.
+    import requests
+
+    monkeypatch.delattr(requests, "packages", raising=False)
+
+    sdk = LagoSDK(api_key="k", api_url="https://example.invalid/api/v1", verify_ssl=False)
+    try:
+        assert sdk.config.verify_ssl is False
+    finally:
+        sdk.shutdown(timeout=1.0)

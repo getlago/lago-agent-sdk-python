@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pathlib
+import subprocess
+import sys
 import threading
 import time
 
@@ -178,6 +181,70 @@ def test_transient_failure_during_isolation_still_gets_retried():
         q.shutdown(timeout=2.0)
 
 
+_REENTRANT_OVERFLOW_PROGRAM = """
+import sys, threading
+sys.path.insert(0, {src!r})
+from lago_agent_sdk.queue import EventQueue
+
+calls = {{"n": 0}}
+def on_error(exc, where):
+    calls["n"] += 1
+    if calls["n"] > 200:          # runaway guard so this exits rather than spinning
+        raise SystemExit(3)
+    q.push({{"diagnostic": True}})   # re-enters push() from inside the hook
+
+q = EventQueue(sender=lambda b: None, flush_interval=10.0, max_batch_size=1000,
+               max_buffer_size=1, on_error=on_error)
+for i in range(3):
+    q.push({{"i": i}})
+q.shutdown(timeout=1.0)
+print("OK", calls["n"])
+"""
+
+
+def _run_reentrant_overflow(timeout: float = 20.0) -> subprocess.CompletedProcess:
+    """Run the re-entrant-overflow scenario in a SUBPROCESS.
+
+    It has to be a subprocess: once the deadlock happens, the wedged producer holds
+    `_lock` forever, and `EventQueue.__init__`'s `atexit` shutdown then blocks on that
+    same lock at interpreter exit. The process is poisoned, so an in-process test
+    would hang the whole session instead of reporting a failure. Out-of-process, a
+    hang is just a timeout we can assert on.
+    """
+    src = str(pathlib.Path(__file__).resolve().parents[2] / "src")
+    return subprocess.run(
+        [sys.executable, "-c", _REENTRANT_OVERFLOW_PROGRAM.format(src=src)],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def test_overflow_report_does_not_deadlock_a_reentrant_callback():
+    """The report must run with the lock RELEASED, and must not re-enter unboundedly.
+
+    Two failure modes, one scenario. `_lock` is a plain Lock, not an RLock, so
+    reporting inside it meant a customer `on_error` that touched the SDK at all —
+    emitting a diagnostic, forcing a flush — blocked forever on a lock its own thread
+    already held; overflow happens under sustained load, which is exactly when such a
+    hook fires. Moving the report out of the lock then exposed the other half: the
+    buffer is full again by the time the hook runs, so a hook that pushes overflows
+    again and re-enters without bound.
+    """
+    try:
+        proc = _run_reentrant_overflow()
+    except subprocess.TimeoutExpired:
+        raise AssertionError(
+            "re-entrant on_error during overflow hung the process — the report is holding the lock"
+        ) from None
+    assert proc.returncode == 0, f"exit {proc.returncode}: " + (
+        "runaway re-entrant reporting" if proc.returncode == 3 else proc.stderr[-400:]
+    )
+    assert proc.stdout.startswith("OK"), proc.stdout
+    reports = int(proc.stdout.split()[1])
+    assert reports <= 10, f"expected a bounded number of overflow reports, got {reports}"
+
+
 def test_overflow_is_reported_through_on_error():
     """An overflow drops BILLABLE events. It was logger.warning only, so a customer
     watching on_error never learned revenue had been lost; the JS port already
@@ -206,6 +273,36 @@ def test_overflow_is_reported_through_on_error():
 # aimed `max_batch_size` extra requests at a server that had just asked us to
 # slow down.
 # ----------------------------------------------------------------------
+@pytest.mark.parametrize("status", [413, 402, 415])
+def test_batch_only_4xx_is_split_not_head_of_line_blocked(status: int):
+    """For these the SAME batch can never succeed, but its events can individually.
+
+    Treating them as transient re-prepended the identical batch at the head of the FIFO
+    and backed off to 60s forever, blocking everything behind it. Routing them to
+    `_send_individually` splits the batch and delivers what is deliverable — which is
+    what the isolation path was built for, and it was unreachable for exactly the batch
+    that most needed it.
+    """
+    sent_individually: list = []
+
+    def sender(batch):
+        if len(batch) > 1:
+            raise LagoApiError(status, "batch too large / unacceptable as-is")
+        sent_individually.append(batch[0]["id"])  # each event succeeds alone
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        for i in range(4):
+            q.push({"id": i})
+        assert q.flush(timeout=3.0), "queue should drain, not head-of-line block"
+        assert sorted(sent_individually) == [0, 1, 2, 3], (
+            f"every event should have been delivered individually, got {sent_individually}"
+        )
+        assert q._backoff_seconds == 0.0, "splitting must not leave a stale backoff"
+    finally:
+        q.shutdown(timeout=1.0)
+
+
 @pytest.mark.parametrize("status", [429, 408])
 def test_throttling_4xx_is_retried_not_dropped(status: int):
     """A rate-limited or timed-out batch must reach Lago eventually. Dropping
@@ -363,3 +460,23 @@ def test_flush_returns_false_on_timeout():
     finally:
         blocking.set()
         q.shutdown(timeout=2.0)
+
+
+def test_isolated_retries_keep_their_fifo_order() -> None:
+    """`_replay_failed` PREPENDS, so calling it once per event inside the isolation
+    loop reversed the survivors: a 413 batch of a,b,c,d,e whose b,c,d fail
+    transiently while isolated came back as d,c,b. FIFO is the queue's contract —
+    it is what makes oldest-dropped-first overflow and Lago's own event ordering
+    mean anything — so a recovery path must not silently invert it."""
+
+    def sender(batch):
+        if batch[0]["id"] in ("b", "c", "d"):
+            raise LagoApiError(503, "transient while isolated")
+
+    q = EventQueue(sender=sender, flush_interval=60.0, max_batch_size=10, max_buffer_size=100)
+    try:
+        q._send_individually([{"id": i} for i in "abcde"], LagoApiError(413, "too large"))
+        with q._lock:
+            assert [e["id"] for e in q._buffer] == ["b", "c", "d"]
+    finally:
+        q.shutdown(timeout=1.0)

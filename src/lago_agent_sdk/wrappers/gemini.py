@@ -91,19 +91,33 @@ def wrap_gemini_client(
 
             def _iter() -> Iterator[Any]:
                 last_with_usage: Any = None
+                resolved_model: str | None = None
                 try:
                     for chunk in src:
                         payload = chunk.model_dump() if hasattr(chunk, "model_dump") else chunk
-                        if isinstance(payload, dict) and payload.get("usage_metadata"):
-                            # Carry `model_version` too. Gemini hot-swaps "-latest"
-                            # aliases server-side, so the chunk's own version is what
-                            # OpenRouter lists and what pricing must key off; a
-                            # usage-only payload silently reverted to the requested
-                            # alias on every streaming call.
-                            last_with_usage = {
-                                "usage_metadata": payload["usage_metadata"],
-                                "model_version": payload.get("model_version"),
-                            }
+                        if isinstance(payload, dict):
+                            # `model_version` must PERSIST across chunks, not be read
+                            # off whichever chunk happens to carry usage. Gemini
+                            # hot-swaps "-latest" aliases server-side and announces
+                            # the resolved version on an EARLY chunk, while usage
+                            # arrives on the last one — so reading it from the
+                            # usage-bearing chunk alone found nothing and silently
+                            # reverted to the requested alias. Measured on identical
+                            # input: this emitted "gemini-flash-latest" where the JS
+                            # port, which already persisted it, emitted
+                            # "gemini-2.5-flash-002". Pricing keys off the resolved
+                            # version, so the two ports priced the same call
+                            # differently. Both spellings are accepted because
+                            # `model_dump()` yields snake_case while a raw REST dict
+                            # is camelCase.
+                            mv = payload.get("model_version") or payload.get("modelVersion")
+                            if isinstance(mv, str) and mv:
+                                resolved_model = mv
+                            if payload.get("usage_metadata"):
+                                last_with_usage = {
+                                    "usage_metadata": payload["usage_metadata"],
+                                    "model_version": resolved_model,
+                                }
                         yield chunk
                 finally:
                     if last_with_usage is not None:
@@ -122,19 +136,33 @@ def wrap_gemini_client(
 
             async def _aiter() -> AsyncIterator[Any]:
                 last_with_usage: Any = None
+                resolved_model: str | None = None
                 try:
                     async for chunk in src:
                         payload = chunk.model_dump() if hasattr(chunk, "model_dump") else chunk
-                        if isinstance(payload, dict) and payload.get("usage_metadata"):
-                            # Carry `model_version` too. Gemini hot-swaps "-latest"
-                            # aliases server-side, so the chunk's own version is what
-                            # OpenRouter lists and what pricing must key off; a
-                            # usage-only payload silently reverted to the requested
-                            # alias on every streaming call.
-                            last_with_usage = {
-                                "usage_metadata": payload["usage_metadata"],
-                                "model_version": payload.get("model_version"),
-                            }
+                        if isinstance(payload, dict):
+                            # `model_version` must PERSIST across chunks, not be read
+                            # off whichever chunk happens to carry usage. Gemini
+                            # hot-swaps "-latest" aliases server-side and announces
+                            # the resolved version on an EARLY chunk, while usage
+                            # arrives on the last one — so reading it from the
+                            # usage-bearing chunk alone found nothing and silently
+                            # reverted to the requested alias. Measured on identical
+                            # input: this emitted "gemini-flash-latest" where the JS
+                            # port, which already persisted it, emitted
+                            # "gemini-2.5-flash-002". Pricing keys off the resolved
+                            # version, so the two ports priced the same call
+                            # differently. Both spellings are accepted because
+                            # `model_dump()` yields snake_case while a raw REST dict
+                            # is camelCase.
+                            mv = payload.get("model_version") or payload.get("modelVersion")
+                            if isinstance(mv, str) and mv:
+                                resolved_model = mv
+                            if payload.get("usage_metadata"):
+                                last_with_usage = {
+                                    "usage_metadata": payload["usage_metadata"],
+                                    "model_version": resolved_model,
+                                }
                         yield chunk
                 finally:
                     if last_with_usage is not None:
