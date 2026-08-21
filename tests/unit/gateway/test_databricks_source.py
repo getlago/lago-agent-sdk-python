@@ -18,6 +18,7 @@ import pytest
 from lago_agent_sdk import CanonicalUsage, LagoSDK
 from lago_agent_sdk.config import LagoConfig
 from lago_agent_sdk.gateway.databricks import (
+    _USAGE_COLUMNS,
     DatabricksSource,
     DatabricksUsageRow,
     _floor_hour,
@@ -220,6 +221,62 @@ def test_a_window_entirely_inside_the_open_hour_reads_nothing_and_says_so(
         assert list(src.read_usage(inside_the_open_hour)) == []
     assert src.queries == []  # type: ignore[attr-defined]
     assert "widen the window" in caplog.text
+
+
+# --------------------------------------------------------------------------
+# The projection
+# --------------------------------------------------------------------------
+def _projection_of(sql: str) -> list[str]:
+    """The column names one of this module's statements actually selects."""
+    body = sql.split("SELECT", 1)[1].split("FROM", 1)[0]
+    return [c.strip() for c in body.split(",") if c.strip()]
+
+
+def test_the_usage_read_projects_only_the_columns_the_adapter_uses() -> None:
+    """`system.ai_gateway.usage` is 36 columns wide and the caller is told to read one
+    wide window per run, but the API's default `disposition=INLINE` FAILS a statement
+    whose response exceeds 25 MiB rather than paginating. Live, over 247 real rows:
+    1,411 bytes/row for `SELECT *` against 435 for these — ~18k readable rows instead
+    of ~60k, for byte-identical billing output."""
+    src = _source([], [_HOSTED])
+    list(src.read_usage("3 days"))
+    _, usage = src.queries  # type: ignore[attr-defined]
+    assert "*" not in usage
+    assert _projection_of(usage) == list(_USAGE_COLUMNS)
+    # Nothing reads the row order, so the sort is pure warehouse cost on the widest
+    # read this module makes.
+    assert "ORDER BY" not in usage
+
+
+def test_the_projection_covers_every_column_the_extraction_reads() -> None:
+    """The other direction of the same coupling, and the reason the narrowing needs a
+    test at all: a column missing from the projection does NOT raise — the adapter
+    degrades every absent field to zero/empty — so it would land as a silently
+    under-billed event. Here the canned rows are projected THROUGH the statement, so
+    dropping a needed column fails this rather than shipping."""
+    projected = _source([_BYOK_SPEND], [_HOSTED, _BYOK_USAGE])
+    inner = projected.query
+
+    def project(sql: str) -> list[dict[str, Any]]:
+        rows = inner(sql)
+        if "external_model_spend" in sql:
+            return rows
+        keep = _projection_of(sql)
+        return [{k: v for k, v in row.items() if k in keep} for row in rows]
+
+    projected.query = project  # type: ignore[method-assign]
+    through_projection = list(projected.read_usage("3 days"))
+    every_column = list(_source([_BYOK_SPEND], [_HOSTED, _BYOK_USAGE]).read_usage("3 days"))
+
+    assert [(r.usage, r.subscription, r.row_id, r.kind, r.usd_cost) for r in through_projection] == [
+        (r.usage, r.subscription, r.row_id, r.kind, r.usd_cost) for r in every_column
+    ]
+    # Spelled out, because the equality above would also hold if BOTH sides were empty.
+    hosted = next(r for r in through_projection if r.kind == "usage")
+    assert (hosted.usage.model, hosted.usage.input, hosted.usage.output) == ("llama-4-maverick", 11, 4)
+    assert hosted.subscription == "sub_hosted"
+    byok = next(r for r in through_projection if r.kind == "spend")
+    assert (byok.usage.cache_read, byok.subscription, byok.usd_cost) == (1812, "sub_byok", 0.0011187)
 
 
 # --------------------------------------------------------------------------

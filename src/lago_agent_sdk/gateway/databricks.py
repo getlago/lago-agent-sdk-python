@@ -58,6 +58,37 @@ _STATEMENTS_PATH = "/api/2.0/sql/statements"
 # the one direction that loses money.
 _INTERVAL_RE = re.compile(r"^\s*(\d{1,5})\s+(second|minute|hour|day|week)s?\s*$", re.I)
 
+# Every `system.ai_gateway.usage` column the extraction reads, and nothing else. The
+# table is 36 columns wide and this module's own guidance is "one wide window per run",
+# so `SELECT *` is not merely untidy: results come back with the API's default
+# `disposition=INLINE`, whose 25 MiB response cap FAILS the statement rather than
+# paginating past it. Measured on the live table, 247 real rows: 1,411 bytes/row for
+# `SELECT *` against 435 for these 14 columns — a ceiling of ~18k rows instead of ~60k
+# before a window becomes unreadable, for identical billing output. The wide columns are
+# the ones nothing bills off (`routing_information`, `endpoint_metadata`, `url`,
+# `user_agent`).
+#
+# Keep this in sync with `extract_databricks_log` / `resolve_databricks_subscription`:
+# a column dropped from here reaches the adapter as absent, which every field degrades
+# to zero/empty on rather than raising — an under-billed event, silently. That coupling
+# is what `test_the_projection_covers_every_column_the_extraction_reads` pins.
+_USAGE_COLUMNS = (
+    "event_time",  # the hour bucket the BYOK join keys on
+    "request_id",
+    "invocation_id",
+    "endpoint_name",
+    "endpoint_id",
+    "destination_type",  # hosted-vs-BYOK, which decides model AND provider
+    "destination_name",
+    "destination_model",
+    "api_type",  # its leading segment IS the BYOK provider
+    "status_code",
+    "input_tokens",
+    "output_tokens",
+    "token_details",  # cache_read / cache_write / reasoning
+    "request_tags",  # carries `lago_subscription`
+)
+
 
 def _raise_for_api_error(resp: Any, what: str) -> None:
     """Raise with the API's own error text when a Statement Execution call is not OK.
@@ -481,10 +512,13 @@ class DatabricksSource:
             WHERE usage_start_time >= {window} AND usage_start_time < {ceiling}
         """)
 
+        # No ORDER BY: nothing downstream reads the row order — the BYOK join is keyed,
+        # the unbilled report is `sorted()`, and each event's `transaction_id` derives
+        # from the row's own ids — so it only buys the warehouse a sort over the widest
+        # read this module makes.
         usage = self.query(f"""
-            SELECT * FROM system.ai_gateway.usage
+            SELECT {", ".join(_USAGE_COLUMNS)} FROM system.ai_gateway.usage
             WHERE event_time >= {window} AND event_time < {ceiling}
-            ORDER BY event_time
         """)
 
         # Extract once per row and reuse: this loop and the hosted loop below both need
