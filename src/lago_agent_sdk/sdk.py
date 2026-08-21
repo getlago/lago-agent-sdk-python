@@ -77,6 +77,24 @@ class LagoSDK:
         at all: a local instance behind a self-signed cert (Traefik's default) is
         reachable with ``LagoSDK(api_key=..., api_url=..., verify_ssl=False)``.
         """
+        if isinstance(api_key, LagoConfig):
+            # `LagoSDK(cfg)` is the natural-looking call and it is silently, totally
+            # wrong: the config becomes the BEARER TOKEN while ``config`` stays None, so
+            # a fresh default ``LagoConfig`` is built and every field the caller set is
+            # discarded. Measured live: a config naming a local Lago produced an SDK
+            # posting to PRODUCTION ``api.getlago.com`` with an unusable key — every
+            # event 401, ``flush()`` still returning True, and the caller's own
+            # ``on_error`` never invoked, because that hook was one of the discarded
+            # fields. The only trace was a WARNING per event. Whether the queue then
+            # drops those events or holds them is beside the point: no key the caller
+            # passed is ever used, so nothing downstream can recover. It has to fail at
+            # construction.
+            raise TypeError(
+                "LagoSDK's first positional parameter is `api_key`, not `config`. "
+                "Passing a LagoConfig here makes it the bearer token and leaves the "
+                "rest of your config unused, so every event is sent to the default "
+                "api_url with a key that 401s. Use LagoSDK(config.api_key, config=config)."
+            )
         self.config = config or LagoConfig(api_key=api_key)
         # explicit args win over `config` — guarded on "was it actually passed?"
         # rather than on truthiness, so a config value survives when it wasn't.

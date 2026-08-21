@@ -552,7 +552,29 @@ class DatabricksSource:
 
         for row in spend:
             usd = _safe_float(row.get("usage_quantity"))
-            if not usd:
+            if usd <= 0:
+                # `if not usd` skipped 0.0 but let a NEGATIVE straight through, and a
+                # negative is far worse than a zero. `_parse_price` rejects it, so
+                # `compute_precomputed_cost` floors the event to $0 — and that $0 event
+                # still CONSUMES the `record_id`-derived `transaction_id`, which Lago
+                # enforces unique account-wide. Measured against real Lago on a real
+                # spend row: a $0.015245 row restated negative billed as `value: "0"`,
+                # and re-running the window once Databricks had corrected it came back
+                # `422 value_already_exist` — the same figure billed fine only under a
+                # fresh prefix. Skipping leaves the id unburnt, so a restatement bills
+                # normally on the next run. The bucket then appears in the deferred
+                # report below, which is the honest reading: its tokens went unbilled.
+                if usd < 0:
+                    logger.warning(
+                        "lago: skipping Databricks spend row with a NEGATIVE "
+                        "usage_quantity (%s, model=%s, hour=%s). A credit or restatement "
+                        "cannot be billed as an event, and billing it at $0 would burn "
+                        "the row's transaction_id so the corrected figure could never "
+                        "land.",
+                        row.get("usage_quantity"),
+                        row.get("model"),
+                        _truncate_hour(_stamp(row.get("bucket"))),
+                    )
                 continue
             key = (
                 _truncate_hour(_stamp(row.get("bucket"))),
@@ -731,8 +753,6 @@ def _bucket_of(value: Any) -> str:
 
 def _canonical_tags(value: Any) -> str:
     """Stable string form of a request_tags map, for use as a join key."""
-    import json
-
     if isinstance(value, str):
         try:
             value = json.loads(value or "{}")

@@ -352,6 +352,39 @@ def test_zero_dollar_spend_rows_are_skipped() -> None:
     assert list(_source([{**_BYOK_SPEND, "usage_quantity": "0"}], []).read_usage("1 day")) == []
 
 
+def test_negative_spend_rows_are_skipped_rather_than_billed_at_zero(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A Databricks credit or restatement arrives as a negative `usage_quantity`.
+
+    `if not usd` skipped 0 but passed a negative, which `_parse_price` then rejects, so
+    the event billed at $0 while still consuming the `record_id`-derived
+    `transaction_id`. Verified against real Lago: the corrected positive figure came
+    back `422 value_already_exist` and could only be billed under a different prefix.
+    Skipping keeps the id available for the restatement.
+    """
+    negative = {**_BYOK_SPEND, "usage_quantity": "-0.0011187"}
+    with caplog.at_level(logging.WARNING, logger="lago_agent_sdk.gateway.databricks"):
+        rows = list(_source([negative], [_BYOK_USAGE]).read_usage("1 day"))
+    # Only the hosted/usage half may survive; nothing may carry the spend row's id.
+    assert [r.row_id for r in rows if r.kind == "spend"] == []
+    assert "NEGATIVE usage_quantity" in caplog.text
+    assert "-0.0011187" in caplog.text, "the operator needs the figure, not just the fact"
+
+
+def test_a_restated_spend_row_bills_under_the_id_the_negative_would_have_burnt() -> None:
+    """The whole point of skipping, as one scenario: read the negative, then read the
+    same row once Databricks has corrected it. Anything emitted for the negative — even
+    at $0 — consumes that `transaction_id` account-wide, and Lago then rejects the
+    correction as a duplicate, so the id the second read needs must still be free."""
+    negative = {**_BYOK_SPEND, "usage_quantity": "-0.0011187"}
+    burnt = {row.event_id_for("sub_byok") for row in _source([negative], [_BYOK_USAGE]).read_usage("1 day")}
+    corrected = list(_source([_BYOK_SPEND], [_BYOK_USAGE]).read_usage("1 day"))
+    (spend_row,) = [r for r in corrected if r.kind == "spend"]
+    assert spend_row.event_id_for("sub_byok") not in burnt
+    assert spend_row.usd_cost == pytest.approx(0.0011187)
+
+
 def test_failed_calls_yield_nothing() -> None:
     """403/404s are recorded with NULL token counts. Emitting them would bill an
     empty event for a call that never reached a provider."""

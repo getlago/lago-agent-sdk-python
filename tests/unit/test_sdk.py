@@ -157,6 +157,25 @@ def test_explicit_verify_ssl_wins_over_config():
         sdk.shutdown(timeout=1.0)
 
 
+def test_a_config_passed_positionally_raises_instead_of_401ing_everything():
+    """`LagoSDK(cfg)` reads correctly and is total: the config becomes the bearer
+    token, `config` stays None, and a fresh default LagoConfig replaces every field
+    the caller set. Driven live it posted to PRODUCTION api.getlago.com, 401'd every
+    event, still returned True from `flush()`, and never called the caller's
+    `on_error` — because that hook was one of the discarded fields."""
+    cfg = LagoConfig(
+        api_key="k",
+        api_url="https://api.lago.dev/api/v1",
+        on_error=lambda exc, where: None,
+    )
+    with pytest.raises(TypeError) as excinfo:
+        LagoSDK(cfg)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    assert "api_key" in message and "config" in message
+    # The message has to carry the fix, not just the diagnosis.
+    assert "LagoSDK(config.api_key, config=config)" in message
+
+
 def test_ignored_usd_cost_is_reported_not_silently_dropped():
     """A caller who supplies a real metered cost while the effective mode isn't
     'price' had it discarded with no log and no on_error — so a hand-rolled
