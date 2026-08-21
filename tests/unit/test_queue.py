@@ -480,3 +480,114 @@ def test_isolated_retries_keep_their_fifo_order() -> None:
             assert [e["id"] for e in q._buffer] == ["b", "c", "d"]
     finally:
         q.shutdown(timeout=1.0)
+
+
+# ----------------------------------------------------------------------
+# No unbounded respin after isolating a batch. Mirrors
+# `EventQueue — no unbounded respin after isolating a batch` in the JS port.
+# ----------------------------------------------------------------------
+def test_isolation_requeue_is_paced_not_spun() -> None:
+    """A permanent batch error plus a transient error on every isolated send used to
+    loop with no delay: `_send_individually` put the events back and `_run` continued
+    straight into re-taking them. Measured before the fix: 280,388 HTTP requests in
+    1.2s, aimed at the server that had just returned 429."""
+    calls = {"n": 0}
+
+    def sender(batch):
+        calls["n"] += 1
+        # Permanent on the batch, transient on every isolated send: the exact pair.
+        raise LagoApiError(422 if len(batch) > 1 else 429, "x")
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=60.0)
+    try:
+        for name in ("a", "b", "c"):
+            q.push({"transaction_id": name})
+        time.sleep(1.2)
+        # 1 batch + 3 isolated + at most a couple of paced retries.
+        assert calls["n"] < 40, f"expected paced retries, got {calls['n']} calls"
+        assert q._backoff_seconds > 0, "a partial re-queue must arm the backoff"
+    finally:
+        q.shutdown(timeout=0.5)
+
+
+def test_exit_drain_does_not_respin_either(caplog) -> None:
+    """The exit drain has no later retry, so re-queuing a transient sub-failure there
+    means re-taking it immediately — a hot loop for the whole drain budget. Those
+    events must be reported as lost instead."""
+    calls = {"n": 0}
+
+    def sender(batch):
+        calls["n"] += 1
+        raise LagoApiError(422 if len(batch) > 1 else 429, "x")
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=60.0)
+    for name in ("a", "b", "c"):
+        q.push({"transaction_id": name})
+    time.sleep(0.4)
+    before = calls["n"]
+    with caplog.at_level("WARNING"):
+        q.shutdown(timeout=1.5)
+    # 1 batch + 3 isolated sends per pass, not thousands.
+    assert calls["n"] - before < 20, f"exit drain spun: {calls['n'] - before} calls"
+    assert any("LOST" in r.getMessage() for r in caplog.records)
+
+
+def test_keeps_draining_when_isolation_fully_resolves_the_batch() -> None:
+    """The counterpart: nothing re-queued means the buffer shrank, so the loop should
+    keep going immediately rather than waiting out a whole flush interval."""
+    delivered: list[str] = []
+
+    def sender(batch):
+        if len(batch) > 1:
+            raise LagoApiError(422, "batch rejected")
+        delivered.append(batch[0]["transaction_id"])
+
+    q = EventQueue(
+        sender=sender, flush_interval=0.05, max_batch_size=2, max_buffer_size=10_000, max_retry_seconds=0.5
+    )
+    try:
+        for name in ("a", "b", "c", "d"):
+            q.push({"transaction_id": name})
+        assert q.flush(timeout=3.0)
+        assert set(delivered) == {"a", "b", "c", "d"}
+    finally:
+        q.shutdown(timeout=1.0)
+
+
+# ----------------------------------------------------------------------
+# A slow pricing refresh must not delay event delivery. Mirrors
+# `EventQueue — a slow pricing refresh does not delay event delivery` in JS.
+# ----------------------------------------------------------------------
+def test_slow_pricing_refresh_does_not_delay_delivery() -> None:
+    """`maybe_refresh()` used to run BEFORE the drain, so its HTTP latency sat in front
+    of every queued billable event on every tick. Measured before the fix: a 600ms
+    refresh pushed first delivery to 629ms."""
+    refresh_seconds = 0.6
+    state = {"refresh_done": False, "delivered_before_refresh": None}
+
+    class SlowPricing:
+        def maybe_refresh(self) -> None:
+            time.sleep(refresh_seconds)
+            state["refresh_done"] = True
+            raise RuntimeError("bad credential")  # the failing case, repeated every tick
+
+    def sender(batch):
+        if state["delivered_before_refresh"] is None:
+            state["delivered_before_refresh"] = not state["refresh_done"]
+
+    q = EventQueue(
+        sender=sender,
+        flush_interval=0.025,
+        max_batch_size=100,
+        max_buffer_size=10_000,
+        max_retry_seconds=60.0,
+        pricing=SlowPricing(),
+    )
+    try:
+        q.push({"transaction_id": "t1"})
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and state["delivered_before_refresh"] is None:
+            time.sleep(0.01)
+        assert state["delivered_before_refresh"] is True
+    finally:
+        q.shutdown(timeout=1.0)

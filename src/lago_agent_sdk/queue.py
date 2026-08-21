@@ -220,7 +220,12 @@ class EventQueue:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _send_individually(self, batch: list[dict[str, Any]], batch_exc: Exception) -> None:
+    def _send_individually(
+        self,
+        batch: list[dict[str, Any]],
+        batch_exc: Exception,
+        requeue_transient: bool = True,
+    ) -> int:
         """Recovery path for a batch that failed with a permanent (4xx) error.
 
         Each event is sent alone: one that individually 4xxs (e.g. its own
@@ -230,6 +235,13 @@ class EventQueue:
         any other event. Reports once via on_error for the batch as a whole
         (the original exception) so a caller isn't flooded with N callbacks
         for what's really one root cause.
+
+        Returns the number of events re-queued, which the caller needs in order to
+        decide whether it may keep draining immediately or must back off first —
+        see `_drain_buffer`. `requeue_transient=False` is for the exit drain, where
+        there is no later retry to re-queue TO: an event that fails there is lost
+        and must be reported as such rather than put back on a buffer nobody will
+        read again.
         """
         self._report_error(batch_exc)
         # Collected and re-queued ONCE at the end, not per event. `_replay_failed`
@@ -250,57 +262,108 @@ class EventQueue:
                         event.get("transaction_id"),
                         exc,
                     )
-                else:
+                elif requeue_transient:
                     logger.warning("lago send failed for isolated event, will retry: %s", exc)
                     retry.append(event)
+                else:
+                    self._report_error(exc)
+                    logger.warning(
+                        "lago: event LOST on shutdown — no retry left: transaction_id=%s: %s",
+                        event.get("transaction_id"),
+                        exc,
+                    )
         if retry:
             self._replay_failed(retry)
+        return len(retry)
+
+    def _next_backoff(self) -> float:
+        """1s -> 2s -> 4s -> ... -> `max_retry_seconds`."""
+        if self._backoff_seconds == 0:
+            return 1.0
+        return min(self._backoff_seconds * 2, self._max_retry_seconds)
+
+    def _drain_buffer(self) -> None:
+        """Send everything buffered, one batch at a time, until the buffer is empty or
+        a failure hands the batch to the retry backoff.
+
+        Returns rather than looping on a failure: the caller waits out
+        `flush_interval` and comes back.
+        """
+        while True:
+            batch = self._take_batch()
+            if not batch:
+                return
+            # Re-checked every iteration, not only around the backoff wait. Always
+            # `return` after re-queuing, never a path that abandons the batch: the exit
+            # drain is what reports whatever it cannot send, so the events have to be
+            # back on the buffer before this leaves.
+            if self._stopping.is_set():
+                self._replay_failed(batch)
+                return
+            if self._backoff_seconds:
+                if self._stopping.wait(timeout=self._backoff_seconds):
+                    self._replay_failed(batch)
+                    return
+            try:
+                self._http_calls += 1
+                self._sender(batch)
+                self._backoff_seconds = 0.0
+            except Exception as exc:  # noqa: BLE001
+                if _is_permanent_failure(exc):
+                    # Lago's batch endpoint is all-or-nothing: a single bad
+                    # transaction_id fails the WHOLE batch, even if the rest
+                    # are perfectly valid — re-queuing the batch as-is would
+                    # retry (and re-fail) forever, but dropping it outright
+                    # would silently lose those valid events too. Isolate by
+                    # falling back to one-by-one for this batch only; only
+                    # the events that individually 4xx get dropped.
+                    requeued = self._send_individually(batch, exc)
+                    if requeued == 0:
+                        # Batch fully resolved — the buffer shrank, so keep draining.
+                        self._backoff_seconds = 0.0
+                        continue
+                    # Some isolated sends failed transiently and went back on the
+                    # buffer. Continuing here would re-take them with no delay and
+                    # re-fail at the speed of the failure. Measured on this exact pair
+                    # (422 on the batch, 429 on every isolated send): 280,388 HTTP
+                    # requests in 1.2s, aimed at the server that had just asked us to
+                    # slow down. They must go through the normal backoff path.
+                    self._backoff_seconds = self._next_backoff()
+                    return
+                self._replay_failed(batch)
+                self._report_error(exc)
+                logger.warning("lago send_batch failed: %s", exc)
+                self._backoff_seconds = self._next_backoff()
+                return
 
     def _run(self) -> None:
         while not self._stopping.is_set():
             self._wake.wait(timeout=self._flush_interval)
             self._wake.clear()
 
+            # Drain BEFORE refreshing pricing, not after. `maybe_refresh()` does HTTP —
+            # up to a 10s timeout per source — and refreshing first put that latency in
+            # front of every queued billable event, on every tick: measured, a 600ms
+            # refresh delayed the first delivery to 629ms. Nothing in the drain depends
+            # on it — an event's price was already resolved at emit() time, so a fresh
+            # table only ever matters to the NEXT call.
+            self._drain_buffer()
+
             # Refresh pricing tables on this background thread (off the hot path).
-            if self._pricing is not None:
+            # Skipped once shutting down: a fetch here can take the full HTTP timeout,
+            # and it would spend the caller's shutdown budget on a table nothing will
+            # ever read.
+            if self._pricing is not None and not self._stopping.is_set():
                 try:
                     self._pricing.maybe_refresh()
                 except Exception:  # noqa: BLE001 — pricing must never break the queue
                     pass
 
-            while True:
-                batch = self._take_batch()
-                if not batch:
-                    break
-                if self._backoff_seconds:
-                    if self._stopping.wait(timeout=self._backoff_seconds):
-                        self._replay_failed(batch)
-                        return
-                try:
-                    self._http_calls += 1
-                    self._sender(batch)
-                    self._backoff_seconds = 0.0
-                except Exception as exc:  # noqa: BLE001
-                    if _is_permanent_failure(exc):
-                        # Lago's batch endpoint is all-or-nothing: a single bad
-                        # transaction_id fails the WHOLE batch, even if the rest
-                        # are perfectly valid — re-queuing the batch as-is would
-                        # retry (and re-fail) forever, but dropping it outright
-                        # would silently lose those valid events too. Isolate by
-                        # falling back to one-by-one for this batch only; only
-                        # the events that individually 4xx get dropped.
-                        self._send_individually(batch, exc)
-                        self._backoff_seconds = 0.0
-                        continue
-                    self._replay_failed(batch)
-                    self._report_error(exc)
-                    logger.warning("lago send_batch failed: %s", exc)
-                    self._backoff_seconds = (
-                        1.0
-                        if self._backoff_seconds == 0
-                        else min(self._backoff_seconds * 2, self._max_retry_seconds)
-                    )
-                    break
+            # Anything pushed while the refresh was in flight would otherwise wait out
+            # a whole flush interval on top of it.
+            if not self._stopping.is_set():
+                self._drain_buffer()
+
         # Drain on exit — keep sending until the buffer is truly empty, not
         # just one batch's worth (a buffer holding more than max_batch_size
         # events at shutdown previously left the rest never even attempted).
@@ -310,11 +373,11 @@ class EventQueue:
         # previously did — that's what actually lost events, not the network
         # blip itself, which by itself is recoverable if it's just reported.
         # `_send_individually` re-queues transient sub-failures for retry —
-        # appropriate for the main loop, which lives on, but during this exit
-        # drain that could spin forever against a persistently-down network.
-        # Bound the whole drain by wall-clock time; whatever's still in the
-        # buffer once the budget is spent is logged as lost, not retried
-        # forever in an exiting daemon thread.
+        # appropriate for the main loop, which lives on, but here it would spin
+        # against a persistently-down network, so this drain passes
+        # `requeue_transient=False`. The drain is additionally bounded by wall-clock
+        # time; whatever's still in the buffer once the budget is spent is logged as
+        # lost, not retried forever in an exiting daemon thread.
         drain_deadline = time.monotonic() + min(self._max_retry_seconds, 10.0)
         while time.monotonic() < drain_deadline:
             batch = self._take_batch()
@@ -324,7 +387,11 @@ class EventQueue:
                 self._sender(batch)
             except Exception as exc:  # noqa: BLE001
                 if _is_permanent_failure(exc):
-                    self._send_individually(batch, exc)
+                    # `requeue_transient=False`: re-queuing here would put the event
+                    # back on a buffer this loop immediately re-takes, with no later
+                    # retry to reach — a hot loop for the whole drain budget. Report
+                    # it as lost instead.
+                    self._send_individually(batch, exc, requeue_transient=False)
                 else:
                     self._report_error(exc)
                     logger.warning(
