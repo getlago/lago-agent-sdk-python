@@ -142,6 +142,14 @@ def wrap_openai_client(
     base_dims = dict(dimensions or {})
     base_sub = subscription
     is_async = type(client).__name__.startswith("Async")
+    # Resolved once, here, and reached only through `_emit_from` below — every emit
+    # path in this wrapper closes over it, so no call site can forget to pass it. That
+    # matters because "" is a legitimate value (it is what every non-Databricks client
+    # resolves to), so an omission would be indistinguishable at runtime from a real
+    # answer: the call would bill as provider="openai" for a Databricks-HOSTED model,
+    # dropping it out of TOKEN_BILLED_PROVIDERS. The JS port's stream wrapper is a
+    # module-level generator rather than a closure, so it keeps the same guarantee by
+    # making its `providerHint` parameter required.
     provider_hint = _provider_hint_for(client)
 
     def _resolve_opts(lago_opts: dict[str, Any]) -> dict[str, Any]:
