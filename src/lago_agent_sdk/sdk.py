@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from typing import Any
 
 from .canonical import CanonicalUsage
@@ -32,6 +33,24 @@ logger = logging.getLogger("lago_agent_sdk")
 _subscription_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "lago_subscription", default=None
 )
+
+
+def _to_epoch_seconds(value: int | float | datetime) -> int:
+    """A caller-supplied event time as the unix seconds Lago's `timestamp` wants."""
+    if isinstance(value, datetime):
+        # A naive datetime is taken as UTC — the same rule `_interval_sql` documents
+        # for the window bound, so a caller who reads a window and bills it cannot
+        # have the two disagree by their machine's UTC offset.
+        moment = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return int(moment.timestamp())
+    # `not bool`: it is an `int` subclass, so `True` would otherwise bill at epoch 1.
+    # The JS port's `typeof value === "number"` rejects it, and the two must agree.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    raise TypeError(
+        f"timestamp={value!r} not understood — pass a datetime or epoch seconds "
+        "(an ISO-8601 string is deliberately not accepted; see emit())"
+    )
 
 
 class LagoSDK:
@@ -240,6 +259,7 @@ class LagoSDK:
         markup: float | None = None,
         usd_cost: float | None = None,
         event_id: str | None = None,
+        timestamp: int | float | datetime | None = None,
     ) -> None:
         """Emit usage to Lago.
 
@@ -262,6 +282,19 @@ class LagoSDK:
         same window never double-bills. A live, one-shot call has no natural
         id to reuse and should leave this as None.
 
+        ``timestamp``: bill the events at this instant instead of at now — pass
+        the source row's own time when replaying/backfilling from a gateway's
+        logs, or a window reaching back a week bills every one of its calls into
+        the period the script happens to run in. Accepts a ``datetime`` (a naive
+        one is read as UTC) or epoch seconds. Deliberately NOT an ISO-8601
+        string: Python 3.10 is still supported here and its ``fromisoformat``
+        rejects the trailing "Z" that gateway APIs emit, while the JS port's
+        ``new Date()`` accepts it — so a string would parse in one repo and fail
+        in the other. Connectors parse their own source column instead, where the
+        shapes that column really returns are known and tested (see
+        ``DatabricksUsageRow.occurred_at``). A live call has no source time and
+        should leave this as None.
+
         Both multi-event paths suffix per field so they don't collide with each
         other, and they use DIFFERENT namespaces so they can't collide across
         modes either:
@@ -280,6 +313,11 @@ class LagoSDK:
         were never billed, only the raw token counts, and nothing surfaced it.
         """
         try:
+            # Resolved ONCE, ahead of every branch: a price-lookup miss falls through
+            # to the token path, so one usage row can reach two of the push paths
+            # below. Two separate `time.time()` reads there let a call that straddles
+            # a billing-period boundary land half in each period.
+            at = self._event_time(timestamp)
             sub = self._resolve_subscription(subscription)
             if not sub:
                 # `_report_error` is the single channel: it invokes on_error AND
@@ -317,7 +355,7 @@ class LagoSDK:
                         ),
                         "pricing",
                     )
-                self._emit_token_events(usage, sub, dimensions, event_id)
+                self._emit_token_events(usage, sub, dimensions, event_id, at)
                 return
 
             markup_value, ok = coerce_markup(markup if markup is not None else self.config.markup)
@@ -337,7 +375,7 @@ class LagoSDK:
                 # complete answer rather than a fallback. Said once per model instead
                 # of once per call. See TOKEN_BILLED_PROVIDERS for the reasoning.
                 self._note_token_billed(usage)
-                self._emit_token_events(usage, sub, dimensions, event_id)
+                self._emit_token_events(usage, sub, dimensions, event_id, at)
                 return
             else:
                 price = self._pricing.lookup(usage.provider, usage.model, usage.api)
@@ -346,13 +384,30 @@ class LagoSDK:
                     self._report_error(
                         PricingUnavailableError(usage.provider, usage.model, usage.api), "pricing"
                     )
-                    self._emit_token_events(usage, sub, dimensions, event_id)
+                    self._emit_token_events(usage, sub, dimensions, event_id, at)
                     return
                 breakdown = compute_cost(usage, price, markup_value)
 
-            self._push_cost_event(usage, breakdown, sub, dimensions, event_id)
+            self._push_cost_event(usage, breakdown, sub, dimensions, event_id, at)
         except Exception as exc:  # noqa: BLE001 — never raise from emit
             self._report_error(exc, "emit")
+
+    def _event_time(self, timestamp: int | float | datetime | None) -> int:
+        """The instant to stamp this call's events with — the caller's, or now.
+
+        A value we cannot read is reported and falls back to `now` rather than
+        dropping the call. Stamping the wrong period is a reconciliation problem the
+        operator can see and fix; losing the event is revenue that never appears at
+        all. Same trade-off as a missed price lookup.
+        """
+        if timestamp is not None:
+            try:
+                return _to_epoch_seconds(timestamp)
+            # OverflowError/OSError: `datetime.timestamp()` raises them, platform
+            # dependently, for a year outside the C time range.
+            except (TypeError, ValueError, OverflowError, OSError) as exc:
+                self._report_error(exc, "timestamp")
+        return int(time.time())
 
     def _note_token_billed(self, usage: CanonicalUsage) -> None:
         """Say it once per model, at info level.
@@ -373,7 +428,12 @@ class LagoSDK:
         )
 
     def _emit_token_events(
-        self, usage: CanonicalUsage, sub: str, dimensions: dict[str, Any] | None, event_id: str | None = None
+        self,
+        usage: CanonicalUsage,
+        sub: str,
+        dimensions: dict[str, Any] | None,
+        event_id: str | None = None,
+        at: int | None = None,
     ) -> None:
         nonzero = usage.nonzero_numeric()
         # A negative count is silently unbillable — Lago would otherwise sum it into
@@ -391,7 +451,9 @@ class LagoSDK:
         if not nonzero:
             # Mistral legacy / empty — nothing to bill
             return
-        now = int(time.time())
+        # `emit` already resolved the instant; the fallback covers nothing today and
+        # is kept only so this stays callable on its own without stamping the epoch.
+        now = at if at is not None else int(time.time())
         for field_name, value in nonzero.items():
             code = self.config.metric_codes.get(field_name)
             if not code:
@@ -422,6 +484,7 @@ class LagoSDK:
         sub: str,
         dimensions: dict[str, Any] | None,
         event_id: str | None = None,
+        at: int | None = None,
     ) -> None:
         """Push one llm_cost event — or several, one per token_type, when a
         real per-field breakdown exists.
@@ -441,7 +504,8 @@ class LagoSDK:
         grouped by model only; no `token_type` at all rather than a fabricated
         one.
         """
-        now = int(time.time())
+        # See the note in `_emit_token_events` — `emit` is the one authority on this.
+        now = at if at is not None else int(time.time())
         # Caller dimensions are spread LAST in each `properties` below, not here —
         # they must win over every SDK-computed key, exactly as they already do in
         # `_emit_token_events`. Spreading them into `base_properties` put them
@@ -624,6 +688,10 @@ class LagoSDK:
                     # tag — an untagged row billed to the default must not carry an
                     # id that blocks it from a different default on a later run.
                     event_id=row.event_id_for(sub),
+                    # The row's own time, not the run's — see `occurred_at`. A
+                    # backfill that stamps `now` bills last week's usage into this
+                    # week's period, and nothing in Lago can tell afterwards.
+                    timestamp=row.occurred_at,
                 )
                 counts["cost"] += 1
             else:
@@ -633,6 +701,7 @@ class LagoSDK:
                     dimensions=dims,
                     mode="tokens",
                     event_id=row.event_id_for(sub),
+                    timestamp=row.occurred_at,
                 )
                 counts["tokens"] += 1
         return counts

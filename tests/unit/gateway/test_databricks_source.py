@@ -8,12 +8,13 @@ it (`manifest.schema.columns` plus a positional `data_array`, one chunk inline).
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
-from lago_agent_sdk import LagoSDK
+from lago_agent_sdk import CanonicalUsage, LagoSDK
 from lago_agent_sdk.gateway.databricks import DatabricksSource, DatabricksUsageRow, _interval_sql
 
 # --------------------------------------------------------------------------
@@ -733,3 +734,63 @@ def test_backfill_accepts_already_read_rows_without_querying_again() -> None:
     assert counts == {"cost": 1, "tokens": 1, "skipped": 0}
     assert len(src.queries) == queries_after_read, "must not re-read"  # type: ignore[attr-defined]
     assert len(q.events) >= 3
+
+
+# --------------------------------------------------------------------------
+# Event time — a backfill runs long after the usage it bills
+# --------------------------------------------------------------------------
+def _utc(*args: int) -> int:
+    return int(datetime(*args, tzinfo=timezone.utc).timestamp())  # type: ignore[arg-type]
+
+
+def test_occurred_at_reads_each_kinds_own_time_column() -> None:
+    """A usage row's own instant; a spend row's hour START — the only instant certain
+    to sit inside the hour that row aggregates."""
+    hosted, byok = list(_source([_BYOK_SPEND], [_HOSTED]).read_usage("1 day"))
+    assert hosted.kind == "spend" and byok.kind == "usage"
+    assert hosted.occurred_at == _utc(2026, 8, 7, 14, 0, 0)
+    assert byok.occurred_at == _utc(2026, 8, 7, 14, 22, 3)
+
+
+def test_occurred_at_reads_a_datetime_column_the_same_way() -> None:
+    """`databricks-sql-connector` returns TIMESTAMPs as `datetime`, the REST API as
+    ISO-8601 strings ending in "Z". Both are supported access paths, so both must
+    resolve to the same instant."""
+    rows = list(
+        _source(
+            [{**_BYOK_SPEND, "bucket": datetime(2026, 8, 7, 14, 0, 0)}],
+            [{**_HOSTED, "event_time": "2026-08-07T14:22:03.123Z"}],
+        ).read_usage("1 day")
+    )
+    assert {r.occurred_at for r in rows} == {_utc(2026, 8, 7, 14, 0, 0), _utc(2026, 8, 7, 14, 22, 3)}
+
+
+def test_a_row_with_no_readable_time_has_no_occurred_at() -> None:
+    """None leaves `emit()` stamping `now`, which is wrong but billed — better than
+    losing the row over a bad column."""
+    for bad in (None, "", "not a timestamp"):
+        row = DatabricksUsageRow(
+            usage=CanonicalUsage(model="m", provider="databricks", api="databricks_gateway"),
+            subscription="sub",
+            row_id="r",
+            kind="usage",
+            raw={"event_time": bad},
+        )
+        assert row.occurred_at is None
+
+
+def test_backfill_events_carry_the_source_rows_time_not_the_run_time() -> None:
+    """Live-proven before the fix: 128 events off one window spanning 2026-08-06 to
+    2026-08-11 all carried the run's own clock, billing historical usage into the
+    current period."""
+    sdk, q = _sdk()
+    sdk.backfill_databricks(_source([_BYOK_SPEND], [_HOSTED, _BYOK_USAGE]), "1 day")
+    _drain(sdk)
+
+    cost = [e for e in q.events if e["code"] == "llm_cost"]
+    tokens = [e for e in q.events if e["code"] != "llm_cost"]
+    assert cost and tokens
+    # The spend row's hour, and the hosted request's own second.
+    assert {e["timestamp"] for e in cost} == {_utc(2026, 8, 7, 14, 0, 0)}
+    assert {e["timestamp"] for e in tokens} == {_utc(2026, 8, 7, 14, 22, 3)}
+    assert all(e["timestamp"] < int(time.time()) - 86400 for e in q.events), "not the run time"

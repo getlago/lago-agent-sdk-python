@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -353,3 +355,116 @@ def test_verify_ssl_false_survives_a_broken_urllib3(monkeypatch) -> None:
         assert sdk.config.verify_ssl is False
     finally:
         sdk.shutdown(timeout=1.0)
+
+
+# --------------------------------------------------------------------------
+# Event time — a backfill must bill into the period the usage happened in
+# --------------------------------------------------------------------------
+def test_emit_stamps_the_given_instant_on_every_event_not_now() -> None:
+    """Without this, a replay of last week's logs billed every call into the period
+    the script happened to run in, and nothing in Lago could tell afterwards."""
+    sdk, received = _new_sdk(default_sub="sub")
+    when = datetime(2026, 8, 7, 14, 22, 3, tzinfo=timezone.utc)
+    u = CanonicalUsage(input=10, output=20, model="m", provider="p", api="bedrock_invoke")
+    sdk.emit(u, timestamp=when)
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert len(flat) == 2
+    # One instant for the whole call: Lago sums these into a period, so a call must
+    # never straddle two of them because two `time.time()` reads disagreed.
+    assert {e["timestamp"] for e in flat} == {int(when.timestamp())}
+
+
+def test_emit_stamps_a_cost_event_too() -> None:
+    """The cost path reads its own clock, so it needed threading separately from the
+    token path — and a backfill of BYOK spend goes down this one."""
+    sdk, received = _new_sdk(default_sub="sub")
+    when = datetime(2026, 8, 7, 14, 0, 0, tzinfo=timezone.utc)
+    u = CanonicalUsage(input=10, output=20, model="m", provider="anthropic", api="native")
+    sdk.emit(u, mode="price", usd_cost=0.0011187, timestamp=when)
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert [e["code"] for e in flat] == ["llm_cost"]
+    assert flat[0]["timestamp"] == int(when.timestamp())
+
+
+def test_emit_accepts_epoch_seconds() -> None:
+    sdk, received = _new_sdk(default_sub="sub")
+    u = CanonicalUsage(input=1, model="m", provider="p", api="bedrock_invoke")
+    sdk.emit(u, timestamp=1786112523)
+    # A float is what `datetime.timestamp()` hands back, so it must not be refused.
+    sdk.emit(u, timestamp=1786112523.987)
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert {e["timestamp"] for e in flat} == {1786112523}
+
+
+def test_a_naive_timestamp_is_read_as_utc() -> None:
+    """Same rule as `_interval_sql`'s window bound, and the same rule the JS port
+    applies to a `Date` — otherwise a caller who reads a window and bills it has the
+    two disagree by their machine's UTC offset."""
+    sdk, received = _new_sdk(default_sub="sub")
+    u = CanonicalUsage(input=1, model="m", provider="p", api="bedrock_invoke")
+    sdk.emit(u, timestamp=datetime(2026, 8, 7, 14, 22, 3))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert flat[0]["timestamp"] == int(datetime(2026, 8, 7, 14, 22, 3, tzinfo=timezone.utc).timestamp())
+
+
+def test_an_unreadable_timestamp_is_reported_and_still_bills() -> None:
+    """Never silently under-bill: a bad timestamp is a reconciliation problem the
+    operator can see and fix, while dropping the event is revenue that never appears.
+    An ISO string is the likely mistake, and is deliberately not accepted."""
+    errors: list = []
+    received: list = []
+    cfg = LagoConfig(
+        api_key="dummy",
+        default_subscription_id="sub",
+        on_error=lambda exc, where: errors.append((str(exc), where)),
+    )
+    sdk = LagoSDK(api_key="dummy", config=cfg)
+    sdk._queue._sender = lambda b: received.extend(b)  # type: ignore[attr-defined]
+    before = int(time.time())
+    sdk.emit(CanonicalUsage(input=1, model="m", provider="p", api="bedrock_invoke"), timestamp="2026-08-07Z")
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+
+    assert errors, "an unreadable timestamp must reach on_error"
+    msg, where = errors[0]
+    assert "2026-08-07Z" in msg and where == "timestamp"
+    # ...and the call is still billed, at now.
+    assert len(received) == 1
+    assert before <= received[0]["timestamp"] <= int(time.time())
+
+
+def test_a_numeric_string_is_refused_not_coerced() -> None:
+    """`int("1786112523")` would sail through where the isinstance check rejects it —
+    the same input must not bill in one repo and report an error in the other. The JS
+    port's `Number()` is the one that would coerce, so this is pinned on both sides."""
+    errors: list = []
+    cfg = LagoConfig(
+        api_key="dummy",
+        default_subscription_id="sub",
+        on_error=lambda exc, where: errors.append((str(exc), where)),
+    )
+    sdk = LagoSDK(api_key="dummy", config=cfg)
+    sdk._queue._sender = lambda b: None  # type: ignore[attr-defined]
+    sdk.emit(CanonicalUsage(input=1, model="m", provider="p", api="bedrock_invoke"), timestamp="1786112523")
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert [where for _, where in errors] == ["timestamp"]
+
+
+def test_no_timestamp_still_stamps_now() -> None:
+    """The live `wrap()` path passes nothing and must be unchanged by all of this."""
+    sdk, received = _new_sdk(default_sub="sub")
+    before = int(time.time())
+    sdk.emit(CanonicalUsage(input=1, model="m", provider="p", api="bedrock_invoke"))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert before <= flat[0]["timestamp"] <= int(time.time())

@@ -132,6 +132,28 @@ class DatabricksUsageRow:
         endpoint = _safe_str(self.usage.extras.get("endpoint_name"))
         return {"endpoint_name": endpoint} if endpoint else {}
 
+    @property
+    def occurred_at(self) -> int | None:
+        """When this row's usage actually happened, as unix seconds for `emit()`.
+
+        The whole point of a backfill is that it runs long after the usage it bills,
+        so the run's own clock is never the right answer: a window reaching back a
+        week must bill into the periods those calls fell in, not into the period the
+        script happens to run in.
+
+        Each kind reports the time its OWN surface is keyed by:
+
+          * usage — `event_time`, the request's own instant.
+          * spend — `bucket`, the START of the hour it aggregates. An hourly total
+            covers [bucket, bucket + 1h), so the start is the only instant certain to
+            sit inside the row's own coverage; the hour's end would push a bucket
+            closing exactly on a period boundary into the following period.
+
+        None when the column is absent or unreadable, which leaves `emit()` to stamp
+        `now` — the pre-existing behaviour, and better than dropping the event.
+        """
+        return _epoch(self.raw.get("bucket") if self.kind == "spend" else self.raw.get("event_time"))
+
     def event_id_for(self, subscription: str | None) -> str:
         """The same key, scoped to whichever subscription is actually billed.
 
@@ -520,6 +542,44 @@ def _stamp(value: Any) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
+
+
+def _epoch(value: Any) -> int | None:
+    """A timestamp column as unix seconds, from either access path.
+
+    The Statement Execution API returns TIMESTAMPs as ISO-8601 strings ending in "Z";
+    `databricks-sql-connector` returns real `datetime` objects. Both are supported
+    input paths and both have to yield the same instant.
+
+    The trailing "Z" is rewritten by hand because Python 3.10 — still supported here —
+    rejects it in `fromisoformat`, and every string this table returns carries one. A
+    stamp with no offset at all is read as UTC, which is both the warehouse's own
+    session timezone and what the JS port does with the same string.
+
+    Unparseable returns None rather than raising: a bad timestamp column must not cost
+    the caller the whole row.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        moment = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return int(moment.timestamp())
+    text = str(value).strip()
+    if not text:
+        return None
+    if text[-1] in "Zz":
+        text = f"{text[:-1]}+00:00"
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    try:
+        return int(moment.timestamp())
+    # A year outside the C time range; platform dependent, hence caught here too.
+    except (OverflowError, OSError):
+        return None
 
 
 def _bucket_of(value: Any) -> str:
