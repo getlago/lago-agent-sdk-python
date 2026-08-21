@@ -274,6 +274,12 @@ class DatabricksSource:
         self.timeout = timeout
         # Databricks rejects anything outside 0s or 5-50s.
         self.wait_timeout = wait_timeout
+        # Buckets the most recent `read_usage` could not bill, in the shape its
+        # warning names them. A log line is not something a caller can act on:
+        # `backfill_databricks` turns this into a count in its return value and an
+        # `on_error` report, and a caller reading the window itself can re-run
+        # exactly these hours. See `read_usage` for why they go unbilled.
+        self.deferred_buckets: list[dict[str, str]] = []
 
     @classmethod
     def from_env(cls, **kwargs: Any) -> DatabricksSource:
@@ -441,6 +447,11 @@ class DatabricksSource:
         that the newest hour of traffic arrives on the NEXT run, so pass a window
         comfortably wider than your run interval — this reader keeps no cursor.
         """
+        # Rewritten per read rather than appended to, so a later read of a healthy
+        # window cannot leave an earlier read's gap standing as if it were current.
+        # Cleared here, ahead of the empty-window return below, so that path clears
+        # it too. Complete once the caller has drained the iterator.
+        self.deferred_buckets = []
         lower, upper = _window_bounds(since)
         if lower >= upper:
             # Not an error, but it must not read as success either: the caller asked
@@ -542,6 +553,11 @@ class DatabricksSource:
         # the window once Databricks has aggregated picks them up — but only if the
         # operator knows to, which is what this warning is for.
         unbilled = sorted(set(tokens) - billed_keys)
+        # Same facts as the warning, in a shape a caller can act on rather than grep
+        # for — `backfill_databricks` reports the count through `on_error`.
+        self.deferred_buckets = [
+            {"hour": k[0], "provider": k[1], "model": k[2], "request_tags": k[3]} for k in unbilled
+        ]
         if unbilled:
             logger.warning(
                 "lago: %d BYOK token bucket(s) in this window have no external_model_spend "

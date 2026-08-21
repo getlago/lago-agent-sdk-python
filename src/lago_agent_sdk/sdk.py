@@ -631,7 +631,17 @@ class LagoSDK:
         """Read a window of Databricks AI Gateway usage and bill all of it.
 
         The one-call entrypoint: give it a window, it does the rest. Returns counts
-        of what it emitted, e.g. ``{"cost": 56, "tokens": 45, "skipped": 0}``.
+        of what it handed to ``emit()``, e.g.
+        ``{"cost": 56, "tokens": 45, "skipped": 0, "deferred": 0}``.
+
+        The last two are billing GAPS, and both are also reported through
+        ``config.on_error`` (``where="backfill"``) — the hook every other gap in this
+        SDK uses — so a caller does not have to inspect the return value to notice
+        one. They fail differently: ``skipped`` rows had no resolvable subscription
+        and stay lost until they are tagged or a default is set, while ``deferred``
+        buckets are billable revenue that the NEXT run of the same window collects
+        once Databricks has aggregated their spend row. A run with both at 0 is the
+        only one that billed the whole window.
 
         ``source`` is normally a :class:`DatabricksSource`, and ``since`` the window.
         It also accepts an already-read iterable of ``DatabricksUsageRow`` — pass one
@@ -661,12 +671,9 @@ class LagoSDK:
         duplicates rather than double-bill. Does not flush — call ``flush()`` when
         you want to block on delivery.
         """
-        counts = {"cost": 0, "tokens": 0, "skipped": 0}
-        rows = (
-            source.read_usage(since, event_id_prefix=event_id_prefix)
-            if hasattr(source, "read_usage")
-            else source
-        )
+        counts = {"cost": 0, "tokens": 0, "skipped": 0, "deferred": 0}
+        reader = source if hasattr(source, "read_usage") else None
+        rows = reader.read_usage(since, event_id_prefix=event_id_prefix) if reader else source
         for row in rows:
             sub = default_subscription if unified else (row.subscription or default_subscription)
             if not sub:
@@ -704,6 +711,43 @@ class LagoSDK:
                     timestamp=row.occurred_at,
                 )
                 counts["tokens"] += 1
+
+        # Both gaps below were counted but never reported: measured live over a
+        # window with one hour's spend rows withheld — the shape of real spend-table
+        # lag — this returned `{'cost': 12, 'tokens': 54, 'skipped': 0}` while 54
+        # BYOK buckets went unbilled and `on_error` fired zero times. `cost` alone
+        # dropping from 66 to 12 is not something an automated caller can read as a
+        # gap, so route both through the hook that already means "billing gap".
+        if counts["skipped"]:
+            self._report_error(
+                ValueError(
+                    f"{counts['skipped']} Databricks row(s) had no resolvable subscription "
+                    f"and were NOT billed. Pass default_subscription=..., set "
+                    f"LagoConfig.default_subscription_id, or tag the calls."
+                ),
+                "backfill",
+            )
+        # Only the reader knows about a bucket it never yielded, so a caller who
+        # passed an already-read iterable gets 0 here — they hold the source and can
+        # read `deferred_buckets` off it directly. `getattr` because `source` is
+        # duck-typed: a caller's own reader need not carry the attribute.
+        deferred = list(getattr(reader, "deferred_buckets", ())) if reader is not None else []
+        counts["deferred"] = len(deferred)
+        if deferred:
+            first = deferred[0]
+            # `read_usage` logs this too. That is deliberate, not a stutter: a caller who
+            # reads the window itself never reaches this line, and one who ran the backfill
+            # needs it on the channel they reconcile against. Worded from the RUN's side so
+            # the two read as one gap seen from two layers rather than as two gaps.
+            self._report_error(
+                ValueError(
+                    f"this run left {len(deferred)} Databricks BYOK bucket(s) unbilled: no "
+                    f"external_model_spend row yet (e.g. hour={first['hour']} "
+                    f"provider={first['provider']} model={first['model']}). The spend table "
+                    f"lags; re-run this window later to bill them."
+                ),
+                "backfill",
+            )
         return counts
 
     def flush(self, timeout: float = 5.0) -> bool:

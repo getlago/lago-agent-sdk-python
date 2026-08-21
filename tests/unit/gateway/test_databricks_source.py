@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from lago_agent_sdk import CanonicalUsage, LagoSDK
+from lago_agent_sdk.config import LagoConfig
 from lago_agent_sdk.gateway.databricks import (
     DatabricksSource,
     DatabricksUsageRow,
@@ -546,9 +547,14 @@ class _Recorder:
         return [e for b in self.batches for e in b]
 
 
-def _sdk() -> tuple[LagoSDK, _Recorder]:
+def _sdk(errors: list[tuple[str, str]] | None = None) -> tuple[LagoSDK, _Recorder]:
     rec = _Recorder()
-    sdk = LagoSDK(api_key="dummy")
+    cfg = (
+        LagoConfig(api_key="dummy", on_error=lambda exc, where: errors.append((where, str(exc))))
+        if errors is not None
+        else None
+    )
+    sdk = LagoSDK(api_key="dummy", config=cfg)
     sdk._queue._sender = lambda b: rec.batches.append(list(b))  # type: ignore[attr-defined]
     return sdk, rec
 
@@ -564,7 +570,7 @@ def test_backfill_counts_cost_tokens_and_skips() -> None:
     counts = sdk.backfill_databricks(src, "1 day")
     _drain(sdk)
     # The untagged row has no subscription and no default to fall back on.
-    assert counts == {"cost": 1, "tokens": 1, "skipped": 1}
+    assert counts == {"cost": 1, "tokens": 1, "skipped": 1, "deferred": 0}
     assert {e["external_subscription_id"] for e in q.events} == {"sub_byok", "sub_hosted"}
 
 
@@ -627,6 +633,59 @@ def test_backfill_survives_one_malformed_row() -> None:
     _drain(sdk)
     assert counts["cost"] == 1 and counts["tokens"] == 1
     assert len(q.events) >= 3
+
+
+# --------------------------------------------------------------------------
+# Billing gaps must reach the caller, not just the log
+# --------------------------------------------------------------------------
+def test_backfill_reports_a_deferred_bucket_through_on_error() -> None:
+    """A BYOK bucket whose spend row has not landed is billed by neither loop. Measured
+    live with one hour's spend withheld, the return value was
+    `{'cost': 12, 'tokens': 54, 'skipped': 0}` — indistinguishable from a clean run —
+    while 54 buckets went unbilled and `on_error` fired zero times. Only a log line said
+    so, which no caller can reconcile against."""
+    errors: list[tuple[str, str]] = []
+    sdk, q = _sdk(errors)
+    # BYOK usage with NO matching spend row, plus one hosted row that bills normally.
+    counts = sdk.backfill_databricks(_source([], [_HOSTED, _BYOK_USAGE]), "1 day")
+    _drain(sdk)
+    assert counts == {"cost": 0, "tokens": 1, "skipped": 0, "deferred": 1}
+    backfill = [msg for where, msg in errors if where == "backfill"]
+    assert len(backfill) == 1, errors
+    # Names the hour to re-run and the model, so the report is actionable on its own.
+    assert "no external_model_spend row yet" in backfill[0]
+    # The hour key is the source column truncated, so it keeps that column's own form.
+    assert "hour=2026-08-07 14" in backfill[0]
+    assert "model=claude-sonnet-4-5" in backfill[0]
+    # The gap is a deferral, not a drop: the hosted row still billed.
+    assert q.events
+
+
+def test_backfill_reports_an_unattributed_row_through_on_error() -> None:
+    """`skipped` was counted and returned but never routed anywhere, so a run that
+    attributed nothing looked like a run with nothing to attribute. It never reaches
+    `emit()`, which is where every other dropped event is reported from."""
+    errors: list[tuple[str, str]] = []
+    sdk, _ = _sdk(errors)
+    counts = sdk.backfill_databricks(_source([], [{**_HOSTED, "request_tags": "{}"}]), "1 day")
+    _drain(sdk)
+    assert counts["skipped"] == 1 and counts["deferred"] == 0
+    backfill = [msg for where, msg in errors if where == "backfill"]
+    assert len(backfill) == 1, errors
+    assert "no resolvable subscription" in backfill[0]
+
+
+def test_a_second_read_clears_the_previous_reads_deferred_buckets() -> None:
+    """The gap belongs to one read, so it is rewritten per read rather than appended
+    to. Left accumulating, a healthy window read after a lagging one would report the
+    older window's buckets — the phantom-warning shape the zero-usage guard just
+    removed, reintroduced through a different door."""
+    src = _source([], [_BYOK_USAGE])
+    list(src.read_usage("1 day"))
+    assert len(src.deferred_buckets) == 1
+    src.query = lambda sql: [_BYOK_SPEND] if "external_model_spend" in sql else [_BYOK_USAGE]  # type: ignore[method-assign]
+    list(src.read_usage("1 day"))
+    assert src.deferred_buckets == []
 
 
 # --------------------------------------------------------------------------
@@ -854,7 +913,7 @@ def test_backfill_accepts_already_read_rows_without_querying_again() -> None:
     sdk, q = _sdk()
     counts = sdk.backfill_databricks(rows, default_subscription="sub_x")
     _drain(sdk)
-    assert counts == {"cost": 1, "tokens": 1, "skipped": 0}
+    assert counts == {"cost": 1, "tokens": 1, "skipped": 0, "deferred": 0}
     assert len(src.queries) == queries_after_read, "must not re-read"  # type: ignore[attr-defined]
     assert len(q.events) >= 3
 
