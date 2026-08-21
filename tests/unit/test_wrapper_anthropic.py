@@ -20,6 +20,12 @@ class FakeMessage:
         return self._payload
 
 
+# What Anthropic resolves the requested "claude-sonnet-4-6" alias to. Only
+# `message_start` reports it, so the wrapper has to keep it across the whole
+# stream or pricing looks up an alias OpenRouter doesn't list.
+_RESOLVED_STREAM_MODEL = "claude-sonnet-4-6-20260214"
+
+
 class FakeStreamEvent:
     """Mimics one of Anthropic's MessageStreamEvent objects (MessageDelta/Start/etc.)."""
 
@@ -91,12 +97,15 @@ class FakeMessages:
                     {
                         "type": "message_start",
                         "message": {
+                            # message_start is also where the RESOLVED snapshot
+                            # arrives — the requested alias never appears again.
+                            "model": _RESOLVED_STREAM_MODEL,
                             "usage": {
                                 "input_tokens": 12,
                                 "cache_creation_input_tokens": 0,
                                 "cache_read_input_tokens": 0,
                                 "output_tokens": 1,
-                            }
+                            },
                         },
                     }
                 ),
@@ -222,6 +231,20 @@ def test_wrap_double_wrap_is_idempotent() -> None:
     sdk.shutdown(timeout=1.0)
     assert len(received) == 2  # input + output, not 6
     assert fake.messages.create_calls == 1
+
+
+def test_stream_attributes_the_resolved_model_not_the_requested_alias() -> None:
+    """Only `message_start` carries the resolved snapshot, and the wrapper
+    accumulates usage across several events before emitting — so the model has
+    to survive the whole stream. Rebuilding a usage-only payload reverted the
+    attribution to the requested alias, which OpenRouter doesn't list."""
+    sdk, received = _new_sdk()
+    client = sdk.wrap(FakeAnthropic())
+    list(client.messages.create(model="claude-sonnet-4-6", messages=[], stream=True))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    models = {e["properties"]["model"] for e in received}
+    assert models == {_RESOLVED_STREAM_MODEL}, f"expected the resolved snapshot, got {models}"
 
 
 def test_wrap_create_with_stream_merges_message_start_and_delta() -> None:

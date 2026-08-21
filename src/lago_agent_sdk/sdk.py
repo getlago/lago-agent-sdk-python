@@ -22,6 +22,7 @@ from .pricing import (
     coerce_markup,
     compute_cost,
     compute_precomputed_cost,
+    deoverlapped_token_total,
     money_str_to_cents,
 )
 from .queue import EventQueue
@@ -37,21 +38,45 @@ class LagoSDK:
     def __init__(
         self,
         api_key: str,
-        api_url: str = "https://api.getlago.com/api/v1",
+        api_url: str | None = None,
         default_subscription_id: str | None = None,
         config: LagoConfig | None = None,
+        verify_ssl: bool | None = None,
     ) -> None:
-        self.config = config or LagoConfig(
-            api_key=api_key,
-            api_url=api_url,
-            default_subscription_id=default_subscription_id,
-        )
-        # explicit args win over `config`
+        """Explicit args win over anything set on ``config``; ``config`` supplies
+        every field they don't mention.
+
+        ``api_url`` defaults to None, NOT to the production URL. That distinction
+        is load-bearing: with a truthy default, ``if api_url:`` always fired and
+        overwrote ``config.api_url``, so
+        ``LagoSDK(api_key=k, config=LagoConfig(api_url="http://localhost:3000/api/v1"))``
+        silently sent every event to PRODUCTION Lago. That is the shortest path to
+        the bug, too — a custom ``api_url`` and ``verify_ssl=False`` go together in
+        exactly the local-dev-Lago setup ``verify_ssl`` exists to serve.
+
+        ``verify_ssl`` is accepted directly so that setup needs no ``LagoConfig``
+        at all: a local instance behind a self-signed cert (Traefik's default) is
+        reachable with ``LagoSDK(api_key=..., api_url=..., verify_ssl=False)``.
+        """
+        self.config = config or LagoConfig(api_key=api_key)
+        # explicit args win over `config` — guarded on "was it actually passed?"
+        # rather than on truthiness, so a config value survives when it wasn't.
         self.config.api_key = api_key or self.config.api_key
+        # `api_url` is the one exception: an EMPTY string must not win either. The bug
+        # this guard was written for was a *truthy default* overwriting config, so
+        # accepting "" swapped one silent misroute for a worse one —
+        # `api_url=os.environ.get("LAGO_API_URL", "")` with the var unset used to keep
+        # the production URL and instead wrote "". Downstream that is unrecoverable:
+        # `requests` raises MissingSchema, which is not a LagoApiError, so the queue
+        # classifies it transient, re-prepends the batch and retries at the 60s ceiling
+        # forever. All billing stops, nothing is dropped or escalated, and the only
+        # symptom is a growing buffer.
         if api_url:
             self.config.api_url = api_url
         if default_subscription_id is not None:
             self.config.default_subscription_id = default_subscription_id
+        if verify_ssl is not None:
+            self.config.verify_ssl = verify_ssl
 
         self._lago_client = LagoClient(
             api_key=self.config.api_key,
@@ -235,21 +260,63 @@ class LagoSDK:
         instead of a random UUID — pass the source log entry's own id when
         replaying/backfilling from a gateway's logs, so re-running against the
         same window never double-bills. A live, one-shot call has no natural
-        id to reuse and should leave this as None. In token mode, which can
-        push several events from one call, each field's event is suffixed
-        (``f"{event_id}_{field_name}"``) so they don't collide with each other.
+        id to reuse and should leave this as None.
+
+        Both multi-event paths suffix per field so they don't collide with each
+        other, and they use DIFFERENT namespaces so they can't collide across
+        modes either:
+
+          * token events      ``f"{event_id}_tok_{field_name}"``
+          * split cost events ``f"{event_id}_cost_{field_name}"``
+          * single cost event ``event_id`` (one event, nothing to disambiguate)
+
+        The namespaces are load-bearing. Both paths are reachable for the SAME
+        `event_id`: a price lookup that misses falls back to token events, and
+        the same window re-run once the table is warm takes the cost path. Under
+        one shared namespace the second run re-sent `{event_id}_input` under a
+        different metric code, Lago rejected it as a duplicate — and because
+        `/events/batch` is all-or-nothing, that rejection failed every other
+        event in the batch too. Net effect: the dollar amounts for that window
+        were never billed, only the raw token counts, and nothing surfaced it.
         """
         try:
             sub = self._resolve_subscription(subscription)
             if not sub:
-                logger.error(
-                    "lago: dropping events for model=%s — no resolvable subscription",
-                    usage.model,
+                # `_report_error` is the single channel: it invokes on_error AND
+                # logs. An extra logger.error here emitted the same drop twice under
+                # two different levels, so a customer grepping logs counted one lost
+                # call as two — and the JS port logged nothing at all, so the two
+                # repos reported 2 lines vs 0 for the same event.
+                self._report_error(
+                    ValueError(
+                        f"no resolvable subscription for model={usage.model!r}; events dropped. "
+                        f"Pass subscription=..., use with_subscription(), or set "
+                        f"LagoConfig.default_subscription_id."
+                    ),
+                    "emit",
                 )
                 return
 
             effective_mode = mode or self.config.pricing_mode
             if effective_mode != "price":
+                if usd_cost is not None:
+                    # A caller who went to the trouble of supplying a real metered
+                    # cost gets told it was dropped, rather than discovering later
+                    # that a whole backfill billed token counts only. Reported per
+                    # occurrence, deliberately not deduped: the number of discarded
+                    # costs is exactly what a caller reconciling on `on_error`
+                    # needs, and the documented backfill pattern passes an explicit
+                    # `mode="price"`, so reaching this at volume means a real
+                    # misconfiguration rather than normal operation.
+                    self._report_error(
+                        ValueError(
+                            f"usd_cost={usd_cost!r} ignored: effective pricing mode is "
+                            f"{effective_mode!r}, not 'price' — emitting token counts "
+                            f"instead. Pass mode='price' per call, or set "
+                            f"LagoConfig.pricing_mode='price'."
+                        ),
+                        "pricing",
+                    )
                 self._emit_token_events(usage, sub, dimensions, event_id)
                 return
 
@@ -309,6 +376,18 @@ class LagoSDK:
         self, usage: CanonicalUsage, sub: str, dimensions: dict[str, Any] | None, event_id: str | None = None
     ) -> None:
         nonzero = usage.nonzero_numeric()
+        # A negative count is silently unbillable — Lago would otherwise sum it into
+        # a negative quantity. It was the only drop path in the SDK that never
+        # reached on_error, so a caller who built a CanonicalUsage with a bad delta
+        # saw nothing at all. Reported before the empty-check, because an event whose
+        # only fields were negative leaves `nonzero` empty and would return below
+        # without a word.
+        negatives = usage.negative_numeric()
+        if negatives:
+            self._report_error(
+                ValueError(f"dropped negative token counts for model={usage.model!r}: {negatives}"),
+                "negative_tokens",
+            )
         if not nonzero:
             # Mistral legacy / empty — nothing to bill
             return
@@ -318,7 +397,11 @@ class LagoSDK:
             if not code:
                 continue
             event = {
-                "transaction_id": f"{event_id}_{field_name}" if event_id else str(uuid.uuid4()),
+                # `_tok_` namespace: the cost path suffixes with the same field
+                # vocabulary, and both are reachable for one `event_id` (price
+                # miss -> token fallback, then the cost path once the table is
+                # warm). See emit()'s docstring for what a shared namespace cost.
+                "transaction_id": f"{event_id}_tok_{field_name}" if event_id else str(uuid.uuid4()),
                 "external_subscription_id": sub,
                 "code": code,
                 "timestamp": now,
@@ -359,24 +442,40 @@ class LagoSDK:
         one.
         """
         now = int(time.time())
+        # Caller dimensions are spread LAST in each `properties` below, not here —
+        # they must win over every SDK-computed key, exactly as they already do in
+        # `_emit_token_events`. Spreading them into `base_properties` put them
+        # *before* `unit`/`value`/`base_cost`/`unit_price`, so those four silently
+        # overwrote a caller's same-named dimension on this path while honouring it
+        # on the token path — one customer config, two different outcomes.
         base_properties: dict[str, Any] = {
             "model": usage.model,
             "provider": usage.provider,
             "api": usage.api,
             "price_source": breakdown.source,
             "markup": breakdown.markup,
-            **(dimensions or {}),
         }
 
         if not breakdown.fields:
             properties = {
                 **base_properties,
-                "unit": str(usage.input + usage.output),
+                # Same basis as the split path below (which reports the
+                # de-overlapped per-field `parts["tokens"]`), so the two branches
+                # can't report different quantities for one call. `input + output`
+                # dropped `reasoning` and `cache_write` entirely — on a real
+                # captured Gemini row with 9 in / 21 out / 852 reasoning it
+                # published unit="30" for a call that consumed 882 — and counted a
+                # cache-inclusive provider's cached tokens at full weight.
+                "unit": str(deoverlapped_token_total(usage)),
                 "value": breakdown.total,
                 "base_cost": breakdown.base,
+                **(dimensions or {}),
             }
             self._queue.push(
                 {
+                    # Unsuffixed: this branch pushes exactly ONE event, so there is
+                    # nothing to disambiguate. It cannot collide with the namespaced
+                    # multi-event ids below or in _emit_token_events.
                     "transaction_id": event_id or str(uuid.uuid4()),
                     "external_subscription_id": sub,
                     "code": self.config.cost_metric_code,
@@ -399,10 +498,12 @@ class LagoSDK:
                 "value": billed_cost,
                 "base_cost": parts["cost"],
                 "unit_price": parts["unit_price"],
+                **(dimensions or {}),
             }
             self._queue.push(
                 {
-                    "transaction_id": f"{event_id}_{field_name}" if event_id else str(uuid.uuid4()),
+                    # `_cost_` namespace — see the `_tok_` note in _emit_token_events.
+                    "transaction_id": f"{event_id}_cost_{field_name}" if event_id else str(uuid.uuid4()),
                     "external_subscription_id": sub,
                     "code": self.config.cost_metric_code,
                     "timestamp": now,

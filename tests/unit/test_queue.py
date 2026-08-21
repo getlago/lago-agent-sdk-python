@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import pathlib
+import subprocess
+import sys
 import threading
 import time
+
+import pytest
 
 from lago_agent_sdk.exceptions import LagoApiError
 from lago_agent_sdk.queue import EventQueue
@@ -176,6 +181,225 @@ def test_transient_failure_during_isolation_still_gets_retried():
         q.shutdown(timeout=2.0)
 
 
+_REENTRANT_OVERFLOW_PROGRAM = """
+import sys, threading
+sys.path.insert(0, {src!r})
+from lago_agent_sdk.queue import EventQueue
+
+calls = {{"n": 0}}
+def on_error(exc, where):
+    calls["n"] += 1
+    if calls["n"] > 200:          # runaway guard so this exits rather than spinning
+        raise SystemExit(3)
+    q.push({{"diagnostic": True}})   # re-enters push() from inside the hook
+
+q = EventQueue(sender=lambda b: None, flush_interval=10.0, max_batch_size=1000,
+               max_buffer_size=1, on_error=on_error)
+for i in range(3):
+    q.push({{"i": i}})
+q.shutdown(timeout=1.0)
+print("OK", calls["n"])
+"""
+
+
+def _run_reentrant_overflow(timeout: float = 20.0) -> subprocess.CompletedProcess:
+    """Run the re-entrant-overflow scenario in a SUBPROCESS.
+
+    It has to be a subprocess: once the deadlock happens, the wedged producer holds
+    `_lock` forever, and `EventQueue.__init__`'s `atexit` shutdown then blocks on that
+    same lock at interpreter exit. The process is poisoned, so an in-process test
+    would hang the whole session instead of reporting a failure. Out-of-process, a
+    hang is just a timeout we can assert on.
+    """
+    src = str(pathlib.Path(__file__).resolve().parents[2] / "src")
+    return subprocess.run(
+        [sys.executable, "-c", _REENTRANT_OVERFLOW_PROGRAM.format(src=src)],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def test_overflow_report_does_not_deadlock_a_reentrant_callback():
+    """The report must run with the lock RELEASED, and must not re-enter unboundedly.
+
+    Two failure modes, one scenario. `_lock` is a plain Lock, not an RLock, so
+    reporting inside it meant a customer `on_error` that touched the SDK at all —
+    emitting a diagnostic, forcing a flush — blocked forever on a lock its own thread
+    already held; overflow happens under sustained load, which is exactly when such a
+    hook fires. Moving the report out of the lock then exposed the other half: the
+    buffer is full again by the time the hook runs, so a hook that pushes overflows
+    again and re-enters without bound.
+    """
+    try:
+        proc = _run_reentrant_overflow()
+    except subprocess.TimeoutExpired:
+        raise AssertionError(
+            "re-entrant on_error during overflow hung the process — the report is holding the lock"
+        ) from None
+    assert proc.returncode == 0, f"exit {proc.returncode}: " + (
+        "runaway re-entrant reporting" if proc.returncode == 3 else proc.stderr[-400:]
+    )
+    assert proc.stdout.startswith("OK"), proc.stdout
+    reports = int(proc.stdout.split()[1])
+    assert reports <= 10, f"expected a bounded number of overflow reports, got {reports}"
+
+
+def test_overflow_is_reported_through_on_error():
+    """An overflow drops BILLABLE events. It was logger.warning only, so a customer
+    watching on_error never learned revenue had been lost; the JS port already
+    reported it."""
+    errors: list = []
+    q = EventQueue(
+        sender=lambda b: None,
+        flush_interval=10.0,  # keep the worker idle so the buffer really fills
+        max_batch_size=1000,
+        max_buffer_size=2,
+        on_error=lambda exc, where: errors.append((str(exc), where)),
+    )
+    try:
+        for i in range(5):
+            q.push({"id": i})
+        assert errors, "overflow must reach on_error"
+        assert any(w == "overflow" for _, w in errors)
+        assert any("overflow" in m for m, _ in errors)
+    finally:
+        q.shutdown(timeout=1.0)
+
+
+# ----------------------------------------------------------------------
+# The throttling 4xxs. 429 and 408 sit inside the 400-499 range but mean "try
+# again, later" — classifying them as permanent dropped billable events and
+# aimed `max_batch_size` extra requests at a server that had just asked us to
+# slow down.
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize("status", [413, 402, 415])
+def test_batch_only_4xx_is_split_not_head_of_line_blocked(status: int):
+    """For these the SAME batch can never succeed, but its events can individually.
+
+    Treating them as transient re-prepended the identical batch at the head of the FIFO
+    and backed off to 60s forever, blocking everything behind it. Routing them to
+    `_send_individually` splits the batch and delivers what is deliverable — which is
+    what the isolation path was built for, and it was unreachable for exactly the batch
+    that most needed it.
+    """
+    sent_individually: list = []
+
+    def sender(batch):
+        if len(batch) > 1:
+            raise LagoApiError(status, "batch too large / unacceptable as-is")
+        sent_individually.append(batch[0]["id"])  # each event succeeds alone
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        for i in range(4):
+            q.push({"id": i})
+        assert q.flush(timeout=3.0), "queue should drain, not head-of-line block"
+        assert sorted(sent_individually) == [0, 1, 2, 3], (
+            f"every event should have been delivered individually, got {sent_individually}"
+        )
+        assert q._backoff_seconds == 0.0, "splitting must not leave a stale backoff"
+    finally:
+        q.shutdown(timeout=1.0)
+
+
+@pytest.mark.parametrize("status", [429, 408])
+def test_throttling_4xx_is_retried_not_dropped(status: int):
+    """A rate-limited or timed-out batch must reach Lago eventually. Dropping
+    it loses revenue, and isolating it one-by-one multiplies the load on a
+    server that is already shedding it."""
+    attempts = {"n": 0}
+    delivered: list = []
+
+    def sender(batch):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise LagoApiError(status, '{"error":"too many requests"}')
+        delivered.extend(batch)  # succeeds once the throttle lifts
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        q.push({"id": "a"})
+        q.push({"id": "b"})
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not delivered:
+            time.sleep(0.05)
+        assert [e["id"] for e in delivered] == ["a", "b"], "throttled events must still be delivered"
+        # Delivered as one batch, i.e. never fanned out into per-event requests.
+        assert attempts["n"] == 2
+    finally:
+        q.shutdown(timeout=2.0)
+
+
+@pytest.mark.parametrize("status", [429, 408])
+def test_throttling_4xx_applies_backoff(status: int):
+    """The inverse of test_permanent_failure_does_not_apply_backoff: a
+    throttling failure is transient, so it MUST leave a backoff in place —
+    that pause is the whole point of respecting a rate limit."""
+
+    def sender(batch):
+        raise LagoApiError(status, "slow down")
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        q.push({"id": "a"})
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and q._backoff_seconds == 0.0:
+            time.sleep(0.05)
+        assert q._backoff_seconds > 0.0, "a throttling 4xx must back off, not isolate-and-drop"
+    finally:
+        q.shutdown(timeout=1.0)
+
+
+def test_unrecognized_4xx_is_treated_as_transient():
+    """Only the enumerated validation statuses are permanent. An unfamiliar 4xx
+    errs toward retrying: a needless delay costs latency, a wrong drop costs
+    revenue."""
+    attempts = {"n": 0}
+    delivered: list = []
+
+    def sender(batch):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise LagoApiError(418, "i am a teapot")
+        delivered.extend(batch)
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        q.push({"id": "a"})
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not delivered:
+            time.sleep(0.05)
+        assert [e["id"] for e in delivered] == ["a"]
+    finally:
+        q.shutdown(timeout=2.0)
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 422])
+def test_validation_4xx_still_isolates_and_drops(status: int):
+    """The statuses that genuinely cannot succeed on a re-send keep the
+    isolate-one-by-one behaviour, so a single bad transaction_id still doesn't
+    take the rest of its batch down with it."""
+    sent_individually: list = []
+
+    def sender(batch):
+        if len(batch) > 1:
+            raise LagoApiError(status, "batch rejected")
+        sent_individually.append(batch[0]["id"])
+        if batch[0]["id"].startswith("bad"):
+            raise LagoApiError(status, "this one really is invalid")
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        q.push({"id": "bad_1"})
+        q.push({"id": "good_1"})
+        assert q.flush(timeout=2.0)
+        assert set(sent_individually) == {"bad_1", "good_1"}
+        assert q._backoff_seconds == 0.0
+    finally:
+        q.shutdown(timeout=1.0)
+
+
 # ----------------------------------------------------------------------
 # Shutdown's final drain. Previously: `except Exception: pass` on a single
 # attempt at a single batch — any failure at all was silently swallowed, and
@@ -236,3 +460,23 @@ def test_flush_returns_false_on_timeout():
     finally:
         blocking.set()
         q.shutdown(timeout=2.0)
+
+
+def test_isolated_retries_keep_their_fifo_order() -> None:
+    """`_replay_failed` PREPENDS, so calling it once per event inside the isolation
+    loop reversed the survivors: a 413 batch of a,b,c,d,e whose b,c,d fail
+    transiently while isolated came back as d,c,b. FIFO is the queue's contract —
+    it is what makes oldest-dropped-first overflow and Lago's own event ordering
+    mean anything — so a recovery path must not silently invert it."""
+
+    def sender(batch):
+        if batch[0]["id"] in ("b", "c", "d"):
+            raise LagoApiError(503, "transient while isolated")
+
+    q = EventQueue(sender=sender, flush_interval=60.0, max_batch_size=10, max_buffer_size=100)
+    try:
+        q._send_individually([{"id": i} for i in "abcde"], LagoApiError(413, "too large"))
+        with q._lock:
+            assert [e["id"] for e in q._buffer] == ["b", "c", "d"]
+    finally:
+        q.shutdown(timeout=1.0)

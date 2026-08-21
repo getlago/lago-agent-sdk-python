@@ -72,7 +72,7 @@ def _is_cache_hit(raw_response: Any) -> bool:
         return False
 
 
-def _merge_stream_usage(accumulated: dict[str, Any], payload: Any) -> None:
+def _merge_stream_usage(accumulated: dict[str, Any], payload: Any) -> str | None:
     """Fold one streaming event's usage into the running accumulator.
 
     Anthropic splits authoritative usage across two events:
@@ -86,19 +86,30 @@ def _merge_stream_usage(accumulated: dict[str, Any], payload: Any) -> None:
     would bill ``input_tokens=0``. Merge both locations; ``dict.update`` lets the
     more complete / more recent values win while preserving the input counts from
     ``message_start`` when a delta omits them.
+
+    Returns the model this event reported, if any. ``message_start`` carries the
+    RESOLVED snapshot under ``message.model`` — e.g. "claude-sonnet-4-5-20250929"
+    for a requested "claude-sonnet-4-5" — and discarding it made every streaming
+    call attribute (and price) the alias instead, the same bug the non-streaming
+    path was fixed for. The caller keeps the first one it sees.
     """
     if not isinstance(payload, dict):
-        return
-    # message_start: input/cache live under message.usage
+        return None
+    found: str | None = None
+    # message_start: input/cache live under message.usage, resolved model alongside
     message = payload.get("message")
     if isinstance(message, dict):
         nested = message.get("usage")
         if isinstance(nested, dict):
             accumulated.update(nested)
+        model = message.get("model")
+        if isinstance(model, str) and model:
+            found = model
     # message_delta (and others): cumulative usage at the top level
     top = payload.get("usage")
     if isinstance(top, dict):
         accumulated.update(top)
+    return found
 
 
 def wrap_anthropic_client(
@@ -170,14 +181,15 @@ def wrap_anthropic_client(
         # (input/cache) and message_delta (cumulative output) before emitting.
         def _wrap_stream(src: Iterator[Any]) -> Iterator[Any]:
             accumulated: dict[str, Any] = {}
+            resolved_model: str | None = None
             try:
                 for event in src:
                     payload = event.model_dump() if hasattr(event, "model_dump") else event
-                    _merge_stream_usage(accumulated, payload)
+                    resolved_model = _merge_stream_usage(accumulated, payload) or resolved_model
                     yield event
             finally:
                 if accumulated:
-                    _emit_from({"usage": accumulated}, model_id, opts)
+                    _emit_from({"usage": accumulated, "model": resolved_model}, model_id, opts)
 
         return _wrap_stream(response)
 
@@ -205,14 +217,15 @@ def wrap_anthropic_client(
 
         async def _wrap_async_stream(src: AsyncIterator[Any]) -> AsyncIterator[Any]:
             accumulated: dict[str, Any] = {}
+            resolved_model: str | None = None
             try:
                 async for event in src:
                     payload = event.model_dump() if hasattr(event, "model_dump") else event
-                    _merge_stream_usage(accumulated, payload)
+                    resolved_model = _merge_stream_usage(accumulated, payload) or resolved_model
                     yield event
             finally:
                 if accumulated:
-                    _emit_from({"usage": accumulated}, model_id, opts)
+                    _emit_from({"usage": accumulated, "model": resolved_model}, model_id, opts)
 
         return _wrap_async_stream(response)
 

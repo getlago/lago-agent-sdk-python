@@ -51,7 +51,7 @@ from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from typing import Any, Protocol
 
-from .canonical import CanonicalUsage
+from .canonical import WORKERS_AI_COMPAT_PREFIX, CanonicalUsage
 
 logger = logging.getLogger("lago_agent_sdk.pricing")
 
@@ -93,7 +93,17 @@ _INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini", "workers-ai", "mistr
 # tokens (reasoning is a subset of output). For these, reasoning is billed as
 # part of output and must NOT be billed again separately. (Gemini's `thoughts`
 # are additive to output, so it's absent here.)
-_OUTPUT_INCLUDES_REASONING = frozenset({"openai"})
+# "workers-ai" belongs here for the same reason it is in _INPUT_INCLUDES_CACHE_READ
+# above: it is only ever reached through Cloudflare's OpenAI-COMPATIBLE endpoint, so
+# its usage payload is the OpenAI shape — and in that shape
+# `completion_tokens_details.reasoning_tokens` is a SUBSET of `completion_tokens`,
+# exactly as it is for real OpenAI. `extract_openai_native` fills `reasoning` from that
+# key with no provider gate, so omitting it counted the subset twice: measured, a
+# 100/1000/reasoning-800 call reported unit=1900 against 1100 consumed. `compute_cost`
+# would double-BILL the same tokens and does not today only because
+# _CLOUDFLARE_UNIT_FIELD_MAP happens to carry no reasoning unit — an accident, not a
+# guard, and Cloudflare hosts reasoning models (deepseek-r1, qwen, glm).
+_OUTPUT_INCLUDES_REASONING = frozenset({"openai", "workers-ai"})
 
 # Providers this SDK bills as TOKEN COUNTS by design, even in price mode — because
 # no per-token rate for them exists anywhere the SDK could read it.
@@ -146,6 +156,13 @@ _CLOUDFLARE_UNIT_FIELD_MAP = {
     "per M cached input tokens": "cache_read",
 }
 
+# Cloudflare's catalog page size, and a hard bound on the paging loop. The loop runs
+# on the queue's flush tick ahead of the drain, so it must terminate even if the
+# endpoint keeps returning full pages. 40 pages covers ~2000 models against a real
+# catalog of 64.
+_CF_PER_PAGE = 50
+_CF_MAX_PAGES = 40
+
 # Bedrock cross-region inference prefix -> a representative AWS region.
 _BEDROCK_REGION_PREFIX = {
     "us": "us-east-1",
@@ -182,6 +199,19 @@ _Q = Decimal(1).scaleb(-_SCALE)  # Decimal("1E-12")
 # token events. gpt-4o looked fine only by luck — OpenRouter happens to list
 # "openai/gpt-4o-2024-08-06" verbatim.
 _VERSION_DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2}|v\d+)$")
+
+# Gemini's 3-digit revision ("-002", which `model_version` can report where
+# OpenRouter lists only the bare name) is stripped for OpenRouter matching ONLY.
+# It is deliberately NOT in the shared `_strip_version`: that helper also builds
+# the AWS/Bedrock price keys, where a shortened key does not merely miss but
+# silently MIS-prices — `bedrock_model_key` feeds
+# `table.setdefault(key, {})[direction] = price`, so two distinct models
+# collapsing to one key overwrite each other's rate. All four live catalogs are
+# currently clean (OpenRouter 415 ids, Cloudflare 64, AWS offer 77, captured
+# Bedrock 39: zero model parts end in exactly three digits), but the arm was only
+# ever motivated by OpenRouter, and scoping it makes that risk structurally zero
+# instead of empirically zero.
+_OPENROUTER_VERSION_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2}|\d{3}|v\d+)$")
 
 
 # ----------------------------------------------------------------------
@@ -221,8 +251,37 @@ def apply_markup(usd: str, markup: str) -> str:
     summed `total` has markup applied. Splitting a breakdown into one event
     per field (per token_type) needs markup applied to each field individually,
     with the same floor-to-12dp convention as everywhere else, or a markup
-    != 1.0 would silently vanish from every per-field/token_type event."""
-    return _fmt_money((Decimal(usd) * Decimal(markup)).quantize(_Q, rounding=ROUND_DOWN))
+    != 1.0 would silently vanish from every per-field/token_type event.
+
+    Parsed through `_parse_price` rather than `Decimal()` directly. A bare
+    `Decimal("abc")` raises `InvalidOperation` — and this is called from inside
+    `_push_cost_event`, under `emit()`'s catch-all, so the whole cost event was
+    dropped and reported as an unknown "emit" error instead of taking the
+    documented no-price path. It was also the one money helper in this module that
+    could raise at all, past every caller relying on the `None`-on-bad-input
+    convention.
+
+    Both fallbacks are DEFENCE IN DEPTH, not live behaviour: every `emit()` path
+    runs the customer's markup through `coerce_markup` first (which falls back to
+    1.0 and reports under "pricing"), and `CostBreakdown.markup` /
+    `fields[*]["cost"]` are `_fmt_money` output, so neither argument can actually
+    arrive unparseable here. They are still not interchangeable, and the two ports
+    disagreed on them:
+
+    - An unparseable `usd` means the cost itself is unusable — nothing to bill: 0.
+    - An unparseable `markup` means only the MULTIPLIER is unusable. Returning 0
+      there would discard a good cost, an under-bill to nothing; 1.0 bills the real
+      cost with no markup, the smallest defensible error. JS already did this;
+      Python returned "0", so identical input produced different bills if anything
+      ever did reach it. Aligned rather than left as a latent divergence.
+    """
+    base = _parse_price(usd)
+    mult = _parse_price(markup)
+    if base is None:
+        return _fmt_money(Decimal(0))
+    if mult is None:
+        mult = Decimal(1)
+    return _fmt_money((base * mult).quantize(_Q, rounding=ROUND_DOWN))
 
 
 def _fmt_money(d: Decimal) -> str:
@@ -247,6 +306,12 @@ def _alnum(s: str) -> str:
 def _strip_version(model: str) -> str:
     """Drop a trailing -YYYYMMDD / -YYYY-MM-DD date or -vN version tag."""
     return _VERSION_DATE_SUFFIX.sub("", model)
+
+
+def _strip_version_openrouter(model: str) -> str:
+    """`_strip_version`, plus Gemini's 3-digit revision. OpenRouter matching only —
+    see `_OPENROUTER_VERSION_SUFFIX` for why this is not the shared helper."""
+    return _OPENROUTER_VERSION_SUFFIX.sub("", model)
 
 
 # ----------------------------------------------------------------------
@@ -335,6 +400,39 @@ def _finalize_breakdown(
     )
 
 
+def deoverlapped_token_total(usage: Any) -> int:
+    """Total tokens a call actually consumed, with per-provider overlaps removed.
+
+    Sums the same PRICED_FIELDS the split cost path emits one event each for, so
+    the single-event `unit` equals the sum of the split path's `unit`s instead of
+    reporting a different basis. Both `_INCLUDES_` sets are applied, because a
+    subset counted twice inflates the reported quantity exactly as it would inflate
+    a price:
+
+      * reasoning ⊆ output for providers in _OUTPUT_INCLUDES_REASONING
+      * cache_read ⊆ input  for providers in _INPUT_INCLUDES_CACHE_READ
+
+    Deliberately NOT gated on a unit price existing, unlike `compute_cost`'s
+    subtraction — this is a token count, so whether a rate happens to be published
+    cannot change how many tokens were consumed. The two still agree: when a
+    cache-inclusive provider has no cache_read price, `compute_cost` leaves the
+    cached tokens inside `input` and emits no cache_read event, and this skips
+    cache_read for the same reason.
+
+    Deliberately limited to PRICED_FIELDS — the five text fields. `tool_calls` is a
+    count of calls rather than tokens, and `cache_write_5m` / `cache_write_1h` are
+    a breakdown OF `cache_write`, so including any of them would not be a token
+    total. This mirrors price mode's documented five-field scope.
+    """
+    provider = (getattr(usage, "provider", "") or "").lower()
+    counts = {f: (getattr(usage, f, 0) or 0) for f in PRICED_FIELDS}
+    if provider in _OUTPUT_INCLUDES_REASONING:
+        counts["reasoning"] = 0
+    if provider in _INPUT_INCLUDES_CACHE_READ:
+        counts["cache_read"] = 0
+    return sum(int(v or 0) for v in counts.values())
+
+
 def compute_precomputed_cost(usd_cost: Any, markup: Decimal) -> CostBreakdown:
     """Build a CostBreakdown from a cost the CALLER already knows.
 
@@ -383,10 +481,39 @@ def parse_openrouter(data: Any) -> dict[str, Any]:
             cache_write=_parse_price(pricing.get(_OPENROUTER_FIELD_MAP["cache_write"])),
             reasoning=_parse_price(pricing.get(_OPENROUTER_FIELD_MAP["reasoning"])),
         )
+        # OpenRouter marks a MOVING alias with a leading "~" on the vendor —
+        # "~anthropic/claude-sonnet-latest", "~openai/gpt-latest",
+        # "~google/gemini-flash-latest". Measured live: 11 such ids across 6
+        # vendors, every one a "-latest" moniker, every one carrying real token
+        # pricing. Indexed verbatim they were ALL unpriceable, because the vendor
+        # parsed as "~anthropic"/"~openai"/"~google" — none of which appear in
+        # _VENDOR_MAP — so a customer in price mode asking for a plain "-latest"
+        # alias missed and fell back to token events, billing nothing at all in an
+        # llm_cost-only setup. Stripping the marker indexes them under their real
+        # vendor. Verified collision-free against the live catalog: no un-prefixed
+        # id duplicates a "~"-prefixed one, so nothing is overwritten.
+        #
+        # `setdefault` for the alias-derived keys rather than assignment: the
+        # collision-freedom above is a property of TODAY's catalog, and with plain
+        # assignment the winner depended purely on iteration order — if OpenRouter
+        # ever ships both "google/gemini-flash-latest" and
+        # "~google/gemini-flash-latest", the moving alias could overwrite the real
+        # listing's rate (measured on a synthetic pair: 0.009 vs 0.001 for the same
+        # lookup, decided by nothing but position in the response). A real listing
+        # now always wins, whatever the order. Non-alias entries keep plain
+        # assignment so genuine duplicates behave exactly as before.
+        bare = mid[1:] if mid.startswith("~") else mid
+        is_alias = bare != mid
         exact[mid] = mp
-        if "/" in mid:
-            vendor, _, suffix = mid.partition("/")
-            norm[(vendor.lower(), _norm(suffix))] = mp
+        if is_alias:
+            exact.setdefault(bare, mp)
+        if "/" in bare:
+            vendor, _, suffix = bare.partition("/")
+            norm_key = (vendor.lower(), _norm(suffix))
+            if is_alias:
+                norm.setdefault(norm_key, mp)
+            else:
+                norm[norm_key] = mp
     return {"exact": exact, "norm": norm}
 
 
@@ -397,14 +524,44 @@ def parse_openrouter(data: Any) -> dict[str, Any]:
 _MISTRAL_DATED_ID = re.compile(r"-\d{4,8}$")
 
 
+def _mistral_date_key(name: str) -> int:
+    """Normalize a dated Mistral suffix to a comparable integer; newest = largest.
+
+    Mistral's own convention is a 4-digit YYMM ("-2411", "-2603"), but the regex
+    admits 4-8 digits and mixed widths do NOT compare correctly as raw strings:
+    "20241101" sorts *below* "2411" lexicographically. Widening YYMM to YYYYMM00
+    puts both shapes on one scale.
+    """
+    m = _MISTRAL_DATED_ID.search(name)
+    if m is None:
+        return -1
+    digits = m.group(0)[1:]  # drop the leading "-"
+    if len(digits) == 4:  # YYMM -> 20YY-MM, day unknown
+        return int(f"20{digits}00")
+    return int(digits)  # YYYYMMDD, or an unexpected width taken at face value
+
+
 def _pick_mistral_canonical(names: list[str]) -> str:
-    """Prefer a dated snapshot id (what OpenRouter actually lists models
-    under) over a "-latest"-style moniker. Falls back to shortest-then-
-    alphabetical so the choice is always deterministic even with no dated
-    candidate in the group."""
+    """Prefer the NEWEST dated snapshot id (what OpenRouter actually lists
+    models under) over a "-latest"-style moniker.
+
+    Newest, not shortest. Every dated id in one family is the same length, so a
+    shortest-then-alphabetical tie-break silently resolved on the DATE — and
+    ascending: `mistral-large-2402` / `-2407` / `-2411` / `-latest` all collapsed
+    onto `mistral-large-2402`, the OLDEST, so the whole family got priced at a
+    two-year-old rate. `-2411` had matched OpenRouter directly before alias
+    resolution existed, which makes that a regression rather than a gap.
+
+    Falls back to shortest-then-alphabetical only when the group has no dated
+    candidate at all, so the choice stays deterministic either way. Ordering is
+    by Unicode code point — the JS port must NOT use `localeCompare`, which is
+    ICU/locale-dependent and made the two repos pick different canonicals for
+    the same input.
+    """
     dated = [n for n in names if _MISTRAL_DATED_ID.search(n)]
-    pool = dated or names
-    return sorted(pool, key=lambda n: (len(n), n))[0]
+    if dated:
+        return sorted(dated, key=lambda n: (-_mistral_date_key(n), n))[0]
+    return sorted(names, key=lambda n: (len(n), n))[0]
 
 
 def parse_mistral_aliases(data: Any) -> dict[str, str]:
@@ -468,8 +625,16 @@ def parse_mistral_aliases(data: Any) -> dict[str, str]:
             continue  # no aliasing at all — nothing to resolve
         canonical = _pick_mistral_canonical(members)
         for name in members:
-            if name != canonical:
-                result[name] = canonical
+            if name == canonical:
+                continue
+            # An explicit dated snapshot is already the real id OpenRouter lists,
+            # so it must pass through untouched — never rewritten onto a sibling.
+            # Without this, requesting `mistral-large-2411` was remapped to the
+            # group's canonical and priced at THAT snapshot's rate instead of its
+            # own, which is a mispricing rather than a miss.
+            if _MISTRAL_DATED_ID.search(name):
+                continue
+            result[name] = canonical
     return result
 
 
@@ -497,7 +662,7 @@ def lookup_openrouter(table: dict[str, Any], provider: str, model: str) -> Model
     if hit is not None:
         return hit
     # 3. date/version-stripped, normalized
-    hit = norm.get((vendor, _norm(_strip_version(model))))
+    hit = norm.get((vendor, _norm(_strip_version_openrouter(model))))
     if hit is not None:
         return hit
     return None
@@ -530,8 +695,19 @@ def parse_cloudflare_workers_ai(models: Any) -> dict[str, ModelPrice]:
         name = m.get("name")
         if not isinstance(name, str) or not name:
             continue
+        # `.get("properties", [])` only defaults when the key is ABSENT — an
+        # explicit JSON null returns None, and `for p in None` raises TypeError
+        # straight out of this function into `maybe_refresh`'s handler, which leaves
+        # `_cloudflare_workers_ai` at None. One malformed entry would therefore
+        # unprice EVERY Workers AI model, not just its own. The JS port already
+        # isinstance-guarded here and dropped only the bad entry.
+        props = m.get("properties")
         price_prop = next(
-            (p for p in m.get("properties", []) if isinstance(p, dict) and p.get("property_id") == "price"),
+            (
+                p
+                for p in (props if isinstance(props, list) else [])
+                if isinstance(p, dict) and p.get("property_id") == "price"
+            ),
             None,
         )
         if not isinstance(price_prop, dict):
@@ -558,11 +734,22 @@ def parse_cloudflare_workers_ai(models: Any) -> dict[str, ModelPrice]:
 def lookup_cloudflare_workers_ai(table: dict[str, ModelPrice], model: str) -> ModelPrice | None:
     """Exact match first; a version-suffix fallback covers the same drift we've
     seen in practice — e.g. a live response naming a model
-    "...instruct-v2" when the catalog itself only lists "...instruct"."""
-    hit = table.get(model)
-    if hit is not None:
-        return hit
-    return table.get(_strip_version(model))
+    "...instruct-v2" when the catalog itself only lists "...instruct".
+
+    The "workers-ai/" routing prefix comes off first. Cloudflare's catalog keys
+    models as bare "@cf/...", but calling one through the gateway's `/compat`
+    endpoint requires "workers-ai/@cf/..." — the form the README prescribes and
+    the only form a streaming call can report. Without the strip, recognising the
+    prefixed spelling as Workers AI upstream just moves the miss here.
+    """
+    for candidate in (model, model.removeprefix(WORKERS_AI_COMPAT_PREFIX)):
+        hit = table.get(candidate)
+        if hit is not None:
+            return hit
+        hit = table.get(_strip_version(candidate))
+        if hit is not None:
+            return hit
+    return None
 
 
 # ----------------------------------------------------------------------
@@ -766,14 +953,34 @@ class HttpPricingFetcher:
         page = 1
         while True:
             resp = requests.get(
-                url, headers=headers, params={"per_page": 50, "page": page}, timeout=self._timeout
+                url,
+                headers=headers,
+                params={"per_page": _CF_PER_PAGE, "page": page},
+                timeout=self._timeout,
             )
             resp.raise_for_status()
             body = resp.json()
             batch = body.get("result") or []
             models.extend(batch)
-            total = body.get("result_info", {}).get("total_count", len(models))
-            if len(batch) < 50 or len(models) >= total:
+            # A SHORT page is the only reliable end-of-catalog signal here.
+            # `result_info.total_count` is not: measured live it reports 291 while
+            # the endpoint serves 64 (50 then 14 then 0), so a `len(models) >= total`
+            # test never fires. It must also never be defaulted to `len(models)` —
+            # that made an ABSENT total_count break after page one, silently keeping
+            # 50 of the 64 available.
+            if len(batch) < _CF_PER_PAGE:
+                break
+            if page >= _CF_MAX_PAGES:
+                # Bounded because this runs on the queue's flush tick, ahead of the
+                # drain — an endpoint that always returns a full page must not stall
+                # event delivery indefinitely. Truncation is reported rather than
+                # silent, since a short catalog reads as "these models are unpriced".
+                logger.warning(
+                    "lago: cloudflare model catalog truncated at %d pages (%d models); "
+                    "prices for later models are unavailable",
+                    _CF_MAX_PAGES,
+                    len(models),
+                )
                 break
             page += 1
         return parse_cloudflare_workers_ai(models)

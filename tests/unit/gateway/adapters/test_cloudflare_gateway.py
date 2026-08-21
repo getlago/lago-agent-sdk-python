@@ -6,6 +6,8 @@ import json
 import pathlib
 from decimal import Decimal
 
+import pytest
+
 from lago_agent_sdk import CanonicalUsage
 from lago_agent_sdk.gateway.adapters import extract_cloudflare_log, resolve_subscription
 from lago_agent_sdk.pricing import compute_cost, lookup_openrouter, parse_openrouter
@@ -366,3 +368,97 @@ def test_lookup_openrouter_strips_a_redundant_vendor_prefix() -> None:
     assert lookup_openrouter(table, "anthropic", "claude-opus-4.8") is not None
     # Still vendor-gated: a model claiming a different vendor must not match.
     assert lookup_openrouter(table, "openai", "anthropic/claude-opus-4.8") is None
+
+
+# ----------------------------------------------------------------------
+# Cache-key casing. The gateway forwards some provider keys unnormalized — the
+# real Gemini fixture carries camelCase `reasoningTokens` — and a missed cache
+# key does not merely lose a field: `gemini` is in _INPUT_INCLUDES_CACHE_READ,
+# so compute_cost needs `cache_read` populated to SUBTRACT the cached portion
+# out of `input`. A silent 0 bills those tokens at the full prompt rate.
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "key",
+    ["input_cached_tokens", "inputCachedTokens", "cachedContentTokenCount"],
+)
+def test_cache_read_is_read_under_every_plausible_spelling(key: str) -> None:
+    u = extract_cloudflare_log(
+        {"tokens_in": 100, "tokens_out": 10, "provider": "google-ai-studio", "usage_metadata": {key: 90}}
+    )
+    assert u.cache_read == 90, f"{key} must resolve"
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["input_cache_creation_tokens", "inputCacheCreationTokens", "cache_creation_input_tokens"],
+)
+def test_cache_write_is_read_under_every_plausible_spelling(key: str) -> None:
+    u = extract_cloudflare_log(
+        {"tokens_in": 100, "tokens_out": 10, "provider": "anthropic", "usage_metadata": {key: 40}}
+    )
+    assert u.cache_write == 40, f"{key} must resolve"
+
+
+def test_a_zeroed_alias_falls_through_to_the_real_count() -> None:
+    """Fallthrough is on a falsy value, not just a missing key. A provider sending
+    both its own name and the gateway's, with one zeroed, must resolve to the real
+    count — this is where JS's `??` diverged from Python's `or`."""
+    u = extract_cloudflare_log(
+        {
+            "tokens_in": 100,
+            "tokens_out": 10,
+            "provider": "google-ai-studio",
+            "usage_metadata": {"input_cached_tokens": 0, "cachedContentTokenCount": 77},
+        }
+    )
+    assert u.cache_read == 77
+
+
+def test_cache_read_still_zero_when_genuinely_absent() -> None:
+    u = extract_cloudflare_log(
+        {"tokens_in": 100, "tokens_out": 10, "provider": "anthropic", "usage_metadata": {}}
+    )
+    assert u.cache_read == 0
+    assert u.cache_write == 0
+
+
+def test_provider_native_cache_and_reasoning_spellings_are_accepted() -> None:
+    """SYNTHETIC entries — no provider-native key appears in ANY of the 14 captured
+    fixtures (they carry only Cloudflare's own vocabulary). These pin the unobserved
+    insurance spellings so the fallthrough list cannot be trimmed by accident.
+
+    The direction of the harm differs by provider, which is why both matter:
+    Anthropic's cache_read is ADDITIVE, so a missed key means those tokens are never
+    billed (under-bill); Gemini's is SUBTRACTIVE, so a missed key bills them at the
+    full prompt rate (over-bill).
+    """
+    anthropic_native = extract_cloudflare_log(
+        {
+            "tokens_in": 100,
+            "tokens_out": 10,
+            "provider": "anthropic",
+            "usage_metadata": {"cache_read_input_tokens": 4242},
+        }
+    )
+    assert anthropic_native.cache_read == 4242
+
+    gemini_native = extract_cloudflare_log(
+        {
+            "tokens_in": 100,
+            "tokens_out": 10,
+            "provider": "google-ai-studio",
+            "usage_metadata": {"thoughtsTokenCount": 852},
+        }
+    )
+    assert gemini_native.reasoning == 852
+
+    # Cloudflare's own spelling still wins when both are present
+    both = extract_cloudflare_log(
+        {
+            "tokens_in": 100,
+            "tokens_out": 10,
+            "provider": "anthropic",
+            "usage_metadata": {"input_cached_tokens": 11, "cache_read_input_tokens": 4242},
+        }
+    )
+    assert both.cache_read == 11

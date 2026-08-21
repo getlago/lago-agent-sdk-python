@@ -14,19 +14,17 @@ def test_overflow_drops_oldest_at_exact_boundary():
     def slow_sender(batch):
         paused.wait(timeout=30.0)
 
-    # max_batch_size must stay ABOVE max_buffer_size, or this test races the worker
-    # and fails intermittently in CI. `push` sets `_wake` whenever
+    # max_batch_size must stay ABOVE max_buffer_size. `push` sets `_wake` whenever
     # `len(buffer) >= max_batch_size`, so with the two equal the overflowing push below
-    # both drops i=0 AND wakes the worker — which then drains all 10,000 via
+    # both drops i=0 AND wakes the worker, which then drains all 10,000 via
     # `_take_batch`. If that lands before the next line reads the buffer, `buf` is empty
-    # and the assertion reads `assert 0 == 10000`. Reproduced deterministically by
-    # sleeping 50ms in that window; CI's scheduler does it for free under load.
+    # and the assertion reads `assert 0 == 10000` — which is how this failed in CI, and
+    # is reproducible on demand by sleeping 50ms in that window. With the cap below the
+    # batch size the buffer can never reach it, so the worker only ever runs when
+    # shutdown() releases `paused` in the finally block.
     #
-    # With the cap below the batch size the buffer can never reach it, so the worker
-    # only ever runs when shutdown() releases `paused` in the finally block. Nothing
-    # here depends on batch size — every assertion is about buffer CONTENTS. Same
-    # technique as test_repeated_overflow_keeps_window_sliding below, which was fixed
-    # for this exact reason.
+    # Nothing here depends on batch size — every assertion is about buffer CONTENTS.
+    # Same technique as test_repeated_overflow_keeps_window_sliding below.
     q = EventQueue(
         sender=slow_sender,
         flush_interval=10.0,  # never timer-flush during the test

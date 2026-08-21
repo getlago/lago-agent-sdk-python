@@ -5,13 +5,17 @@ seconds or immediately when buffer reaches `max_batch_size`. On a TRANSIENT
 send failure (network error, 5xx), re-prepends the batch and applies
 exponential backoff (1s, 2s, 4s, 8s, capped at 60s). Resets on next success.
 
-A PERMANENT failure (Lago 4xx — e.g. a duplicate `transaction_id` from
-replaying/backfilling the same window twice) is different: retrying it will
-never succeed, so it is logged and dropped instead of re-queued. Without this
-distinction, one permanently-doomed batch sits at the front of the FIFO buffer
-and blocks every event queued behind it — including brand new, perfectly
-valid ones — for the full backoff ceiling, over and over, since a batch that
-can never succeed is retried exactly like one that might.
+A PERMANENT failure (a Lago *validation* 4xx — e.g. a duplicate
+`transaction_id` from replaying/backfilling the same window twice) is
+different: retrying it will never succeed, so it is logged and dropped instead
+of re-queued. Without this distinction, one permanently-doomed batch sits at
+the front of the FIFO buffer and blocks every event queued behind it —
+including brand new, perfectly valid ones — for the full backoff ceiling, over
+and over, since a batch that can never succeed is retried exactly like one
+that might.
+
+Note that "permanent" is a specific list of statuses, NOT the whole 4xx range —
+see `_PERMANENT_STATUSES`.
 """
 
 from __future__ import annotations
@@ -27,13 +31,38 @@ from typing import Any
 
 from .exceptions import LagoApiError
 
+# Statuses where re-sending the SAME batch can never succeed: the request itself
+# is the problem (malformed body, bad credentials, a transaction_id Lago has
+# already accepted). Deliberately an explicit list rather than the 400-499 range,
+# because two 4xx statuses mean "try again, later": 429 (rate limited) and 408
+# (request timeout). Treating those as permanent dropped billable events AND fanned
+# one throttled batch out into up to `max_batch_size` extra requests aimed at the
+# server that had just asked us to slow down.
+#
+# 413/402/415 are in the set for the OPPOSITE reason to 429: re-sending the same batch
+# provably cannot succeed (too large, payment required, wrong media type), so treating
+# them as transient re-prepended the identical batch at the head of the FIFO and backed
+# off to 60s forever, blocking every event behind it until the buffer overflowed. Being
+# "permanent" here routes them to `_send_individually`, which SPLITS the batch and
+# delivers what is deliverable — so a 413 on a 100-event batch becomes 100 single-event
+# sends rather than a stalled queue. That is the behaviour we want, and the batch that
+# most needs splitting was the one that never reached it. 405/410 stay transient: they
+# usually indicate a misrouted or retired endpoint, which a deploy can fix.
+_PERMANENT_STATUSES = frozenset({400, 401, 402, 403, 404, 409, 413, 415, 422})
+
 
 def _is_permanent_failure(exc: Exception) -> bool:
-    """A Lago 4xx (bad request, validation error, duplicate transaction_id,
-    ...) will never succeed by retrying the exact same batch. A 5xx or a
-    network-level exception (timeout, connection error, no LagoApiError at
-    all) might — those stay retryable."""
-    return isinstance(exc, LagoApiError) and 400 <= exc.status < 500
+    """True when re-sending this exact batch can never succeed.
+
+    A validation 4xx (bad request, duplicate transaction_id, revoked key) will
+    fail identically forever, so it is isolated and dropped. Everything else —
+    5xx, a network-level exception (timeout, connection error, no LagoApiError at
+    all), and the throttling 4xxs 429/408 — might succeed later and stays
+    retryable. An unrecognized 4xx is treated as transient: waiting on an event
+    that would have been dropped costs a delay, dropping one that would have been
+    accepted costs revenue.
+    """
+    return isinstance(exc, LagoApiError) and exc.status in _PERMANENT_STATUSES
 
 
 logger = logging.getLogger("lago_agent_sdk.queue")
@@ -66,6 +95,8 @@ class EventQueue:
         self._stopping = threading.Event()
         self._backoff_seconds = 0.0
         self._http_calls = 0  # for tests
+        # Per-thread "already reporting an overflow" flag — see push().
+        self._reporting = threading.local()
 
         self._thread = threading.Thread(target=self._run, name="lago-queue", daemon=True)
         self._thread.start()
@@ -85,6 +116,7 @@ class EventQueue:
         self._buffer = deque()  # don't replay parent's events from the child
         self._backoff_seconds = 0.0
         self._http_calls = 0
+        self._reporting = threading.local()
         # Note: the PricingProvider self-heals on fork via a PID check inside
         # lookup()/maybe_refresh(); we deliberately do NOT call into it from this
         # fork handler (touching it here changes thread timing enough to trip
@@ -102,11 +134,45 @@ class EventQueue:
 
     def push(self, event: dict[str, Any]) -> None:
         with self._lock:
-            if len(self._buffer) >= self._max_buffer_size:
+            overflowed = len(self._buffer) >= self._max_buffer_size
+            if overflowed:
                 self._buffer.popleft()
-                logger.warning("lago queue overflow at %d events; dropping oldest", self._max_buffer_size)
             self._buffer.append(event)
             should_wake = len(self._buffer) >= self._max_batch_size
+        # Both of these run with the lock RELEASED, the same shape `should_wake`
+        # already used. Reporting inside the lock deadlocked the caller: `_lock` is a
+        # plain Lock, not an RLock, so a customer `on_error` that touched the SDK at
+        # all — emitting a diagnostic, forcing a flush — blocked forever on a lock its
+        # own thread already held. Overflow happens under sustained load, which is
+        # exactly when such a hook fires, and the failure is worse than the drop it
+        # reports: an unnoticed dropped event costs one event, a hung producer thread
+        # costs the application. The surrounding try/except cannot help, because a
+        # deadlock is not an exception.
+        #
+        # Keeping the callback out of the lock also stops a full buffer from running
+        # the hook plus a log write synchronously on the customer's LLM-call thread
+        # while holding the lock every producer and the drain thread need.
+        if overflowed and not getattr(self._reporting, "active", False):
+            # Re-entrancy guard, per thread. Moving the report out of the lock fixed
+            # the deadlock but exposed the other half: the buffer is full again by the
+            # time the hook runs, so a hook that calls `push()` overflows again and
+            # re-enters without bound. Suppressing the nested report breaks the cycle
+            # while still letting the hook's own event be buffered. Per-thread so one
+            # producer's hook can never silence another producer's report.
+            self._reporting.active = True
+            try:
+                logger.warning("lago queue overflow at %d events; dropping oldest", self._max_buffer_size)
+                # Also through on_error: an overflow drops BILLABLE events, and a
+                # customer watching only the error hook — the documented channel for
+                # every other billing gap — never learned revenue had been lost.
+                self._report_error(
+                    RuntimeError(
+                        f"queue overflow at {self._max_buffer_size} events; dropped the oldest event"
+                    ),
+                    "overflow",
+                )
+            finally:
+                self._reporting.active = False
         if should_wake:
             self._wake.set()
 
@@ -166,6 +232,13 @@ class EventQueue:
         for what's really one root cause.
         """
         self._report_error(batch_exc)
+        # Collected and re-queued ONCE at the end, not per event. `_replay_failed`
+        # prepends, so calling it inside the loop reversed the survivors' relative
+        # order: a 413 batch of a,b,c,d,e whose b,c,d fail transiently while isolated
+        # came back as d,c,b. FIFO is the queue's contract — it is what makes the
+        # oldest-dropped-first overflow policy and Lago's own event ordering
+        # meaningful — so a recovery path must not silently invert it.
+        retry: list[dict[str, Any]] = []
         for event in batch:
             try:
                 self._http_calls += 1
@@ -179,7 +252,9 @@ class EventQueue:
                     )
                 else:
                     logger.warning("lago send failed for isolated event, will retry: %s", exc)
-                    self._replay_failed([event])
+                    retry.append(event)
+        if retry:
+            self._replay_failed(retry)
 
     def _run(self) -> None:
         while not self._stopping.is_set():

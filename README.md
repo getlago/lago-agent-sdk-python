@@ -361,17 +361,6 @@ pip install -e '.[dev]'
 pytest
 ```
 
-Run live integration tests (requires real credentials):
-
-```bash
-AWS_BEARER_TOKEN_BEDROCK="..." \
-MISTRAL_API_KEY="..." \
-LAGO_API_URL="https://api.getlago.com/api/v1/" \
-LAGO_API_KEY="..." \
-LAGO_EXTERNAL_SUBSCRIPTION_ID="sub_..." \
-pytest tests/integration
-```
-
 ## Security
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md).

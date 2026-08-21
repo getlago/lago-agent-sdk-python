@@ -35,13 +35,11 @@ make test
 
 # Unit tests with coverage report
 uv run pytest tests/unit --cov=lago_agent_sdk --cov-report=term-missing
-
-# Integration tests (require credentials — see env vars in each test)
-AWS_BEARER_TOKEN_BEDROCK="..." \
-MISTRAL_API_KEY="..." \
-LAGO_API_URL="..." LAGO_API_KEY="..." LAGO_EXTERNAL_SUBSCRIPTION_ID="..." \
-uv run pytest tests/integration -q
 ```
+
+There is no committed live-provider test tier. Adapter behaviour is pinned by
+captured real responses under `tests/unit/adapters/fixtures/`, which is what the
+unit tests assert against; re-capture a fixture rather than hand-editing one.
 
 ## Linting and type checks
 
@@ -73,7 +71,6 @@ uv lock --upgrade-package X  # bump a single package
 - `src/lago_agent_sdk/gateway/` — second front door: gateway usage logs → `CanonicalUsage`, for backfill
 - `tests/unit/` — unit tests, organized to mirror `src/`
 - `tests/unit/adapters/fixtures/` — captured real provider responses, used by adapter tests
-- `tests/integration/` — live tests, gated on credential env vars
 
 ## Adding a provider
 
@@ -83,7 +80,6 @@ uv lock --upgrade-package X  # bump a single package
 4. Update `detector.py` to recognize the client class.
 5. Update `sdk.py::wrap()` to dispatch to the new wrapper.
 6. Add unit tests against the captured fixtures.
-7. Add a live integration test gated on the provider's API key env var.
 
 ## Adding a gateway
 
