@@ -268,14 +268,17 @@ def test_overflow_is_reported_through_on_error():
 
 
 # ----------------------------------------------------------------------
-# The throttling 4xxs. 429 and 408 sit inside the 400-499 range but mean "try
-# again, later" — classifying them as permanent dropped billable events and
-# aimed `max_batch_size` extra requests at a server that had just asked us to
-# slow down.
+# Which side of the permanent/transient line each 4xx belongs on. The test is
+# whether a DIFFERENT PAYLOAD is what it would take to succeed (permanent, so
+# `_send_individually` can split the batch and save what is savable) or whether
+# an OUT-OF-BAND change fixes it (transient, so the events must be held —
+# dropping them is unrecoverable, holding them is bounded by `max_buffer_size`).
+# See `_PERMANENT_STATUSES` for what each status cost when it was on the wrong
+# side, measured over a real socket.
 # ----------------------------------------------------------------------
-@pytest.mark.parametrize("status", [413, 402, 415])
+@pytest.mark.parametrize("status", [413])
 def test_batch_only_4xx_is_split_not_head_of_line_blocked(status: int):
-    """For these the SAME batch can never succeed, but its events can individually.
+    """For this one the SAME batch can never succeed, but its events can individually.
 
     Treating them as transient re-prepended the identical batch at the head of the FIFO
     and backed off to 60s forever, blocking everything behind it. Routing them to
@@ -351,6 +354,51 @@ def test_throttling_4xx_applies_backoff(status: int):
         q.shutdown(timeout=1.0)
 
 
+@pytest.mark.parametrize(
+    ("status", "cause"),
+    [
+        (401, "a rotated or revoked key"),
+        (403, "a key that lost its scope"),
+        (402, "an unpaid account"),
+        (404, "a mistyped api_url"),
+        (415, "a proxy rejecting the media type"),
+    ],
+)
+def test_out_of_band_4xx_is_held_until_it_heals(status: int, cause: str) -> None:
+    """None of these is a property of the BATCH, so dropping the events is unrecoverable
+    while holding them is not.
+
+    Each was in `_PERMANENT_STATUSES`, which routes to `_send_individually`: the batch
+    fails, every isolated send fails the same way, and each event is logged and dropped
+    for good. Measured over a real socket at a server returning 401 for 3s and then 200 —
+    the shape of a key being put back — all 5 events were destroyed inside the first
+    second and none ever reached Lago. Held, all 5 were delivered when it healed.
+
+    So this asserts recovery, not merely "not dropped": the events must survive the
+    outage AND still arrive, as one batch rather than fanned out per event.
+    """
+    attempts = {"n": 0}
+    delivered: list = []
+
+    def sender(batch):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise LagoApiError(status, cause)
+        delivered.extend(batch)  # the out-of-band fix lands
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        q.push({"id": "a"})
+        q.push({"id": "b"})
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not delivered:
+            time.sleep(0.05)
+        assert [e["id"] for e in delivered] == ["a", "b"], f"{cause}: events must survive it"
+        assert attempts["n"] == 2, "held as one batch, never fanned out into per-event sends"
+    finally:
+        q.shutdown(timeout=2.0)
+
+
 def test_unrecognized_4xx_is_treated_as_transient():
     """Only the enumerated validation statuses are permanent. An unfamiliar 4xx
     errs toward retrying: a needless delay costs latency, a wrong drop costs
@@ -375,7 +423,7 @@ def test_unrecognized_4xx_is_treated_as_transient():
         q.shutdown(timeout=2.0)
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 422])
+@pytest.mark.parametrize("status", [400, 409, 413, 422])
 def test_validation_4xx_still_isolates_and_drops(status: int):
     """The statuses that genuinely cannot succeed on a re-send keep the
     isolate-one-by-one behaviour, so a single bad transaction_id still doesn't

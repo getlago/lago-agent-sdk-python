@@ -31,36 +31,66 @@ from typing import Any
 
 from .exceptions import LagoApiError
 
-# Statuses where re-sending the SAME batch can never succeed: the request itself
-# is the problem (malformed body, bad credentials, a transaction_id Lago has
-# already accepted). Deliberately an explicit list rather than the 400-499 range,
-# because two 4xx statuses mean "try again, later": 429 (rate limited) and 408
-# (request timeout). Treating those as permanent dropped billable events AND fanned
-# one throttled batch out into up to `max_batch_size` extra requests aimed at the
-# server that had just asked us to slow down.
+# Statuses where re-sending the SAME batch can never succeed, because the BATCH is what
+# is wrong. Deliberately an explicit list, not the 400-499 range.
 #
-# 413/402/415 are in the set for the OPPOSITE reason to 429: re-sending the same batch
-# provably cannot succeed (too large, payment required, wrong media type), so treating
-# them as transient re-prepended the identical batch at the head of the FIFO and backed
-# off to 60s forever, blocking every event behind it until the buffer overflowed. Being
-# "permanent" here routes them to `_send_individually`, which SPLITS the batch and
-# delivers what is deliverable — so a 413 on a 100-event batch becomes 100 single-event
-# sends rather than a stalled queue. That is the behaviour we want, and the batch that
-# most needs splitting was the one that never reached it. 405/410 stay transient: they
-# usually indicate a misrouted or retired endpoint, which a deploy can fix.
-_PERMANENT_STATUSES = frozenset({400, 401, 402, 403, 404, 409, 413, 415, 422})
+# The test is: **is what makes this fail a property of the batch?** If a DIFFERENT
+# PAYLOAD is what it takes to succeed, the batch is doomed and belongs here, where
+# `_send_individually` splits it and delivers whatever is deliverable. If an OUT-OF-BAND
+# change fixes it — someone rotates a key back, pays an invoice, corrects a URL, fixes a
+# proxy — the events are still perfectly billable and must be HELD, because dropping
+# them is unrecoverable while holding them is bounded (`max_buffer_size`, oldest-first,
+# reported through `on_error`).
+#
+# Every line below was measured by driving this queue over a real socket at a server
+# returning that status, counting events actually delivered (`probes/t11_status_matrix`):
+#
+#   400  malformed body — a different payload is the only fix. PERMANENT.
+#   413  too large — the size IS the batch. Isolating it is a real recovery, not a
+#        formality: against an nginx-style server answering 413 over a byte limit and
+#        200 under it, the split path delivered 5 of 5. Held instead, it delivered 0 and
+#        stalled at the backoff ceiling forever. Not reachable from Lago itself — an
+#        oversized batch there answers 422 `too_many_events` (probed live, 20k events /
+#        3.5 MiB) — so this exists for `client_max_body_size` in front of Lago.
+#   409  a conflicting id. Lago answers 422 for a replayed `transaction_id`, not 409
+#        (probed live); 409 stays as defence against an intermediary that uses it.
+#   422  Lago's real answer for a duplicate id, an oversized batch and a bad
+#        content-type. PERMANENT — but note it reaches `_send_individually`, which is
+#        what lets the valid events in a batch survive one bad transaction_id.
+#
+# Everything else is transient, including these, which used to be here and lost money:
+#
+#   401/403  a rotated or revoked key. Measured with a server that healed after 3s —
+#            i.e. the key put back — classified permanent this destroyed all 5 events
+#            inside the first second, and none of them ever reached Lago. Held, all 5
+#            were delivered when it healed.
+#   402      payment required — a property of the ACCOUNT; it stops being true the
+#            moment someone pays. Measured against a 402 server: 5 events in, 6 HTTP
+#            calls out, 0 recoverable, one `on_error` for the lot.
+#   404      the endpoint, not the events: Lago answers 404 `resource_not_found` for a
+#            wrong PATH (probed live), which is a mistyped `api_url` — fixed out-of-band
+#            like a rotated key, and the same class as the 405/410 that were already
+#            transient here for exactly that reason. It was destroying every event.
+#   415      a wrong media type comes from a proxy, and splitting cannot help: this
+#            client always sends `application/json`, so every isolated send fails the
+#            same way — measured, all 5 dropped. Held, they survive the proxy being
+#            fixed. (Lago itself answers 422 to a bad content-type, probed live.)
+#   429/408  throttling — fanning a batch into N isolated sends aims more traffic at a
+#            server that just asked us to slow down.
+#
+# An unrecognized 4xx is transient too: waiting on an event that would have been dropped
+# costs a delay, dropping one that would have been accepted costs revenue.
+_PERMANENT_STATUSES = frozenset({400, 409, 413, 422})
 
 
 def _is_permanent_failure(exc: Exception) -> bool:
     """True when re-sending this exact batch can never succeed.
 
-    A validation 4xx (bad request, duplicate transaction_id, revoked key) will
-    fail identically forever, so it is isolated and dropped. Everything else —
-    5xx, a network-level exception (timeout, connection error, no LagoApiError at
-    all), and the throttling 4xxs 429/408 — might succeed later and stays
-    retryable. An unrecognized 4xx is treated as transient: waiting on an event
-    that would have been dropped costs a delay, dropping one that would have been
-    accepted costs revenue.
+    Only a malformed or unacceptable BATCH qualifies — see `_PERMANENT_STATUSES` for
+    the test and for what each status cost when it was on the wrong side of it.
+    Everything else (5xx, a network-level exception with no LagoApiError at all, a
+    credential or account or endpoint 4xx, an unrecognized 4xx) might succeed later
+    and stays retryable.
     """
     return isinstance(exc, LagoApiError) and exc.status in _PERMANENT_STATUSES
 
