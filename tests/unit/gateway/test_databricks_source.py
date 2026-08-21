@@ -77,6 +77,21 @@ _FAILED = {
     "status_code": "403",
 }
 
+# The BYOK half of the same thing. Shaped from the live table: a rejected external call
+# is logged with NULL tokens and — because the gateway never got far enough to resolve
+# one — an EMPTY `destination_model`.
+_FAILED_BYOK = {
+    "invocation_id": "inv-failed-byok",
+    "event_time": "2026-08-07 14:31:00",
+    "destination_type": "EXTERNAL_FOUNDATION_MODEL",
+    "destination_name": "workspace.default.anthropickey",
+    "destination_model": None,
+    "api_type": "anthropic/v1/messages",
+    "input_tokens": None,
+    "output_tokens": None,
+    "status_code": "403",
+}
+
 
 def _source(spend: list[dict], usage: list[dict]) -> DatabricksSource:
     """A source whose `query` answers from canned rows, keyed on which table."""
@@ -180,15 +195,28 @@ def test_read_usage_scopes_both_queries_to_one_shared_window() -> None:
         assert any(f"{column} < {c}" in sql for c in ceilings)
 
 
+def test_a_sub_hour_interval_collapses_to_an_empty_window() -> None:
+    """Both bounds floor to the same hour, so there is nothing left to read. Asserted
+    against a pinned clock: driving this through the real one makes the test pass or
+    fail on the current MINUTE — "30 minutes" spans two hours at 13:34 and one at
+    13:04, which is a coin flip in CI, not a property of the code."""
+    lower, upper = _window_bounds("30 minutes", now=_NOW)
+    assert lower == upper == datetime(2026, 8, 21, 13, 0, tzinfo=timezone.utc)
+
+
 def test_a_window_entirely_inside_the_open_hour_reads_nothing_and_says_so(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Excluding the open hour means a sub-hour window can resolve to nothing. Zero rows
+    """Excluding the open hour means such a window can resolve to nothing. Zero rows
     then says nothing about whether there was traffic, so it must not pass silently —
-    and it must not spend warehouse time either."""
+    and it must not spend warehouse time either.
+
+    `since` is half an hour AHEAD of the real clock so the guard fires whatever minute
+    this runs at; the collapse itself is pinned in the test above."""
     src = _source([], [])
+    inside_the_open_hour = datetime.now(timezone.utc) + timedelta(minutes=30)
     with caplog.at_level(logging.WARNING):
-        assert list(src.read_usage("30 minutes")) == []
+        assert list(src.read_usage(inside_the_open_hour)) == []
     assert src.queries == []  # type: ignore[attr-defined]
     assert "widen the window" in caplog.text
 
@@ -270,6 +298,32 @@ def test_failed_calls_yield_nothing() -> None:
     """403/404s are recorded with NULL token counts. Emitting them would bill an
     empty event for a call that never reached a provider."""
     assert list(_source([], [_FAILED]).read_usage("1 day")) == []
+
+
+def test_failed_byok_calls_do_not_enter_the_join_index(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rejected external call bought nothing, so Databricks meters no dollars for it
+    and its key can never match a spend row. Indexing it manufactures a bucket the
+    unbilled warning then tells the operator to re-run the window for — advice that can
+    never bill it, because there is nothing to bill."""
+    with caplog.at_level(logging.WARNING):
+        assert list(_source([], [_FAILED_BYOK]).read_usage("1 day")) == []
+    assert "NOT billed" not in caplog.text
+
+
+def test_the_unbilled_warning_counts_only_buckets_with_real_tokens(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The warning exists to name genuine spend-table lag. Live over 2026-08-06 it
+    reported 29 buckets of which 28 were failed calls, and the single example row it
+    showed the operator was one of them — so the one real lagging bucket was the thing
+    least likely to be read."""
+    lagging = {**_BYOK_USAGE, "invocation_id": "inv-lagging", "destination_model": "claude-opus-4-1"}
+    with caplog.at_level(logging.WARNING):
+        list(_source([], [_FAILED_BYOK, lagging]).read_usage("1 day"))
+    assert "1 BYOK token bucket(s)" in caplog.text
+    assert "model=claude-opus-4-1" in caplog.text
 
 
 def test_hosted_rows_keep_the_databricks_provider() -> None:

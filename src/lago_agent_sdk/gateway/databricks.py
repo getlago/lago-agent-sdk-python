@@ -486,6 +486,15 @@ class DatabricksSource:
         for row, u in extracted:
             if u.provider == "databricks":
                 continue
+            if not u.nonzero_numeric():
+                # A failed call carries NULL tokens and bought nothing, so Databricks
+                # meters no dollars for it — its key can never match a spend row. Indexed,
+                # it becomes a bucket the warning below tells the operator to re-run the
+                # window for, which can never bill it: measured live over 2026-08-06,
+                # 28 of the 29 reported buckets were these phantoms (all 83 zero-usage
+                # rows were 4xx/5xx), including the one example row the warning names.
+                # The hosted loop applies the same guard for the same reason.
+                continue
             key = (
                 _bucket_of(row.get("event_time")),
                 u.provider,
