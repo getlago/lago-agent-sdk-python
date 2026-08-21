@@ -128,6 +128,43 @@ def test_empty_or_absent_api_url_keeps_the_production_default(empty):
         sdk.shutdown(timeout=1.0)
 
 
+def test_a_discarded_empty_api_url_is_reported_not_swallowed():
+    """Falling back is right; falling back SILENTLY is the dangerous part.
+
+    `LagoConfig`'s default is PRODUCTION, so the fallback above means
+    `api_url=os.environ.get("LAGO_API_URL", "")` with the var unset points a CI job or a
+    developer holding a real production key at production Lago, which accepts every
+    event — and ingested events cannot be un-ingested."""
+    errors: list[tuple[Exception, str]] = []
+    sdk = LagoSDK(
+        api_key="k",
+        api_url="",
+        config=LagoConfig(api_key="k", on_error=lambda e, w: errors.append((e, w))),
+    )
+    try:
+        assert [w for _, w in errors] == ["config.api_url"]
+        # The message has to name where the events are actually going, or the report
+        # tells the reader nothing they can act on.
+        assert "api.getlago.com" in str(errors[0][0])
+    finally:
+        sdk.shutdown(timeout=1.0)
+
+
+def test_an_unpassed_api_url_is_not_reported():
+    """`None` means "the caller never mentioned api_url", which is the overwhelmingly
+    common case and not a mistake. Reporting it would train customers to ignore
+    `on_error` — the one channel the empty-string case above depends on."""
+    errors: list[tuple[Exception, str]] = []
+    sdk = LagoSDK(
+        api_key="k",
+        config=LagoConfig(api_key="k", on_error=lambda e, w: errors.append((e, w))),
+    )
+    try:
+        assert errors == []
+    finally:
+        sdk.shutdown(timeout=1.0)
+
+
 def test_default_api_url_is_still_production_when_nothing_is_passed():
     """Changing the parameter default to None must not change this."""
     sdk = LagoSDK(api_key="k")

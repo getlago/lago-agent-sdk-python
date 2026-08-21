@@ -14,11 +14,17 @@ Field mapping (`GET .../ai-gateway/gateways/{id}/logs` and the single-entry
 
 Cloudflare reports its OWN counter vocabulary here, not the provider's. Across all
 14 captured fixtures — Anthropic, Workers AI, Mistral and Gemini, via every ingress
-method — the only keys that ever appear are `input_tokens`, `output_tokens`,
-`total_tokens`, `input_cached_tokens`, `input_cache_creation_tokens`, `neurons`,
-`input_text_tokens` and `reasoningTokens`. Not one provider-native key shows up:
-no Anthropic `cache_read_input_tokens`, no Gemini `thoughtsTokenCount` or
+method — the keys that appear are `input_tokens`, `output_tokens`, `total_tokens`,
+`input_cached_tokens`, `input_cache_creation_tokens`, `neurons`, `input_text_tokens`
+and `reasoningTokens`. Not one provider-native key shows up: no Anthropic
+`cache_read_input_tokens`, no Gemini `thoughtsTokenCount` or
 `cachedContentTokenCount`.
+
+That list is a snapshot and has already been overtaken once: a live Logs API pull
+also returned `units`, which appears in none of the fixtures. Treat the enumeration
+as illustrative, not exhaustive — `_MAPPED_USAGE_KEYS` plus the drift sweep into
+`extras["usage_metadata"]` is what actually keeps an unrecognized counter from being
+lost, and it needs no re-audit to stay correct.
 
 That vocabulary is *mostly* snake_case, with `reasoningTokens` as a camelCase
 outlier — Cloudflare's own inconsistency, not a provider key leaking through
@@ -60,6 +66,47 @@ def _safe_int(v: Any) -> int:
 
 def _safe_str(v: Any) -> str:
     return v if isinstance(v, str) else ""
+
+
+# Every `usage_metadata` spelling this adapter accounts for: the ones `_first_int`
+# consults below, plus the three that are redundant with the top-level `tokens_in` /
+# `tokens_out` the adapter reads directly. Anything NOT in here is swept into
+# `extras["usage_metadata"]` rather than dropped — see the drift note on `extras`.
+#
+# Keep this in sync with the `_first_int` calls. It is the mechanism that makes the
+# module docstring's key enumeration self-maintaining instead of a hand-audited
+# snapshot: a spelling nobody has seen shows up in `extras` on its own.
+_MAPPED_USAGE_KEYS = frozenset(
+    {
+        # cache_read
+        "input_cached_tokens",
+        "inputCachedTokens",
+        "cachedContentTokenCount",
+        "cache_read_input_tokens",
+        # cache_write
+        "input_cache_creation_tokens",
+        "inputCacheCreationTokens",
+        "cache_creation_input_tokens",
+        # reasoning
+        "reasoningTokens",
+        "reasoning_tokens",
+        "thoughtsTokenCount",
+        # Read from the top level instead, so not drift when they appear here.
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+    }
+)
+
+
+def _unmapped_usage(usage_meta: dict[str, Any]) -> dict[str, Any]:
+    """Any `usage_metadata` key this adapter does not account for, wrapped for `extras`.
+
+    Returns an empty dict when everything was recognized, so the key is absent rather
+    than present-and-empty in the overwhelmingly common case.
+    """
+    unmapped = {k: v for k, v in usage_meta.items() if k not in _MAPPED_USAGE_KEYS}
+    return {"usage_metadata": unmapped} if unmapped else {}
 
 
 def _first_int(meta: dict[str, Any], *names: str) -> int:
@@ -173,6 +220,23 @@ def extract_cloudflare_log(entry: dict[str, Any]) -> CanonicalUsage:
             "cached": entry.get("cached"),
             "step": entry.get("step"),
             "log_id": entry.get("id"),
+            # Drift sweep — the same contract `adapters/openai_native.py` enforces, and
+            # for the same reason: a counter this adapter does not map must not vanish
+            # without an error or an on_error. `extras` used to be exactly the three
+            # keys above, so `usage_metadata` got no sweep at all, and that was not
+            # hypothetical — a live Logs API pull found `neurons` (Cloudflare's Workers
+            # AI billing unit) and `units` (a cost quantity) being dropped on every row,
+            # and `units` appears in NO captured fixture, so the hand-maintained
+            # enumeration had already drifted past what this file claimed to know. A
+            # money-relevant counter going missing this way surfaces first as a
+            # reconciliation gap, not as a failure.
+            #
+            # NESTED, not merged flat into `extras`: the poller reads `extras["cached"]`
+            # to decide whether to skip billing a request Cloudflare served for free, so
+            # a future `usage_metadata` key called `cached` or `step` must not be able to
+            # shadow it. Omitted entirely when there is no drift, to keep the common case
+            # identical to what callers already see.
+            **_unmapped_usage(usage_meta),
         },
     )
 

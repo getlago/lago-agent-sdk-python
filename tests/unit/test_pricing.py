@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import time
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -2038,3 +2039,113 @@ def test_workers_ai_compat_prefix_is_defined_exactly_once() -> None:
         f"expected one definition, found {definitions}"
     )
     assert WORKERS_AI_COMPAT_PREFIX == "workers-ai/"
+
+
+# ----------------------------------------------------------------------
+# prime() vs the TTL, and per-source backoff after a failed fetch.
+#
+# Both are about the same thing: pricing refresh runs on the queue's background
+# thread, AHEAD of the drain, so wasted work there delays real billing events.
+# ----------------------------------------------------------------------
+class _FailingFetcher(StubFetcher):
+    """StubFetcher whose Cloudflare fetch raises, like a bad CLOUDFLARE_API_TOKEN."""
+
+    def fetch_cloudflare_workers_ai(self) -> dict[str, ModelPrice]:
+        self.cloudflare_workers_ai_calls += 1
+        raise RuntimeError("HTTP 401 Unauthorized")
+
+
+def test_prime_respects_the_ttl_instead_of_refetching_every_tick() -> None:
+    """`prime()` used to set the stale flag unconditionally, so the TTL never applied
+    on this path at all — and `prime()` is reached from `_auto_prime_pricing_for` on a
+    matching `wrap()` and from `warm_pricing()`, both of which a server can run per
+    request. That re-downloaded the ~400-model OpenRouter catalogue on essentially
+    every flush tick, on the thread the queue drains events from."""
+    fetcher = StubFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    for _ in range(4):
+        p.prime()
+        p.maybe_refresh()
+    assert fetcher.openrouter_calls == 1
+
+
+def test_prime_still_warms_a_table_that_has_aged_past_the_ttl() -> None:
+    """The TTL gate must not become a permanent lock-out: once a table is genuinely
+    stale, priming has to flag it again or prices freeze at the first fetch forever."""
+    fetcher = StubFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=0)
+    for _ in range(3):
+        p.prime()
+        p.maybe_refresh()
+    assert fetcher.openrouter_calls == 3
+
+
+def test_a_failed_pricing_fetch_backs_off_instead_of_retrying_every_tick() -> None:
+    """Only the success path used to clear a source's stale flag, so a bad credential
+    re-attempted on every single tick — each attempt costing up to the 10s `_get_json`
+    timeout, and each one reported, ahead of the drain."""
+    errors: list[str] = []
+    fetcher = _FailingFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600, on_error=lambda e, w: errors.append(w))
+    for _ in range(5):
+        p.prime(providers=["workers-ai"])
+        p.maybe_refresh()
+    assert fetcher.cloudflare_workers_ai_calls == 1
+    assert errors == ["pricing.fetch_cloudflare_workers_ai"]
+    assert p._in_backoff("cloudflare_workers_ai")
+
+
+def test_a_failed_pricing_source_recovers_after_its_backoff_window() -> None:
+    """This is a backoff, not a permanent give-up. A rotated-back credential has to
+    start working again on its own — the same reasoning that makes a 401 transient in
+    the event queue."""
+    fetcher = _FailingFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p.prime(providers=["workers-ai"])
+    p.maybe_refresh()
+    assert fetcher.cloudflare_workers_ai_calls == 1
+
+    # Expire the window rather than sleeping through it.
+    p._failure_backoff_until["cloudflare_workers_ai"] = time.time() - 0.001
+    p.prime(providers=["workers-ai"])
+    p.maybe_refresh()
+    assert fetcher.cloudflare_workers_ai_calls == 2
+
+
+def test_one_broken_pricing_source_does_not_delay_the_healthy_ones() -> None:
+    """Backoff is tracked per source precisely so a single bad credential cannot hold
+    up the other tables — the reason this is a dict and not one global timestamp."""
+    fetcher = _FailingFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p.prime(providers=["workers-ai"])
+    p.maybe_refresh()
+    assert fetcher.cloudflare_workers_ai_calls == 1
+    assert fetcher.openrouter_calls == 1
+    assert not p._in_backoff("openrouter")
+
+
+def test_a_successful_fetch_clears_an_earlier_backoff() -> None:
+    """Otherwise the window keeps doubling across unrelated failures and a healthy
+    source inherits a minute-long delay from an outage that already ended."""
+    fetcher = StubFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p._note_failure("openrouter")
+    p._note_failure("openrouter")
+    assert p._in_backoff("openrouter")
+    p._note_success("openrouter")
+    assert not p._in_backoff("openrouter")
+    # And the next failure restarts at 1s rather than resuming at 4s.
+    p._note_failure("openrouter")
+    assert p._failure_backoff_seconds["openrouter"] == 1.0
+
+
+def test_pricing_backoff_growth_matches_the_queues_and_is_capped() -> None:
+    """Same 1→2→4→…→60s shape as the event queue's send backoff. The cap is what makes
+    a permanently-dead source settle into one attempt a minute instead of growing
+    without bound and effectively never retrying."""
+    p = PricingProvider(fetcher=StubFetcher(), ttl_seconds=3600)
+    seq = []
+    for _ in range(8):
+        p._note_failure("openrouter")
+        seq.append(p._failure_backoff_seconds["openrouter"])
+    assert seq == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]

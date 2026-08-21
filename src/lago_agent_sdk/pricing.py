@@ -55,6 +55,11 @@ from .canonical import WORKERS_AI_COMPAT_PREFIX, CanonicalUsage
 
 logger = logging.getLogger("lago_agent_sdk.pricing")
 
+# Ceiling for a pricing source's post-failure backoff — the same 60s cap the event
+# queue uses for send retries, so a persistently-broken credential settles into one
+# attempt a minute instead of one per flush tick.
+_MAX_PRICING_BACKOFF_SECONDS = 60.0
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
 AWS_PRICING_HOST = "https://pricing.us-east-1.amazonaws.com"
 AWS_BEDROCK_REGION_INDEX = f"{AWS_PRICING_HOST}/offers/v1.0/aws/AmazonBedrock/current/region_index.json"
@@ -1102,6 +1107,9 @@ class PricingProvider:
         # ever requiring a separate LagoConfig.mistral_api_key.
         self._mistral_api_key_override: str | None = None
         self._refreshing: set[str] = set()
+        # Per-source post-failure backoff — see `_in_backoff`.
+        self._failure_backoff_until: dict[str, float] = {}
+        self._failure_backoff_seconds: dict[str, float] = {}
 
     def _heal_fork(self) -> None:
         """Self-heal after a fork: a lock copied from the parent may be held by a
@@ -1143,14 +1151,61 @@ class PricingProvider:
         cold-start cost. Unknown provider names are silently ignored (no
         source is warmed) rather than raising, since this is a hint, not a
         contract."""
+        # Gated on "is this table actually cold?", NOT unconditional. `prime()` is called
+        # from `_auto_prime_pricing_for` on a matching `wrap()` and from `warm_pricing()`,
+        # both of which a server can run per request — and flagging an in-TTL table stale
+        # meant the ~400-model OpenRouter catalogue was re-downloaded on essentially every
+        # flush tick, so `pricing_ttl_seconds` never applied on this path at all. Measured
+        # against the live catalogue with the shipped 1-hour TTL: 4 prime()+maybe_refresh()
+        # cycles produced 4 full downloads where 1 was correct.
+        #
+        # "Cold" is the same test `lookup()` already uses — no table, or past the TTL — so
+        # priming and looking up cannot disagree about what needs fetching.
         with self._lock:
-            self._openrouter_stale = True
+            if self._is_cold(self._openrouter, self._openrouter_fetched):
+                self._openrouter_stale = True
             for p in providers:
                 key = (p or "").lower()
                 if key == "workers-ai":
-                    self._cloudflare_stale = True
+                    if self._is_cold(self._cloudflare_workers_ai, self._cloudflare_fetched):
+                        self._cloudflare_stale = True
                 elif key == "mistral":
-                    self._mistral_stale = True
+                    if self._is_cold(self._mistral_aliases, self._mistral_fetched):
+                        self._mistral_stale = True
+
+    def _is_cold(self, table: Any, fetched_at: float) -> bool:
+        """True when a table needs fetching: absent, or older than the TTL.
+
+        Caller must hold `self._lock`.
+        """
+        return table is None or (time.time() - fetched_at) >= self._ttl
+
+    def _in_backoff(self, source: str) -> bool:
+        """True while `source` is inside its post-failure backoff window.
+
+        A failed fetch used to leave its stale flag set and nothing else, so the next tick
+        retried immediately — every tick, forever, with no delay, each attempt costing up
+        to the 10s `_get_json` timeout, all of it on the queue thread AHEAD of the drain.
+        Measured with a bad Cloudflare token: 5 ticks produced 5 real requests and 5
+        `on_error` reports.
+
+        Same 1→2→4→…→60s shape as the queue's own send backoff, tracked per source so one
+        bad credential cannot delay the three healthy tables.
+        """
+        with self._lock:
+            return time.time() < self._failure_backoff_until.get(source, 0.0)
+
+    def _note_failure(self, source: str) -> None:
+        with self._lock:
+            prev = self._failure_backoff_seconds.get(source, 0.0)
+            nxt = 1.0 if prev == 0.0 else min(prev * 2, _MAX_PRICING_BACKOFF_SECONDS)
+            self._failure_backoff_seconds[source] = nxt
+            self._failure_backoff_until[source] = time.time() + nxt
+
+    def _note_success(self, source: str) -> None:
+        with self._lock:
+            self._failure_backoff_seconds.pop(source, None)
+            self._failure_backoff_until.pop(source, None)
 
     def learn_mistral_api_key(self, api_key: str) -> None:
         """Adopt a Mistral API key discovered from a wrapped client, so
@@ -1226,16 +1281,36 @@ class PricingProvider:
         ):
             return
         with self._lock:
-            do_openrouter = self._openrouter_stale and "openrouter" not in self._refreshing
+            now = time.time()
+
+            def _ready(source: str) -> bool:
+                # Inlined rather than calling `_in_backoff`, which takes the lock we hold.
+                return now >= self._failure_backoff_until.get(source, 0.0)
+
+            do_openrouter = (
+                self._openrouter_stale and "openrouter" not in self._refreshing and _ready("openrouter")
+            )
             if do_openrouter:
                 self._refreshing.add("openrouter")
-            do_cloudflare = self._cloudflare_stale and "cloudflare_workers_ai" not in self._refreshing
+            do_cloudflare = (
+                self._cloudflare_stale
+                and "cloudflare_workers_ai" not in self._refreshing
+                and _ready("cloudflare_workers_ai")
+            )
             if do_cloudflare:
                 self._refreshing.add("cloudflare_workers_ai")
-            do_mistral = self._mistral_stale and "mistral_aliases" not in self._refreshing
+            do_mistral = (
+                self._mistral_stale
+                and "mistral_aliases" not in self._refreshing
+                and _ready("mistral_aliases")
+            )
             if do_mistral:
                 self._refreshing.add("mistral_aliases")
-            regions = [r for r in self._bedrock_stale if f"bedrock:{r}" not in self._refreshing]
+            regions = [
+                r
+                for r in self._bedrock_stale
+                if f"bedrock:{r}" not in self._refreshing and _ready(f"bedrock:{r}")
+            ]
             for r in regions:
                 self._refreshing.add(f"bedrock:{r}")
 
@@ -1246,7 +1321,9 @@ class PricingProvider:
                     self._openrouter = table
                     self._openrouter_fetched = time.time()
                     self._openrouter_stale = False
+                self._note_success("openrouter")
             except Exception as exc:  # noqa: BLE001
+                self._note_failure("openrouter")
                 self._report(exc, "pricing.fetch_openrouter")
             finally:
                 with self._lock:
@@ -1259,7 +1336,9 @@ class PricingProvider:
                     self._cloudflare_workers_ai = table_cf
                     self._cloudflare_fetched = time.time()
                     self._cloudflare_stale = False
+                self._note_success("cloudflare_workers_ai")
             except Exception as exc:  # noqa: BLE001
+                self._note_failure("cloudflare_workers_ai")
                 self._report(exc, "pricing.fetch_cloudflare_workers_ai")
             finally:
                 with self._lock:
@@ -1274,7 +1353,9 @@ class PricingProvider:
                     self._mistral_aliases = aliases
                     self._mistral_fetched = time.time()
                     self._mistral_stale = False
+                self._note_success("mistral_aliases")
             except Exception as exc:  # noqa: BLE001
+                self._note_failure("mistral_aliases")
                 self._report(exc, "pricing.fetch_mistral_aliases")
             finally:
                 with self._lock:
@@ -1287,7 +1368,9 @@ class PricingProvider:
                     self._bedrock[r] = table
                     self._bedrock_fetched[r] = time.time()
                     self._bedrock_stale.discard(r)
+                self._note_success(f"bedrock:{r}")
             except Exception as exc:  # noqa: BLE001
+                self._note_failure(f"bedrock:{r}")
                 self._report(exc, "pricing.fetch_bedrock")
             finally:
                 with self._lock:
