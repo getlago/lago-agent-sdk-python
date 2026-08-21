@@ -56,6 +56,27 @@ _STATEMENTS_PATH = "/api/2.0/sql/statements"
 _INTERVAL_RE = re.compile(r"^\s*(\d{1,5})\s+(second|minute|hour|day|week)s?\s*$", re.I)
 
 
+def _raise_for_api_error(resp: Any, what: str) -> None:
+    """Raise with the API's own error text when a Statement Execution call is not OK.
+
+    Deliberately NOT `raise_for_status()`: Databricks puts the useful part in the BODY
+    (`{"error_code": "PERMISSION_DENIED", "message": "... does not have required scopes:
+    sql"}`) and `requests` shows only the status line. The `403 does not have required
+    scopes: sql` that this class's docstring warns operators about is the error most
+    likely to hit a first-time setup, so it is the one that must read clearly.
+
+    Truncated because these bodies can carry a multi-KB `details` array.
+    """
+    status = getattr(resp, "status_code", 200)
+    if 200 <= int(status) < 300:
+        return
+    try:
+        detail = json.dumps(resp.json())
+    except ValueError:
+        detail = getattr(resp, "text", "") or "<no body>"
+    raise RuntimeError(f"Databricks {what} failed: HTTP {status}: {detail[:500]}")
+
+
 @dataclass
 class DatabricksUsageRow:
     """One billable row, already shaped for `emit()`.
@@ -216,6 +237,7 @@ class DatabricksSource:
             },
             timeout=self.timeout,
         )
+        _raise_for_api_error(resp, "statement submission")
         body = resp.json()
         body = self._await_statement(body, headers)
 
@@ -227,14 +249,45 @@ class DatabricksSource:
         total_chunks = int(manifest.get("total_chunk_count") or 1)
         statement_id = body.get("statement_id")
         for index in range(1, total_chunks):
-            chunk = requests.get(
+            chunk_resp = requests.get(
                 f"{self.host}{_STATEMENTS_PATH}/{statement_id}/result/chunks/{index}",
                 headers=headers,
                 timeout=self.timeout,
-            ).json()
-            arrays.extend(chunk.get("data_array") or [])
+            )
+            # THE check this whole method exists for. A failed chunk fetch returns a JSON
+            # error body with no `data_array`, so `or []` would append zero rows, the loop
+            # would continue, and `query()` would return a PARTIAL result reporting
+            # success — measured live: a 403/404/503 on chunk 1 of 2 silently dropped 25%
+            # of the window. Billing a fraction of a window with no error is the single
+            # worst outcome this reader can produce, so it must raise.
+            _raise_for_api_error(chunk_resp, f"result chunk {index} of {total_chunks}")
+            arrays.extend((chunk_resp.json()).get("data_array") or [])
         if total_chunks > 1:
             logger.info("lago: databricks result spanned %d chunks (%d rows)", total_chunks, len(arrays))
+
+        # End-to-end truncation check, independent of cause: catches a short read that no
+        # per-request status could reveal (a chunk that returns HTTP 200 with fewer rows
+        # than promised, a manifest/chunk disagreement). `total_row_count` is absent on
+        # some statement kinds, so only assert when Databricks actually stated a count.
+        promised = manifest.get("total_row_count")
+        if promised is not None and int(promised) != len(arrays):
+            raise RuntimeError(
+                f"Databricks returned {len(arrays)} row(s) but the manifest promised "
+                f"{int(promised)} across {total_chunks} chunk(s) — refusing to bill a "
+                f"partial window (statement_id={statement_id})"
+            )
+        # A row set with no column names decodes to `{}` per row, which every layer
+        # downstream degrades cleanly and wrongly on: all-zero usage, and a confident
+        # `{"cost": 0, "tokens": 0}` for a window that had real traffic. Not observed on
+        # this API (every SELECT returns a full schema, zero-row reads included) — this
+        # guards the decode, not a known bug. Deliberately keeps `strict=False` on the
+        # zip below: a length mismatch is an API-contract violation the row-count check
+        # above already catches, and strict=True would newly reject reads that work today.
+        if arrays and not columns:
+            raise RuntimeError(
+                "Databricks returned rows with no `manifest.schema.columns` — cannot "
+                f"decode {len(arrays)} row(s) (statement_id={statement_id})"
+            )
 
         return [dict(zip(columns, row, strict=False)) for row in arrays]
 
@@ -265,11 +318,18 @@ class DatabricksSource:
                     f"(statement_id={statement_id}); raise `timeout` or narrow the window"
                 )
             time.sleep(2.0)
-            body = requests.get(
+            poll = requests.get(
                 f"{self.host}{_STATEMENTS_PATH}/{statement_id}",
                 headers=headers,
                 timeout=self.timeout,
-            ).json()
+            )
+            # This path already failed loudly without a status check — a non-OK body has
+            # no `status.state`, so the loop's own `state not in (PENDING, RUNNING)` branch
+            # raised. Checking here only changes WHAT the operator reads: the real cause
+            # ("Invalid access token", "statement expired") instead of
+            # `Databricks statement None: {...}`.
+            _raise_for_api_error(poll, "statement poll")
+            body = poll.json()
 
     # ------------------------------------------------------------------
     # Reading

@@ -214,8 +214,9 @@ def test_hosted_rows_keep_the_databricks_provider() -> None:
 # Chunked results — the silent-truncation guard
 # --------------------------------------------------------------------------
 class _FakeResponse:
-    def __init__(self, payload: dict) -> None:
+    def __init__(self, payload: dict, status_code: int = 200) -> None:
         self._payload = payload
+        self.status_code = status_code
 
     def json(self) -> dict:
         return self._payload
@@ -257,6 +258,107 @@ def test_query_zips_columns_and_follows_every_chunk(monkeypatch: pytest.MonkeyPa
     ]
     assert [u.rsplit("/", 1)[-1] for u in fetched] == ["1", "2"]
     assert all(u.startswith("https://x/api/2.0/sql/statements/stmt-1/result/chunks/") for u in fetched)
+
+
+def test_query_raises_when_a_chunk_fetch_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed chunk fetch must NOT be swallowed into a short row set.
+
+    The error body carries no `data_array`, so `or []` would append nothing, the loop
+    would move to the next index, and `query()` would return a partial window reporting
+    success. Measured against a live warehouse: a 403 on chunk 1 of 2 returned 6,750 of
+    9,000 rows with no exception — 25% of the window billed as if it were all of it.
+    """
+    import requests
+
+    first = {
+        "statement_id": "stmt-1",
+        "status": {"state": "SUCCEEDED"},
+        "manifest": {
+            "schema": {"columns": [{"name": "invocation_id"}, {"name": "input_tokens"}]},
+            "total_chunk_count": 2,
+        },
+        "result": {"data_array": [["a", "1"]]},
+    }
+    # exactly what the API returns for an expired statement / revoked token mid-read
+    denied = {"error_code": "PERMISSION_DENIED", "message": "does not have required scopes: sql"}
+
+    monkeypatch.setattr(requests, "post", lambda url, **_kw: _FakeResponse(first))
+    monkeypatch.setattr(requests, "get", lambda url, **_kw: _FakeResponse(denied, status_code=403))
+
+    src = DatabricksSource(host="https://x/", token="t", warehouse_id="w")
+    with pytest.raises(RuntimeError) as excinfo:
+        src.query("SELECT 1")
+    message = str(excinfo.value)
+    assert "result chunk 1 of 2" in message
+    # the operator must see the API's own cause, not just a status line
+    assert "does not have required scopes: sql" in message
+
+
+def test_query_raises_when_the_row_count_misses_the_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A chunk that returns HTTP 200 with fewer rows than promised is still truncation.
+    No per-request status check can catch that, so the assembled count is compared with
+    `manifest.total_row_count` before any of it is billed."""
+    import requests
+
+    first = {
+        "statement_id": "stmt-1",
+        "status": {"state": "SUCCEEDED"},
+        "manifest": {
+            "schema": {"columns": [{"name": "invocation_id"}]},
+            "total_chunk_count": 2,
+            "total_row_count": 3,
+        },
+        "result": {"data_array": [["a"]]},
+    }
+    monkeypatch.setattr(requests, "post", lambda url, **_kw: _FakeResponse(first))
+    # HTTP 200, but one row short of the promised three
+    monkeypatch.setattr(requests, "get", lambda url, **_kw: _FakeResponse({"data_array": [["b"]]}))
+
+    src = DatabricksSource(host="https://x/", token="t", warehouse_id="w")
+    with pytest.raises(RuntimeError, match=r"returned 2 row\(s\) but the manifest promised 3"):
+        src.query("SELECT 1")
+
+
+def test_query_raises_when_rows_arrive_with_no_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rows with no column names zip to `{}` each, which every layer downstream degrades
+    cleanly and wrongly on — all-zero usage and a confident `{"cost": 0, "tokens": 0}`
+    for a window that had real traffic. Not observed on this API; guards the decode."""
+    import requests
+
+    first = {
+        "statement_id": "stmt-1",
+        "status": {"state": "SUCCEEDED"},
+        "manifest": {"total_chunk_count": 1},
+        "result": {"data_array": [["a"], ["b"]]},
+    }
+    monkeypatch.setattr(requests, "post", lambda url, **_kw: _FakeResponse(first))
+
+    src = DatabricksSource(host="https://x/", token="t", warehouse_id="w")
+    with pytest.raises(RuntimeError, match="no `manifest.schema.columns`"):
+        src.query("SELECT 1")
+
+
+def test_query_error_carries_the_api_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-OK submission used to surface as `Databricks statement None: {...}` — the
+    state was absent, so the poll loop's own guard raised with a misleading prefix. The
+    cause was in the body all along; name it."""
+    import requests
+
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda url, **_kw: _FakeResponse(
+            {"error_code": "NOT_FOUND", "message": "The warehouse w was not found."},
+            status_code=404,
+        ),
+    )
+    src = DatabricksSource(host="https://x/", token="t", warehouse_id="w")
+    with pytest.raises(RuntimeError) as excinfo:
+        src.query("SELECT 1")
+    message = str(excinfo.value)
+    assert "statement submission failed: HTTP 404" in message
+    assert "The warehouse w was not found." in message
+    assert "statement None" not in message
 
 
 def test_query_raises_on_a_failed_statement(monkeypatch: pytest.MonkeyPatch) -> None:
