@@ -37,7 +37,7 @@ import logging
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..canonical import CanonicalUsage
@@ -51,8 +51,11 @@ logger = logging.getLogger("lago_agent_sdk.gateway.databricks")
 
 _STATEMENTS_PATH = "/api/2.0/sql/statements"
 
-# `since` as an interval string is interpolated into SQL, so it is validated
-# strictly rather than escaped — only a bare count plus a unit is ever accepted.
+# An interval string no longer reaches SQL at all — `_window_bounds` resolves it to an
+# instant and `_timestamp_sql` renders the literal — but it stays validated strictly
+# rather than loosely parsed. Only a bare count plus a unit is accepted: a window quietly
+# read as something other than what the caller wrote under-reads, and under-reading is
+# the one direction that loses money.
 _INTERVAL_RE = re.compile(r"^\s*(\d{1,5})\s+(second|minute|hour|day|week)s?\s*$", re.I)
 
 
@@ -166,24 +169,82 @@ class DatabricksUsageRow:
         return f"{self.prefix}_{self.kind}_{subscription or 'none'}_{self.row_id}"
 
 
-def _interval_sql(since: str | datetime) -> str:
-    """Render a window as a SQL predicate value. Rejects anything unrecognized."""
+def _as_utc(moment: datetime) -> datetime:
+    """A naive datetime is taken as UTC; an aware one is CONVERTED, never reformatted.
+
+    Databricks stores `event_time`/`usage_start_time` in UTC, so formatting an aware
+    datetime as-is would emit local wall time and a Europe/Paris caller would read a
+    window two hours in the future, bill nothing, and report success. Same rule as
+    `_epoch` below and as `sdk.py`'s event timestamps, and the same rule the JS port's
+    `Date` arithmetic follows.
+    """
+    return (
+        moment.astimezone(timezone.utc) if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+    )
+
+
+def _floor_hour(moment: datetime) -> datetime:
+    """The start of the hour containing `moment`.
+
+    Distinct from `_truncate_hour`, which trims a timestamp STRING to build a join key.
+    This one moves an instant, and it decides what gets read at all.
+    """
+    return moment.replace(minute=0, second=0, microsecond=0)
+
+
+def _timestamp_sql(moment: datetime) -> str:
+    """Render an instant as a zone-explicit SQL TIMESTAMP literal.
+
+    The `+00:00` is not decoration. A bare `TIMESTAMP '2026-08-07 13:00:00'` is parsed
+    in the warehouse's own `spark.sql.session.timeZone`, so on a workspace set to
+    anything but UTC the identical literal names a different instant and the whole
+    window slides by that offset. Verified live: the suffixed form is accepted and
+    resolves to the same epoch as the bare form under this warehouse's `Etc/UTC`.
+    """
+    return f"TIMESTAMP '{moment.strftime('%Y-%m-%d %H:%M:%S')}+00:00'"
+
+
+def _window_bounds(since: str | datetime, *, now: datetime | None = None) -> tuple[datetime, datetime]:
+    """Resolve the read window to ONE pair of instants, both floored to the hour.
+
+    Rejects anything unrecognized. Three money bugs live in leaving any part of this
+    to SQL, all three measured on real gateway tables:
+
+      * **Two statements, two windows.** `current_timestamp() - INTERVAL 1 DAY` is a
+        SQL *string*, so it is re-evaluated per statement — 5.1s of drift measured
+        between the spend read and the usage read. Spend runs first, so the usage
+        window is the narrower one, and a hosted row in the gap is read by neither
+        statement. Hosted is billed from `usage` alone, so that row is simply lost.
+      * **The boundary hour.** `external_model_spend` is an hourly aggregate whose
+        `usage_start_time` is always the hour START (65 of 65 rows). Compared against
+        a mid-hour bound, the hour CONTAINING that bound fails the predicate while its
+        usage rows pass: live, a `since` of 13:30 read 11 of 65 spend rows and dropped
+        $0.1256 of $0.1723, while still reading 35 BYOK usage rows from inside the
+        hour it dropped. Flooring is what makes the two tables agree on one window.
+      * **The open hour.** A spend row cannot be complete before its hour closes (the
+        08:00–09:00 row appeared ~7 min AFTER 09:00). Billing it early bills a
+        fraction of the hour under that hour's `record_id`, and the corrected re-run
+        is then rejected by Lago as a duplicate `transaction_id` — so the remainder is
+        never billed at all. Hence the upper bound, and hence both tables get it: a
+        window whose halves cover different hours is the first bug again.
+
+    Flooring the lower bound can read rows slightly older than the caller asked for.
+    That is deliberate: every `transaction_id` is derived from the source row, so a row
+    already billed is rejected as a duplicate and one not billed yet SHOULD be.
+    Under-reading is the only direction that loses money.
+    """
+    moment = _as_utc(now) if now is not None else datetime.now(timezone.utc)
     if isinstance(since, datetime):
-        # Databricks stores `event_time`/`usage_start_time` in UTC, so an aware
-        # datetime must be CONVERTED, not formatted as-is: `strftime` would emit local
-        # wall time and a Europe/Paris caller would read a window two hours in the
-        # future, bill nothing, and report success. A naive datetime is taken as UTC,
-        # which is also what the JS port's `toISOString()` does with a Date.
-        moment = since.astimezone(timezone.utc) if since.tzinfo is not None else since
-        return f"TIMESTAMP '{moment.strftime('%Y-%m-%d %H:%M:%S')}'"
-    m = _INTERVAL_RE.match(str(since))
-    if not m:
-        raise ValueError(
-            f"since={since!r} not understood — pass a datetime, or a string like "
-            "'7 days' / '24 hours' / '30 minutes'"
-        )
-    count, unit = m.group(1), m.group(2).upper()
-    return f"current_timestamp() - INTERVAL {count} {unit}"
+        lower = _as_utc(since)
+    else:
+        m = _INTERVAL_RE.match(str(since))
+        if not m:
+            raise ValueError(
+                f"since={since!r} not understood — pass a datetime, or a string like "
+                "'7 days' / '24 hours' / '30 minutes'"
+            )
+        lower = moment - timedelta(**{f"{m.group(2).lower()}s": int(m.group(1))})
+    return _floor_hour(lower), _floor_hour(moment)
 
 
 class DatabricksSource:
@@ -372,8 +433,31 @@ class DatabricksSource:
 
         Rows whose usage is entirely zero (failed calls are recorded with NULL token
         counts) are skipped, so nothing emits an empty event.
+
+        Reads **whole closed hours only**: the window is floored to the hour at both
+        ends and the current, still-aggregating hour is excluded, because a spend row
+        for it cannot be complete yet. `_window_bounds` documents why each of those
+        three properties is load-bearing. The practical consequence for a caller is
+        that the newest hour of traffic arrives on the NEXT run, so pass a window
+        comfortably wider than your run interval — this reader keeps no cursor.
         """
-        window = _interval_sql(since)
+        lower, upper = _window_bounds(since)
+        if lower >= upper:
+            # Not an error, but it must not read as success either: the caller asked
+            # for a window that lies entirely inside the hour this reader excludes, so
+            # zero rows here says nothing about whether there was traffic.
+            logger.warning(
+                "lago: since=%r resolves to [%s, %s), which is empty — the window falls "
+                "inside the current, still-aggregating hour that this reader excludes. "
+                "Nothing was read; widen the window past the hour boundary.",
+                since,
+                lower.isoformat(),
+                upper.isoformat(),
+            )
+            return
+        # One pair of literals, both statements — see `_window_bounds`. Resolving the
+        # bounds here rather than in SQL is what makes the two reads the same window.
+        window, ceiling = _timestamp_sql(lower), _timestamp_sql(upper)
 
         spend = self.query(f"""
             SELECT record_id,
@@ -383,12 +467,12 @@ class DatabricksSource:
                    to_json(custom_tags.request_tags)    AS request_tags,
                    usage_quantity
             FROM system.ai_gateway.external_model_spend
-            WHERE usage_start_time >= {window}
+            WHERE usage_start_time >= {window} AND usage_start_time < {ceiling}
         """)
 
         usage = self.query(f"""
             SELECT * FROM system.ai_gateway.usage
-            WHERE event_time >= {window}
+            WHERE event_time >= {window} AND event_time < {ceiling}
             ORDER BY event_time
         """)
 

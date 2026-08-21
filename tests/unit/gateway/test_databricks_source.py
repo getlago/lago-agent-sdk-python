@@ -8,14 +8,21 @@ it (`manifest.schema.columns` plus a positional `data_array`, one chunk inline).
 from __future__ import annotations
 
 import json
+import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 
 from lago_agent_sdk import CanonicalUsage, LagoSDK
-from lago_agent_sdk.gateway.databricks import DatabricksSource, DatabricksUsageRow, _interval_sql
+from lago_agent_sdk.gateway.databricks import (
+    DatabricksSource,
+    DatabricksUsageRow,
+    _floor_hour,
+    _timestamp_sql,
+    _window_bounds,
+)
 
 # --------------------------------------------------------------------------
 # Fake rows, in the exact shapes the two tables return
@@ -88,14 +95,49 @@ def _source(spend: list[dict], usage: list[dict]) -> DatabricksSource:
 # --------------------------------------------------------------------------
 # The window
 # --------------------------------------------------------------------------
-def test_interval_strings_render_to_sql() -> None:
-    assert _interval_sql("1 day") == "current_timestamp() - INTERVAL 1 DAY"
-    assert _interval_sql("36 hours") == "current_timestamp() - INTERVAL 36 HOUR"
-    assert _interval_sql("30 minutes") == "current_timestamp() - INTERVAL 30 MINUTE"
+_NOW = datetime(2026, 8, 21, 13, 34, 12, tzinfo=timezone.utc)
+
+
+def test_interval_strings_resolve_to_instants_not_sql() -> None:
+    """Resolved in Python, so both statements can share one bound. A `current_timestamp()`
+    expression is re-evaluated per statement and the two reads then cover different
+    windows — measured 5.1s apart, and a hosted row in the gap is billed by neither."""
+    assert _window_bounds("1 day", now=_NOW) == (
+        datetime(2026, 8, 20, 13, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 21, 13, 0, tzinfo=timezone.utc),
+    )
+    assert _window_bounds("36 hours", now=_NOW)[0] == datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+    assert _window_bounds("2 weeks", now=_NOW)[0] == datetime(2026, 8, 7, 13, 0, tzinfo=timezone.utc)
 
 
 def test_datetime_window_renders_as_a_literal() -> None:
-    assert _interval_sql(datetime(2026, 8, 7, 14, 0, 0)) == "TIMESTAMP '2026-08-07 14:00:00'"
+    assert _timestamp_sql(datetime(2026, 8, 7, 14, 0, 0)) == "TIMESTAMP '2026-08-07 14:00:00+00:00'"
+
+
+def test_the_window_is_floored_to_the_hour_at_both_ends() -> None:
+    """`external_model_spend` is an hourly aggregate whose `usage_start_time` is always
+    the hour start (65 of 65 live rows), so a mid-hour bound drops the hour CONTAINING
+    it while the usage table still yields that hour's rows. Live: `since` of 13:30 read
+    11 of 65 spend rows, dropping $0.1256 of $0.1723, and still read 35 BYOK usage rows
+    from inside the dropped hour."""
+    lower, upper = _window_bounds(datetime(2026, 8, 7, 13, 30, 45, tzinfo=timezone.utc), now=_NOW)
+    assert lower == datetime(2026, 8, 7, 13, 0, tzinfo=timezone.utc)
+    assert upper == datetime(2026, 8, 21, 13, 0, tzinfo=timezone.utc)
+
+
+def test_the_still_aggregating_hour_is_excluded() -> None:
+    """A spend row cannot be complete before its hour closes — the 08:00–09:00 row
+    appeared ~7 min AFTER 09:00. Billing the open hour bills a fraction of it under
+    that hour's `record_id`, and Lago then rejects the corrected re-run as a duplicate
+    `transaction_id`, so the remainder is never billed."""
+    assert _window_bounds("1 day", now=_NOW)[1] == _floor_hour(_NOW) < _NOW
+
+
+def test_timestamp_literals_name_their_zone() -> None:
+    """A bare literal is parsed in the warehouse's `spark.sql.session.timeZone`, so on a
+    non-UTC workspace the same literal names a different instant and the window slides
+    by the offset. Verified live that the suffixed form is accepted."""
+    assert _timestamp_sql(_NOW).endswith("+00:00'")
 
 
 @pytest.mark.parametrize(
@@ -109,19 +151,46 @@ def test_datetime_window_renders_as_a_literal() -> None:
     ],
 )
 def test_unrecognized_window_is_refused_not_interpolated(bad: str) -> None:
-    """The window reaches SQL by interpolation, so validation is the only thing
-    standing between a caller's string and the warehouse. Anything but a bare
-    count-plus-unit is refused outright."""
+    """Anything but a bare count-plus-unit is refused outright. The string no longer
+    reaches SQL — the bound is resolved to an instant first — so this is no longer an
+    injection guard; it is what stops a window being quietly read as something other
+    than what the caller wrote."""
     with pytest.raises(ValueError, match="not understood"):
-        _interval_sql(bad)
+        _window_bounds(bad)
 
 
-def test_read_usage_scopes_both_queries_to_the_window() -> None:
+def test_read_usage_scopes_both_queries_to_one_shared_window() -> None:
+    """The point of resolving the bounds in Python: both statements must carry the SAME
+    two literals. Two `current_timestamp()` expressions drift, and the read that runs
+    second covers the narrower window — a hosted row in the gap is lost, since hosted
+    is billed from `usage` alone."""
     src = _source([], [])
+    before = _floor_hour(datetime.now(timezone.utc))
     list(src.read_usage("3 days"))
+    after = _floor_hour(datetime.now(timezone.utc))
     assert len(src.queries) == 2  # type: ignore[attr-defined]
-    for sql in src.queries:  # type: ignore[attr-defined]
-        assert "current_timestamp() - INTERVAL 3 DAY" in sql
+    spend, usage = src.queries  # type: ignore[attr-defined]
+    assert "current_timestamp()" not in spend and "current_timestamp()" not in usage
+    ceilings = {_timestamp_sql(before), _timestamp_sql(after)}
+    for sql, column in ((spend, "usage_start_time"), (usage, "event_time")):
+        lower = _timestamp_sql(before - timedelta(days=3))
+        assert (
+            f"{column} >= {lower}" in sql or f"{column} >= {_timestamp_sql(after - timedelta(days=3))}" in sql
+        )
+        assert any(f"{column} < {c}" in sql for c in ceilings)
+
+
+def test_a_window_entirely_inside_the_open_hour_reads_nothing_and_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Excluding the open hour means a sub-hour window can resolve to nothing. Zero rows
+    then says nothing about whether there was traffic, so it must not pass silently —
+    and it must not spend warehouse time either."""
+    src = _source([], [])
+    with caplog.at_level(logging.WARNING):
+        assert list(src.read_usage("30 minutes")) == []
+    assert src.queries == []  # type: ignore[attr-defined]
+    assert "widen the window" in caplog.text
 
 
 # --------------------------------------------------------------------------
@@ -657,12 +726,12 @@ def test_an_aware_datetime_window_is_converted_to_utc() -> None:
     against Databricks' UTC columns — a window two hours in the future that reads
     nothing and reports success. Also the JS port converts, so this kept the two repos
     reading different windows from the same input."""
-    from datetime import timedelta, timezone
-
     paris = timezone(timedelta(hours=2))
-    assert _interval_sql(datetime(2026, 8, 11, 14, 0, 0, tzinfo=paris)) == "TIMESTAMP '2026-08-11 12:00:00'"
+    aware = _window_bounds(datetime(2026, 8, 11, 14, 0, 0, tzinfo=paris), now=_NOW)[0]
+    assert _timestamp_sql(aware) == "TIMESTAMP '2026-08-11 12:00:00+00:00'"
     # Naive is taken as UTC, matching the JS port's Date handling.
-    assert _interval_sql(datetime(2026, 8, 11, 14, 0, 0)) == "TIMESTAMP '2026-08-11 14:00:00'"
+    naive = _window_bounds(datetime(2026, 8, 11, 14, 0, 0), now=_NOW)[0]
+    assert _timestamp_sql(naive) == "TIMESTAMP '2026-08-11 14:00:00+00:00'"
 
 
 def test_datetime_timestamp_columns_still_bucket_and_reconcile() -> None:

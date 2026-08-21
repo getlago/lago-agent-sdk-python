@@ -38,7 +38,7 @@ _subscription_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 def _to_epoch_seconds(value: int | float | datetime) -> int:
     """A caller-supplied event time as the unix seconds Lago's `timestamp` wants."""
     if isinstance(value, datetime):
-        # A naive datetime is taken as UTC — the same rule `_interval_sql` documents
+        # A naive datetime is taken as UTC — the same rule `_as_utc` documents
         # for the window bound, so a caller who reads a window and bills it cannot
         # have the two disagree by their machine's UTC offset.
         moment = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)

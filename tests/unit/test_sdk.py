@@ -403,7 +403,7 @@ def test_emit_accepts_epoch_seconds() -> None:
 
 
 def test_a_naive_timestamp_is_read_as_utc() -> None:
-    """Same rule as `_interval_sql`'s window bound, and the same rule the JS port
+    """Same rule as `_as_utc`'s window bound, and the same rule the JS port
     applies to a `Date` — otherwise a caller who reads a window and bills it has the
     two disagree by their machine's UTC offset."""
     sdk, received = _new_sdk(default_sub="sub")

@@ -235,6 +235,8 @@ sdk.flush()
 
 Pass a `datetime` instead of `"7 days"` for an exact lower bound, and `unified=True` to bill the whole window to `default_subscription` regardless of per-call tags.
 
+The window reads **whole closed hours only**: it is floored to the hour at both ends and the current, still-aggregating hour is excluded, because `external_model_spend` is an hourly aggregate whose row for an hour does not exist until that hour closes. So the newest hour of traffic arrives on the next run — pass a window comfortably wider than your run interval, since this reader keeps no cursor.
+
 Unlike Cloudflare's single paginated GET, this one is worth having in the SDK — hand-rolling it is ~100 lines with three money-losing traps in them. The Statement Execution API returns only **chunk 0** inline, so a wide window silently truncates and bills a fraction of it with no error. A BYOK call appears in **both** `ai_gateway.usage` and `external_model_spend`, so billing both charges twice. And `transaction_id` is unique account-wide, so an unscoped row id blocks that row from ever reaching a second subscription.
 
 To inspect a window before billing it, or to route rows yourself, read them directly — each row is already shaped for `emit()`:
