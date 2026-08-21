@@ -499,6 +499,81 @@ def test_workers_ai_provider_inferred_from_both_spellings(requested: str) -> Non
             30,
             "tool_calls excluded",
         ),
+        # --- gateway SURFACES that re-shape every vendor (_OPENAI_SHAPED_APIS) ---
+        # Real shape from system.ai_gateway.usage: input CONTAINS cache_read even for
+        # Anthropic, whose own API reports it additively. Keying on the vendor billed
+        # 48,798 tokens against 31,091 consumed on a real backfill (1.570x). The honest
+        # total is the table's own total_tokens, i.e. input + output.
+        (
+            CanonicalUsage(
+                input=1822,
+                output=4,
+                cache_read=1812,
+                provider="anthropic",
+                api="databricks_gateway",
+                model="m",
+            ),
+            1826,
+            "databricks_gateway folds cache_read into input for every vendor",
+        ),
+        # The write half of the same shape — the overlap no provider-keyed set covers,
+        # because no vendor's native API reports cache_write inside input.
+        (
+            CanonicalUsage(
+                input=1825,
+                output=4,
+                cache_write=1812,
+                provider="anthropic",
+                api="databricks_gateway",
+                model="m",
+            ),
+            1829,
+            "databricks_gateway folds cache_write into input too",
+        ),
+        # Hosted Databricks models bill as TOKEN COUNTS (TOKEN_BILLED_PROVIDERS), so
+        # this path IS the bill. Latent today (0 of 96 hosted rows carry cache) and a
+        # direct 1.991x over-bill the day one does.
+        (
+            CanonicalUsage(
+                input=1825,
+                output=4,
+                cache_read=1812,
+                provider="databricks",
+                api="databricks_gateway",
+                model="m",
+            ),
+            1829,
+            "hosted databricks rows carry the surface's shape, not a vendor's",
+        ),
+        # A vendor the surface set must NOT reach: reasoning is inside output here even
+        # though gemini reports thoughts additively on its own API.
+        (
+            CanonicalUsage(
+                input=500,
+                output=200,
+                reasoning=50,
+                provider="gemini",
+                api="databricks_gateway",
+                model="m",
+            ),
+            700,
+            "databricks_gateway folds reasoning into output for every vendor",
+        ),
+        # Cloudflare is deliberately NOT in _OPENAI_SHAPED_APIS: measured on real logs,
+        # an anthropic entry reads input=10, output=4, total=14 with cache OUTSIDE that
+        # total. Adding it to the set would UNDER-bill by the cached portion.
+        (
+            CanonicalUsage(
+                input=10,
+                output=4,
+                cache_read=3429,
+                provider="anthropic",
+                api="cloudflare_gateway",
+                model="m",
+            ),
+            3443,
+            "cloudflare preserves each vendor's native shape",
+        ),
     ],
 )
 def test_deoverlapped_token_total(usage: CanonicalUsage, expected: int, why: str) -> None:
@@ -995,8 +1070,12 @@ def test_money_golden_cases() -> None:
         price = ModelPrice(source="openrouter", **prices)
         # `provider` is optional and defaults to a name in no _INCLUDES_ set, so
         # the pre-existing cases keep their original semantics; cases that pin
-        # per-provider token semantics set it explicitly.
-        usage = CanonicalUsage(model="m", provider=c.get("provider", "p"), api="native", **c["counts"])
+        # per-provider token semantics set it explicitly. `api` defaults to
+        # "native" for the same reason — only the cases pinning a gateway
+        # surface's own token shape (_OPENAI_SHAPED_APIS) set it.
+        usage = CanonicalUsage(
+            model="m", provider=c.get("provider", "p"), api=c.get("api", "native"), **c["counts"]
+        )
         b = compute_cost(usage, price, Decimal(c["markup"]))
         assert b.base == c["base"], f"{c['name']}: base {b.base} != {c['base']}"
         assert b.total == c["total"], f"{c['name']}: total {b.total} != {c['total']}"

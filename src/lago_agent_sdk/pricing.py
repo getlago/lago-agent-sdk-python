@@ -105,6 +105,32 @@ _INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini", "workers-ai", "mistr
 # guard, and Cloudflare hosts reasoning models (deepseek-r1, qwen, glm).
 _OUTPUT_INCLUDES_REASONING = frozenset({"openai", "workers-ai"})
 
+# Gateway SURFACES that re-report every vendor's usage in the OpenAI shape: `input`
+# already contains cache_read AND cache_write, and `output` already contains
+# reasoning, no matter which vendor actually served the call.
+#
+# This keys on `CanonicalUsage.api` rather than the provider because on a gateway
+# it is the SURFACE that decides the shape, and a surface row reuses the live
+# vendor names. A `provider="anthropic"` row read from Databricks' system table
+# needs the correction; a `provider="anthropic"` response from Anthropic's own API
+# must NOT get it. The vendor name cannot tell those two apart, so it is the wrong
+# key — unlike "workers-ai" above, which names a vendor reachable through exactly
+# one surface and so works as a provider entry.
+#
+# Measured on `system.ai_gateway.usage`, 246 rows across 6 vendors: `total_tokens
+# == input + output` for EVERY vendor group, with cache_read and cache_write inside
+# input and reasoning inside output. Anthropic's own API reports the exact opposite
+# (cache_read=3962 against input=9, additive), which is why keying on the vendor
+# over-billed a real backfill 1.570x — 48,798 tokens reported against 31,091
+# consumed, the excess being exactly cache_read + cache_write.
+#
+# Cloudflare AI Gateway is deliberately ABSENT: its logs preserve each vendor's
+# native shape instead of normalising them. A real Anthropic entry there reads
+# input=10, output=4, total=14 with input_cached_tokens=3429 sitting OUTSIDE that
+# total — additive, exactly like the native API — so the provider-keyed sets are
+# already right for it and adding it here would UNDER-bill the cached portion.
+_OPENAI_SHAPED_APIS = frozenset({"databricks_gateway"})
+
 # Providers this SDK bills as TOKEN COUNTS by design, even in price mode — because
 # no per-token rate for them exists anywhere the SDK could read it.
 #
@@ -344,6 +370,28 @@ class CostBreakdown:
     fields: dict[str, dict[str, str]]  # field -> {tokens, unit_price, cost}
 
 
+def _token_semantics(usage: Any) -> tuple[bool, bool, bool]:
+    """Which of a record's subsets are ALREADY inside their parent count.
+
+    Returns ``(input_includes_cache_read, input_includes_cache_write,
+    output_includes_reasoning)``, the three overlaps the billing paths have to
+    remove. The SURFACE wins over the vendor: a gateway that re-reports usage in
+    its own shape has already decided the convention, so `api` is checked first
+    and the provider-keyed sets only answer for a native call.
+
+    `cache_write` is surface-only by design and has no provider set to consult:
+    Anthropic is the one vendor whose native API bills cache writes at all, and it
+    reports them additively, so no native response needs the correction.
+    """
+    provider = (getattr(usage, "provider", "") or "").lower()
+    shaped = (getattr(usage, "api", "") or "").lower() in _OPENAI_SHAPED_APIS
+    return (
+        shaped or provider in _INPUT_INCLUDES_CACHE_READ,
+        shaped,
+        shaped or provider in _OUTPUT_INCLUDES_REASONING,
+    )
+
+
 def compute_cost(usage: CanonicalUsage, price: ModelPrice, markup: Decimal) -> CostBreakdown:
     """Compute ``Σ(unit_price × count) × markup`` for the priced fields present.
 
@@ -351,18 +399,24 @@ def compute_cost(usage: CanonicalUsage, price: ModelPrice, markup: Decimal) -> C
     call whose only counts are unpriced yields total "0" so it stays accounted
     for.
     """
-    provider = (usage.provider or "").lower()
     counts = {f: (getattr(usage, f, 0) or 0) for f in PRICED_FIELDS}
-    # Remove double-counting where a provider's `input`/`output` already include
-    # a separately-listed subset (see the _INCLUDES_ sets above):
+    # Remove double-counting where the reported `input`/`output` already include a
+    # separately-listed subset (see `_token_semantics` and the sets above):
     #   • reasoning ⊆ output  → bill it as output only (drop the separate line).
     #   • cache_read ⊆ input  → bill the cached portion at the cache-read rate,
     #     so subtract it from input (only when a cache_read price exists; with no
     #     cache price the cached tokens stay in input at the prompt rate).
-    if provider in _OUTPUT_INCLUDES_REASONING:
+    #   • cache_write ⊆ input → same treatment, on the surfaces that report it
+    #     that way. Only one of cache_read/cache_write is non-zero on a given
+    #     Databricks row, but both are subtracted unconditionally so a surface
+    #     that does report both at once still reconciles.
+    inc_cache_read, inc_cache_write, inc_reasoning = _token_semantics(usage)
+    if inc_reasoning:
         counts["reasoning"] = 0
-    if provider in _INPUT_INCLUDES_CACHE_READ and price.get("cache_read") is not None:
+    if inc_cache_read and price.get("cache_read") is not None:
         counts["input"] = max(0, counts["input"] - counts["cache_read"])
+    if inc_cache_write and price.get("cache_write") is not None:
+        counts["input"] = max(0, counts["input"] - counts["cache_write"])
 
     base = Decimal(0)
     fields: dict[str, dict[str, str]] = {}
@@ -401,16 +455,18 @@ def _finalize_breakdown(
 
 
 def deoverlapped_token_total(usage: Any) -> int:
-    """Total tokens a call actually consumed, with per-provider overlaps removed.
+    """Total tokens a call actually consumed, with the reported overlaps removed.
 
     Sums the same PRICED_FIELDS the split cost path emits one event each for, so
     the single-event `unit` equals the sum of the split path's `unit`s instead of
-    reporting a different basis. Both `_INCLUDES_` sets are applied, because a
-    subset counted twice inflates the reported quantity exactly as it would inflate
-    a price:
+    reporting a different basis. Every overlap `_token_semantics` reports is
+    applied, because a subset counted twice inflates the reported quantity exactly
+    as it would inflate a price:
 
-      * reasoning ⊆ output for providers in _OUTPUT_INCLUDES_REASONING
-      * cache_read ⊆ input  for providers in _INPUT_INCLUDES_CACHE_READ
+      * reasoning   ⊆ output — providers in _OUTPUT_INCLUDES_REASONING, or any
+        row from a surface in _OPENAI_SHAPED_APIS
+      * cache_read  ⊆ input  — providers in _INPUT_INCLUDES_CACHE_READ, likewise
+      * cache_write ⊆ input  — surfaces in _OPENAI_SHAPED_APIS only
 
     Deliberately NOT gated on a unit price existing, unlike `compute_cost`'s
     subtraction — this is a token count, so whether a rate happens to be published
@@ -424,12 +480,14 @@ def deoverlapped_token_total(usage: Any) -> int:
     a breakdown OF `cache_write`, so including any of them would not be a token
     total. This mirrors price mode's documented five-field scope.
     """
-    provider = (getattr(usage, "provider", "") or "").lower()
     counts = {f: (getattr(usage, f, 0) or 0) for f in PRICED_FIELDS}
-    if provider in _OUTPUT_INCLUDES_REASONING:
+    inc_cache_read, inc_cache_write, inc_reasoning = _token_semantics(usage)
+    if inc_reasoning:
         counts["reasoning"] = 0
-    if provider in _INPUT_INCLUDES_CACHE_READ:
+    if inc_cache_read:
         counts["cache_read"] = 0
+    if inc_cache_write:
+        counts["cache_write"] = 0
     return sum(int(v or 0) for v in counts.values())
 
 
