@@ -7,6 +7,7 @@ from lago_agent_sdk.adapters import (
     extract_bedrock_invoke,
     extract_openai_native,
 )
+from lago_agent_sdk.gateway.adapters import extract_databricks_log
 
 
 def test_converse_unknown_top_level_usage_field_goes_to_extras():
@@ -205,3 +206,73 @@ def test_unaccounted_total_still_recovers_tokens_nobody_broke_out() -> None:
     u = extract_openai_native(resp)
     assert u.output == 47 + 1149
     assert u.extras["unaccounted_output_tokens"] == 1149
+
+
+# ----------------------------------------------------------------------
+# Databricks gateway adapter — the same guarantee inside `token_details`
+# ----------------------------------------------------------------------
+
+
+def test_databricks_gateway_token_details_drift_reaches_extras() -> None:
+    """`token_details` is a STRUCT read by name, so an added field is invisible.
+
+    Measured against the live table with the struct evolved by two fields: 119 real
+    tokens reached neither a numeric field nor `extras`. The column is the one place
+    this table publishes per-token-kind counts, so drift there is money-relevant by
+    construction — a new cache tier or modality lands nowhere else.
+    """
+    row = {
+        "destination_type": "EXTERNAL_FOUNDATION_MODEL",
+        "api_type": "anthropic/v1/messages",
+        "destination_model": "claude-sonnet-4-5",
+        "input_tokens": 1825,
+        "output_tokens": 4,
+        "token_details": {
+            "cache_read_input_tokens": 1812,
+            "cache_read_5m_input_tokens": 77,
+            "output_audio_tokens": 42,
+        },
+    }
+    u = extract_databricks_log(row)
+    assert u.extras["token_details.cache_read_5m_input_tokens"] == 77
+    assert u.extras["token_details.output_audio_tokens"] == 42
+    # Never MISCOUNTED as a metric we do map — that would bill an unclassified count
+    # at a rate nobody chose for it.
+    assert u.cache_read == 1812 and u.cache_write == 0 and u.reasoning == 0
+
+
+def test_databricks_gateway_mapped_token_details_do_not_pollute_extras() -> None:
+    """The mirror: a nested key we DO map must not also appear in extras, or every
+    event carries a duplicate of a count already billed."""
+    row = {
+        "destination_type": "EXTERNAL_FOUNDATION_MODEL",
+        "api_type": "openai/v1/chat/completions",
+        "destination_model": "gpt-4o",
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "token_details": {
+            "cache_read_input_tokens": 40,
+            "cache_creation_input_tokens": 0,
+            "output_reasoning_tokens": 20,
+        },
+    }
+    u = extract_databricks_log(row)
+    assert u.cache_read == 40 and u.reasoning == 20
+    assert not [k for k in u.extras if k.startswith("token_details.")]
+
+
+def test_databricks_gateway_token_details_drift_survives_the_json_string_path() -> None:
+    """Schema evolution arrives over the REST path as a longer JSON STRING, which is
+    how `DatabricksSource.query` reads every STRUCT column — measured on the live
+    warehouse, `token_details` is a `str` there, never a dict. A sweep that only
+    worked on driver-native dicts would miss the exact path the backfill uses."""
+    row = {
+        "destination_type": "PAY_PER_TOKEN_FOUNDATION_MODEL",
+        "destination_name": "system.ai.gpt-oss-20b",
+        "input_tokens": "300",
+        "output_tokens": "12",
+        "token_details": '{"output_reasoning_tokens":"9","output_audio_tokens":"42"}',
+    }
+    u = extract_databricks_log(row)
+    assert u.reasoning == 9
+    assert u.extras["token_details.output_audio_tokens"] == "42"
