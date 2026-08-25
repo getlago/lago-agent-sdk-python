@@ -1,0 +1,11 @@
+{
+  "END_TIME": "1787680800.000000000 1440",
+  "INFERENCE_REGION": "aws",
+  "MODEL_NAME": "claude-sonnet-4-5",
+  "QUERY_TAG": null,
+  "REQUEST_ID": "495b6590-858f-4cf1-b4b4-775b440ca057",
+  "START_TIME": "1787677200.000000000 1440",
+  "TOKENS": "322",
+  "TOKENS_GRANULAR": "{\n  \"input\": 60,\n  \"output\": 262\n}",
+  "USER_ID": "1"
+}

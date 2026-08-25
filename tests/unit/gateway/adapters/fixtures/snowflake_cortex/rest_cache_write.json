@@ -1,0 +1,11 @@
+{
+  "END_TIME": "1787684400.000000000 1440",
+  "INFERENCE_REGION": "",
+  "MODEL_NAME": "claude-sonnet-4-5",
+  "QUERY_TAG": null,
+  "REQUEST_ID": "7d1649a5-1460-4786-acac-5dd74666d9c7",
+  "START_TIME": "1787680800.000000000 1440",
+  "TOKENS": "4698",
+  "TOKENS_GRANULAR": "{\n  \"cache_write_input\": 4684,\n  \"input\": 8,\n  \"output\": 6\n}",
+  "USER_ID": "1"
+}
