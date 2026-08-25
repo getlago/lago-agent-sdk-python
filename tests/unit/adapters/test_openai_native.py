@@ -350,6 +350,47 @@ def test_total_tokens_guard_recovers_unaccounted_output() -> None:
     assert u.extras["unaccounted_output_tokens"] == 1149
 
 
+def test_total_tokens_guard_does_not_fold_an_additive_cache_write() -> None:
+    """The payload shape raised in review on PY #14: a proxy reporting cache-creation
+    tokens outside `prompt_tokens` but inside `total_tokens`. It was answered
+    "unreachable on the three surfaces we have", which was true at the time —
+    Snowflake Cortex then shipped the same class of payload with `cached_tokens`.
+    Accounted for now whether or not a live surface reports it this way, because
+    `cache_write_tokens` is deliberately never mapped to CanonicalUsage.cache_write
+    and so has no other route into the accounting."""
+    u = extract_openai_native(
+        {
+            "usage": {
+                "prompt_tokens": 13,
+                "completion_tokens": 4,
+                "total_tokens": 1829,
+                "prompt_tokens_details": {"cache_write_tokens": 1812},
+            }
+        }
+    )
+    assert u.output == 4, "was 1816"
+    assert "unaccounted_output_tokens" not in u.extras
+    assert u.extras["prompt_tokens_details.cache_write_tokens"] == 1812
+
+
+def test_total_tokens_guard_still_recovers_a_remainder_beside_a_cache_count() -> None:
+    """The two corrections must not cancel each other: an additive cache block AND
+    hidden thinking tokens in the same payload. 20 + 5 + 100 = 125 accounted,
+    total 200, so 75 are real unreported output and must still fold."""
+    u = extract_openai_native(
+        {
+            "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 5,
+                "total_tokens": 200,
+                "prompt_tokens_details": {"cached_tokens": 100},
+            }
+        }
+    )
+    assert u.output == 80
+    assert u.extras["unaccounted_output_tokens"] == 75
+
+
 def test_total_tokens_guard_is_a_noop_for_genuine_openai() -> None:
     """For real OpenAI total_tokens == prompt + completion always holds, because
     reasoning is a SUBSET of completion rather than additive. Verified across
@@ -381,3 +422,63 @@ def test_total_tokens_guard_ignores_a_negative_delta() -> None:
     u = extract_openai_native({"usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 10}})
     assert u.output == 50
     assert "unaccounted_output_tokens" not in u.extras
+
+
+# --------------------------------------------------------------------------
+# Snowflake Cortex — an OpenAI-wire endpoint with ADDITIVE cache
+#
+# Cortex answers on `/api/v2/cortex/v1/chat/completions` with OpenAI's exact
+# payload shape, so this adapter serves it — but it does NOT follow OpenAI's
+# token convention. Captured live 2026-08-25 by capture_snowflake_cortex.py;
+# never hand-edit these numbers, recapture instead.
+# --------------------------------------------------------------------------
+def test_snowflake_cortex_plain_call() -> None:
+    """No cache: total reconciles to prompt + completion, guard never fires."""
+    model_id, resp = _load("11_snowflake_cortex_plain_chat.json")
+    u = extract_openai_native(resp, model_id=model_id, provider_hint="snowflake")
+    assert u.input == 21
+    assert u.output == 4
+    assert u.cache_read == 0
+    assert u.provider == "snowflake"
+    assert u.api == "chat_completions"
+    assert "unaccounted_output_tokens" not in u.extras
+
+
+def test_snowflake_cortex_cached_tokens_are_additive() -> None:
+    """THE regression. 7 + 4805 + 6 = 4818, so under the old accounting (input +
+    output + reasoning only) the 4,805 cached tokens looked unaccounted and were
+    folded into `output`: 4,811 reported for a call that generated 6, while the
+    same tokens also shipped as cache_read — 2.0x on the call, 800x on the output
+    line. Revert the cache subtraction in openai_native.py and this fails on
+    `output`.
+
+    This exact hazard was raised in review on PY #14 (2026-08-17) and answered
+    "measured 0 on all three surfaces we have" — true then. Cortex is the surface
+    that did not exist yet."""
+    model_id, resp = _load("12_snowflake_cortex_cache_chat.json")
+    usage = resp["usage"]
+    assert usage["prompt_tokens"] + 4805 + usage["completion_tokens"] == usage["total_tokens"]
+
+    u = extract_openai_native(resp, model_id=model_id, provider_hint="snowflake")
+    assert u.input == 7
+    assert u.output == 6, "NOT 4811"
+    assert u.cache_read == 4805
+    assert u.cache_write == 0
+    assert u.reasoning == 0
+    assert "unaccounted_output_tokens" not in u.extras
+
+
+def test_snowflake_cortex_keeps_the_customers_model_spelling() -> None:
+    """A Cortex fine-tune answers as `database.schema.model`. CanonicalUsage.model
+    keeps it verbatim — normalising here would report a model the customer cannot
+    find in their own Snowflake account."""
+    u = extract_openai_native(
+        {
+            "model": "mydb.myschema.my_tuned_model",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+        },
+        model_id="mydb.myschema.my_tuned_model",
+        provider_hint="snowflake",
+    )
+    assert u.model == "mydb.myschema.my_tuned_model"
+    assert u.provider == "snowflake"
