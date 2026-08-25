@@ -10,6 +10,7 @@ import pytest
 
 from lago_agent_sdk import CanonicalUsage
 from lago_agent_sdk.gateway.adapters import extract_cloudflare_log, resolve_subscription
+from lago_agent_sdk.gateway.adapters.cloudflare_gateway import _MAPPED_USAGE_KEYS
 from lago_agent_sdk.pricing import compute_cost, lookup_openrouter, parse_openrouter
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "cloudflare_gateway"
@@ -462,3 +463,152 @@ def test_provider_native_cache_and_reasoning_spellings_are_accepted() -> None:
         }
     )
     assert both.cache_read == 11
+
+
+# ----------------------------------------------------------------------
+# Drift contract for `usage_metadata`.
+#
+# `extras` used to be a fixed three-key dict, so any counter this adapter did not map
+# was silently dropped. That was not hypothetical: a live Logs API pull found `neurons`
+# and `units` vanishing on every row, and `units` appears in no captured fixture — the
+# hand-maintained enumeration in the module docstring had already drifted past reality.
+# Same contract `test_drift.py` pins for the native adapters.
+# ----------------------------------------------------------------------
+def test_drift_keeps_an_unmapped_counter_instead_of_dropping_it() -> None:
+    """Exactly the shape seen live (entry 01M0FEZ2Y7QMQR1HT11GVT2HCE)."""
+    u = extract_cloudflare_log(
+        {
+            "id": "log_1",
+            "cached": False,
+            "step": 0,
+            "tokens_in": 37,
+            "tokens_out": 2,
+            "provider": "workers-ai",
+            "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+            "usage_metadata": {
+                "input_tokens": 37,
+                "output_tokens": 2,
+                "total_tokens": 39,
+                "input_cached_tokens": 0,
+                "neurons": 1.396314412355423,
+                "units": 0.00001535945853590965,
+            },
+        }
+    )
+    # Cloudflare's Workers AI billing unit, and a cost quantity — both money-relevant.
+    assert u.extras["usage_metadata"] == {
+        "neurons": 1.396314412355423,
+        "units": 0.00001535945853590965,
+    }
+
+
+def test_drift_sweeps_a_counter_nobody_has_ever_seen() -> None:
+    u = extract_cloudflare_log(
+        {
+            "tokens_in": 10,
+            "tokens_out": 1,
+            "provider": "anthropic",
+            "usage_metadata": {"input_tokens": 10, "audio_input_tokens": 512},
+        }
+    )
+    assert u.extras["usage_metadata"] == {"audio_input_tokens": 512}
+
+
+def test_drift_never_shadows_the_pollers_own_billing_inputs() -> None:
+    """`extras["cached"]` decides whether to skip billing a request Cloudflare served
+    for free. A usage_metadata key of the same name must not be able to overwrite it —
+    which is why the sweep is nested rather than merged flat into extras."""
+    u = extract_cloudflare_log(
+        {
+            "id": "log_2",
+            "cached": True,
+            "step": 3,
+            "tokens_in": 5,
+            "tokens_out": 1,
+            "provider": "anthropic",
+            "usage_metadata": {"cached": False, "step": 99, "log_id": "spoofed"},
+        }
+    )
+    assert u.extras["cached"] is True
+    assert u.extras["step"] == 3
+    assert u.extras["log_id"] == "log_2"
+    assert u.extras["usage_metadata"] == {"cached": False, "step": 99, "log_id": "spoofed"}
+
+
+def test_drift_omits_the_key_entirely_when_there_is_none() -> None:
+    """The common case must look exactly as it did before the sweep existed."""
+    u = extract_cloudflare_log(
+        {
+            "id": "log_3",
+            "cached": False,
+            "step": 0,
+            "tokens_in": 9,
+            "tokens_out": 21,
+            "provider": "anthropic",
+            "usage_metadata": {
+                "input_tokens": 9,
+                "output_tokens": 21,
+                "total_tokens": 30,
+                "input_cached_tokens": 4,
+            },
+        }
+    )
+    assert u.extras == {"cached": False, "step": 0, "log_id": "log_3"}
+    assert "usage_metadata" not in u.extras
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "input_cached_tokens",
+        "inputCachedTokens",
+        "cachedContentTokenCount",
+        "cache_read_input_tokens",
+        "input_cache_creation_tokens",
+        "inputCacheCreationTokens",
+        "cache_creation_input_tokens",
+        "reasoningTokens",
+        "reasoning_tokens",
+        "thoughtsTokenCount",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+    ],
+)
+def test_drift_every_mapped_spelling_stays_out_of_the_sweep(key: str) -> None:
+    """A key that IS consumed must not also show up as drift — that would read as an
+    unhandled counter in reconciliation and invite double-counting."""
+    u = extract_cloudflare_log(
+        {
+            "tokens_in": 100,
+            "tokens_out": 10,
+            "provider": "anthropic",
+            "usage_metadata": {key: 7},
+        }
+    )
+    assert "usage_metadata" not in u.extras, f"{key} should be mapped, not swept"
+
+
+def test_drift_no_captured_fixture_loses_a_counter() -> None:
+    """The sweep against real data, not constructed entries.
+
+    Before the sweep existed this dropped `neurons` in 4 of the 14 captured entries and
+    `input_text_tokens` in 1 — measured, not hypothesised. Iterating the fixtures rather
+    than asserting a fixed key list is what makes this test survive a recapture: a new
+    counter Cloudflare starts sending is caught by the next `capture` run, with no test
+    edit and no re-audit of the module docstring.
+    """
+    fixtures = sorted(FIX.glob("*.json"))
+    # Absent fixtures read as "not covered", never as a pass — same rule as the sweeps.
+    assert fixtures, "no captured Cloudflare fixtures found"
+    for path in fixtures:
+        entry = _load(path.name)
+        meta = entry.get("usage_metadata")
+        if not isinstance(meta, dict):
+            continue
+        u = extract_cloudflare_log(entry)
+        swept = u.extras.get("usage_metadata", {})
+        for key in meta:
+            assert key in _MAPPED_USAGE_KEYS or key in swept, (
+                f"{path.name}: {key!r} is neither mapped nor swept into extras"
+            )

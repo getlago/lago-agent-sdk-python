@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import time
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -19,6 +20,7 @@ from lago_agent_sdk.pricing import (
     PricingProvider,
     _parse_price,
     _pick_mistral_canonical,
+    _strip_version,
     apply_markup,
     bedrock_model_key,
     coerce_markup,
@@ -497,6 +499,81 @@ def test_workers_ai_provider_inferred_from_both_spellings(requested: str) -> Non
             CanonicalUsage(input=10, output=20, tool_calls=3, provider="openai", api="x", model="m"),
             30,
             "tool_calls excluded",
+        ),
+        # --- gateway SURFACES that re-shape every vendor (_OPENAI_SHAPED_APIS) ---
+        # Real shape from system.ai_gateway.usage: input CONTAINS cache_read even for
+        # Anthropic, whose own API reports it additively. Keying on the vendor billed
+        # 48,798 tokens against 31,091 consumed on a real backfill (1.570x). The honest
+        # total is the table's own total_tokens, i.e. input + output.
+        (
+            CanonicalUsage(
+                input=1822,
+                output=4,
+                cache_read=1812,
+                provider="anthropic",
+                api="databricks_gateway",
+                model="m",
+            ),
+            1826,
+            "databricks_gateway folds cache_read into input for every vendor",
+        ),
+        # The write half of the same shape — the overlap no provider-keyed set covers,
+        # because no vendor's native API reports cache_write inside input.
+        (
+            CanonicalUsage(
+                input=1825,
+                output=4,
+                cache_write=1812,
+                provider="anthropic",
+                api="databricks_gateway",
+                model="m",
+            ),
+            1829,
+            "databricks_gateway folds cache_write into input too",
+        ),
+        # Hosted Databricks models bill as TOKEN COUNTS (TOKEN_BILLED_PROVIDERS), so
+        # this path IS the bill. Latent today (0 of 96 hosted rows carry cache) and a
+        # direct 1.991x over-bill the day one does.
+        (
+            CanonicalUsage(
+                input=1825,
+                output=4,
+                cache_read=1812,
+                provider="databricks",
+                api="databricks_gateway",
+                model="m",
+            ),
+            1829,
+            "hosted databricks rows carry the surface's shape, not a vendor's",
+        ),
+        # A vendor the surface set must NOT reach: reasoning is inside output here even
+        # though gemini reports thoughts additively on its own API.
+        (
+            CanonicalUsage(
+                input=500,
+                output=200,
+                reasoning=50,
+                provider="gemini",
+                api="databricks_gateway",
+                model="m",
+            ),
+            700,
+            "databricks_gateway folds reasoning into output for every vendor",
+        ),
+        # Cloudflare is deliberately NOT in _OPENAI_SHAPED_APIS: measured on real logs,
+        # an anthropic entry reads input=10, output=4, total=14 with cache OUTSIDE that
+        # total. Adding it to the set would UNDER-bill by the cached portion.
+        (
+            CanonicalUsage(
+                input=10,
+                output=4,
+                cache_read=3429,
+                provider="anthropic",
+                api="cloudflare_gateway",
+                model="m",
+            ),
+            3443,
+            "cloudflare preserves each vendor's native shape",
         ),
     ],
 )
@@ -994,8 +1071,12 @@ def test_money_golden_cases() -> None:
         price = ModelPrice(source="openrouter", **prices)
         # `provider` is optional and defaults to a name in no _INCLUDES_ set, so
         # the pre-existing cases keep their original semantics; cases that pin
-        # per-provider token semantics set it explicitly.
-        usage = CanonicalUsage(model="m", provider=c.get("provider", "p"), api="native", **c["counts"])
+        # per-provider token semantics set it explicitly. `api` defaults to
+        # "native" for the same reason — only the cases pinning a gateway
+        # surface's own token shape (_OPENAI_SHAPED_APIS) set it.
+        usage = CanonicalUsage(
+            model="m", provider=c.get("provider", "p"), api=c.get("api", "native"), **c["counts"]
+        )
         b = compute_cost(usage, price, Decimal(c["markup"]))
         assert b.base == c["base"], f"{c['name']}: base {b.base} != {c['base']}"
         assert b.total == c["total"], f"{c['name']}: total {b.total} != {c['total']}"
@@ -1773,6 +1854,72 @@ def test_price_unavailable_falls_back_to_token_events_and_reports() -> None:
     assert any(name == "PricingUnavailableError" and where == "pricing" for name, where in errors)
 
 
+def test_token_billed_provider_emits_tokens_without_reporting_an_error() -> None:
+    """A Databricks-hosted model has no per-token rate anywhere — not a cold table, not
+    an unmatched name, none exists. So token counts are the complete answer, and calling
+    that a failure on every request trains the reader to ignore on_error entirely."""
+    errors: list = []
+    sdk, received = _price_sdk(
+        _warm_provider(), on_error=lambda exc, where: errors.append((type(exc).__name__, where))
+    )
+    u = CanonicalUsage(
+        input=11,
+        output=4,
+        model="meta-llama-4-maverick-040225",
+        provider="databricks",
+        api="chat_completions",
+    )
+    sdk.emit(u)
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert {e["code"] for e in flat} == {"llm_input_tokens", "llm_output_tokens"}
+    assert [e["properties"]["value"] for e in flat if e["code"] == "llm_input_tokens"] == ["11"]
+    assert errors == []
+
+
+def test_a_real_price_miss_still_reports() -> None:
+    """The narrow exception above must not become a blanket silence: an unmatched model
+    on a provider that DOES publish rates is a genuine miss the customer can act on."""
+    errors: list = []
+    sdk, received = _price_sdk(
+        _warm_provider(), on_error=lambda exc, where: errors.append((type(exc).__name__, where))
+    )
+    sdk.emit(CanonicalUsage(input=5, model="no-such-model", provider="anthropic", api="native"))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert any(n == "PricingUnavailableError" and w == "pricing" for n, w in errors)
+
+
+def test_token_billed_note_is_logged_once_per_model(caplog) -> None:
+    """It is a standing fact about the provider, not an event about this call."""
+    import logging as _logging
+
+    sdk, _ = _price_sdk(_warm_provider())
+    with caplog.at_level(_logging.INFO, logger="lago_agent_sdk"):
+        for _ in range(3):
+            sdk.emit(CanonicalUsage(input=1, model="llama-4-maverick", provider="databricks", api="x"))
+        sdk.emit(CanonicalUsage(input=1, model="gpt-oss-20b", provider="databricks", api="x"))
+    sdk.shutdown(timeout=1.0)
+    notes = [r for r in caplog.records if "in its own units" in r.getMessage()]
+    assert len(notes) == 2  # one per distinct model, not one per call
+    assert any("llama-4-maverick" in n.getMessage() for n in notes)
+
+
+def test_byok_through_the_same_gateway_still_prices() -> None:
+    """TOKEN_BILLED_PROVIDERS keys on provider, so it covers Databricks-HOSTED models
+    only — BYOK traffic through the same gateway is stamped with the real vendor and
+    must keep pricing normally."""
+    sdk, received = _price_sdk(_warm_provider())
+    sdk.emit(
+        CanonicalUsage(input=100, output=50, model="claude-opus-4.8", provider="anthropic", api="native")
+    )
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert {e["code"] for e in flat} == {"llm_cost"}
+
+
 def test_per_call_price_mode_overrides_global_tokens() -> None:
     # global mode is tokens (default); per-call asks for price
     provider = _warm_provider()
@@ -1802,6 +1949,79 @@ def test_default_mode_is_tokens_unchanged() -> None:
     assert {e["code"] for e in flat} == {"llm_input_tokens", "llm_output_tokens"}
 
 
+# ----------------------------------------------------------------------
+# Date-suffix shapes — both vendors' conventions must strip
+# ----------------------------------------------------------------------
+
+# OpenRouter lists BARE ids for the current OpenAI lineup; the API returns dated
+# ones. `resolve_model` prefers the response's own name, so the dated form is what
+# reaches lookup.
+_BARE_OPENAI_TABLE = parse_openrouter(
+    {
+        "data": [
+            {"id": f"openai/{m}", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
+            for m in ("gpt-4.1", "gpt-4.1-mini", "gpt-5", "gpt-5-mini", "o3", "o4-mini")
+        ]
+    }
+)
+
+
+@pytest.mark.parametrize(
+    "dated",
+    [
+        "gpt-4.1-2025-04-14",
+        "gpt-4.1-mini-2025-04-14",
+        "gpt-5-2025-08-07",
+        "gpt-5-mini-2025-08-07",
+        "o3-2025-04-16",
+        "o4-mini-2025-04-16",
+    ],
+)
+def test_openai_hyphenated_date_suffix_strips_to_a_hit(dated: str) -> None:
+    """OpenAI stamps HYPHENATED dates ("gpt-5-2025-08-07"), Anthropic COMPACT ones
+    ("claude-sonnet-4-5-20250929"). Handling only the compact shape silently broke
+    price mode for every current OpenAI model — all six of these missed and fell
+    back to token events. Verified against the live 400-model OpenRouter table
+    before and after.
+    """
+    assert lookup_openrouter(_BARE_OPENAI_TABLE, "openai", dated) is not None
+
+
+@pytest.mark.parametrize(
+    "dated,bare",
+    [
+        ("claude-sonnet-4-5-20250929", "anthropic/claude-sonnet-4.5"),
+        ("claude-haiku-4-5-20251001", "anthropic/claude-haiku-4.5"),
+        ("claude-opus-4-5-20251101", "anthropic/claude-opus-4.5"),
+    ],
+)
+def test_anthropic_compact_date_suffix_still_strips(dated: str, bare: str) -> None:
+    """Regression guard: widening the pattern must not break the compact form."""
+    table = parse_openrouter({"data": [{"id": bare, "pricing": {"prompt": "0.000003"}}]})
+    assert lookup_openrouter(table, "anthropic", dated) is not None
+
+
+def test_non_date_suffix_is_not_stripped() -> None:
+    """`gpt-5.6-sol` resolves with a `-sol` suffix that is neither a date nor a
+    version tag. It must be left intact — OpenRouter lists it verbatim as
+    "openai/gpt-5.6-sol", so stripping would turn a hit into a miss."""
+    assert _strip_version("gpt-5.6-sol") == "gpt-5.6-sol"
+    table = parse_openrouter({"data": [{"id": "openai/gpt-5.6-sol", "pricing": {"prompt": "0.000005"}}]})
+    assert lookup_openrouter(table, "openai", "gpt-5.6-sol") is not None
+
+
+def test_workers_ai_model_names_are_never_date_stripped() -> None:
+    """Workers AI ids carry dotted versions and fp8 suffixes, not dates. The
+    widened pattern must leave them untouched or the Cloudflare catalog lookup
+    breaks."""
+    for m in (
+        "@cf/meta/llama-3.2-1b-instruct",
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "@cf/moonshotai/kimi-k2.7-code",
+    ):
+        assert _strip_version(m) == m
+
+
 def test_workers_ai_compat_prefix_is_defined_exactly_once() -> None:
     """Two unrelated layers must agree on this string: `adapters/openai_native`
     decides the PROVIDER from it, `pricing` strips it before a catalog lookup. They
@@ -1819,3 +2039,113 @@ def test_workers_ai_compat_prefix_is_defined_exactly_once() -> None:
         f"expected one definition, found {definitions}"
     )
     assert WORKERS_AI_COMPAT_PREFIX == "workers-ai/"
+
+
+# ----------------------------------------------------------------------
+# prime() vs the TTL, and per-source backoff after a failed fetch.
+#
+# Both are about the same thing: pricing refresh runs on the queue's background
+# thread, AHEAD of the drain, so wasted work there delays real billing events.
+# ----------------------------------------------------------------------
+class _FailingFetcher(StubFetcher):
+    """StubFetcher whose Cloudflare fetch raises, like a bad CLOUDFLARE_API_TOKEN."""
+
+    def fetch_cloudflare_workers_ai(self) -> dict[str, ModelPrice]:
+        self.cloudflare_workers_ai_calls += 1
+        raise RuntimeError("HTTP 401 Unauthorized")
+
+
+def test_prime_respects_the_ttl_instead_of_refetching_every_tick() -> None:
+    """`prime()` used to set the stale flag unconditionally, so the TTL never applied
+    on this path at all — and `prime()` is reached from `_auto_prime_pricing_for` on a
+    matching `wrap()` and from `warm_pricing()`, both of which a server can run per
+    request. That re-downloaded the ~400-model OpenRouter catalogue on essentially
+    every flush tick, on the thread the queue drains events from."""
+    fetcher = StubFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    for _ in range(4):
+        p.prime()
+        p.maybe_refresh()
+    assert fetcher.openrouter_calls == 1
+
+
+def test_prime_still_warms_a_table_that_has_aged_past_the_ttl() -> None:
+    """The TTL gate must not become a permanent lock-out: once a table is genuinely
+    stale, priming has to flag it again or prices freeze at the first fetch forever."""
+    fetcher = StubFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=0)
+    for _ in range(3):
+        p.prime()
+        p.maybe_refresh()
+    assert fetcher.openrouter_calls == 3
+
+
+def test_a_failed_pricing_fetch_backs_off_instead_of_retrying_every_tick() -> None:
+    """Only the success path used to clear a source's stale flag, so a bad credential
+    re-attempted on every single tick — each attempt costing up to the 10s `_get_json`
+    timeout, and each one reported, ahead of the drain."""
+    errors: list[str] = []
+    fetcher = _FailingFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600, on_error=lambda e, w: errors.append(w))
+    for _ in range(5):
+        p.prime(providers=["workers-ai"])
+        p.maybe_refresh()
+    assert fetcher.cloudflare_workers_ai_calls == 1
+    assert errors == ["pricing.fetch_cloudflare_workers_ai"]
+    assert p._in_backoff("cloudflare_workers_ai")
+
+
+def test_a_failed_pricing_source_recovers_after_its_backoff_window() -> None:
+    """This is a backoff, not a permanent give-up. A rotated-back credential has to
+    start working again on its own — the same reasoning that makes a 401 transient in
+    the event queue."""
+    fetcher = _FailingFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p.prime(providers=["workers-ai"])
+    p.maybe_refresh()
+    assert fetcher.cloudflare_workers_ai_calls == 1
+
+    # Expire the window rather than sleeping through it.
+    p._failure_backoff_until["cloudflare_workers_ai"] = time.time() - 0.001
+    p.prime(providers=["workers-ai"])
+    p.maybe_refresh()
+    assert fetcher.cloudflare_workers_ai_calls == 2
+
+
+def test_one_broken_pricing_source_does_not_delay_the_healthy_ones() -> None:
+    """Backoff is tracked per source precisely so a single bad credential cannot hold
+    up the other tables — the reason this is a dict and not one global timestamp."""
+    fetcher = _FailingFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p.prime(providers=["workers-ai"])
+    p.maybe_refresh()
+    assert fetcher.cloudflare_workers_ai_calls == 1
+    assert fetcher.openrouter_calls == 1
+    assert not p._in_backoff("openrouter")
+
+
+def test_a_successful_fetch_clears_an_earlier_backoff() -> None:
+    """Otherwise the window keeps doubling across unrelated failures and a healthy
+    source inherits a minute-long delay from an outage that already ended."""
+    fetcher = StubFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW))
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p._note_failure("openrouter")
+    p._note_failure("openrouter")
+    assert p._in_backoff("openrouter")
+    p._note_success("openrouter")
+    assert not p._in_backoff("openrouter")
+    # And the next failure restarts at 1s rather than resuming at 4s.
+    p._note_failure("openrouter")
+    assert p._failure_backoff_seconds["openrouter"] == 1.0
+
+
+def test_pricing_backoff_growth_matches_the_queues_and_is_capped() -> None:
+    """Same 1→2→4→…→60s shape as the event queue's send backoff. The cap is what makes
+    a permanently-dead source settle into one attempt a minute instead of growing
+    without bound and effectively never retrying."""
+    p = PricingProvider(fetcher=StubFetcher(), ttl_seconds=3600)
+    seq = []
+    for _ in range(8):
+        p._note_failure("openrouter")
+        seq.append(p._failure_backoff_seconds["openrouter"])
+    assert seq == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]

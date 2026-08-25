@@ -3,8 +3,14 @@
   "cases": [
     {
       "name": "input+output, no markup",
-      "prices": { "input": "0.000003", "output": "0.000015" },
-      "counts": { "input": 1000, "output": 500 },
+      "prices": {
+        "input": "0.000003",
+        "output": "0.000015"
+      },
+      "counts": {
+        "input": 1000,
+        "output": 500
+      },
       "markup": "1",
       "base": "0.0105",
       "total": "0.0105",
@@ -12,8 +18,14 @@
     },
     {
       "name": "input+output, 1.2x markup",
-      "prices": { "input": "0.000003", "output": "0.000015" },
-      "counts": { "input": 1000, "output": 500 },
+      "prices": {
+        "input": "0.000003",
+        "output": "0.000015"
+      },
+      "counts": {
+        "input": 1000,
+        "output": 500
+      },
       "markup": "1.2",
       "base": "0.0105",
       "total": "0.0126",
@@ -21,8 +33,14 @@
     },
     {
       "name": "cache_read + reasoning, 1.5x markup",
-      "prices": { "cache_read": "0.0000005", "reasoning": "0.00001" },
-      "counts": { "cache_read": 2000, "reasoning": 100 },
+      "prices": {
+        "cache_read": "0.0000005",
+        "reasoning": "0.00001"
+      },
+      "counts": {
+        "cache_read": 2000,
+        "reasoning": 100
+      },
       "markup": "1.5",
       "base": "0.002",
       "total": "0.003",
@@ -30,8 +48,14 @@
     },
     {
       "name": "free model -> zero",
-      "prices": { "input": "0", "output": "0" },
-      "counts": { "input": 1000, "output": 200 },
+      "prices": {
+        "input": "0",
+        "output": "0"
+      },
+      "counts": {
+        "input": 1000,
+        "output": 200
+      },
       "markup": "1",
       "base": "0",
       "total": "0",
@@ -39,8 +63,12 @@
     },
     {
       "name": "12dp exact precision",
-      "prices": { "input": "0.000000333333" },
-      "counts": { "input": 3 },
+      "prices": {
+        "input": "0.000000333333"
+      },
+      "counts": {
+        "input": 3
+      },
       "markup": "1",
       "base": "0.000000999999",
       "total": "0.000000999999",
@@ -48,8 +76,12 @@
     },
     {
       "name": "floor-12dp truncation on markup",
-      "prices": { "input": "0.000001" },
-      "counts": { "input": 1000 },
+      "prices": {
+        "input": "0.000001"
+      },
+      "counts": {
+        "input": 1000
+      },
       "markup": "1.333333333333",
       "base": "0.001",
       "total": "0.001333333333",
@@ -59,8 +91,14 @@
       "name": "workers-ai: cache_read is a SUBSET of input, billed once",
       "_note": "Real counts from a live OpenAI-shaped cached call (prompt 23233, cached 23168) at live Cloudflare @cf/moonshotai/kimi-k2.6 rates. Only 23233-23168=65 tokens may be billed at the input rate; billing all 23233 double-charges the cached portion.",
       "provider": "workers-ai",
-      "prices": { "input": "0.00000095", "cache_read": "0.00000016" },
-      "counts": { "input": 23233, "cache_read": 23168 },
+      "prices": {
+        "input": "0.00000095",
+        "cache_read": "0.00000016"
+      },
+      "counts": {
+        "input": 23233,
+        "cache_read": 23168
+      },
       "markup": "1",
       "base": "0.00376863",
       "total": "0.00376863",
@@ -70,12 +108,139 @@
       "name": "anthropic: cache_read is ADDITIVE, input not reduced",
       "_note": "Same counts and rates as the workers-ai case above; the only difference is the provider's token semantics. Anthropic reports input exclusive of cache, so all 23233 input tokens are billed.",
       "provider": "anthropic",
-      "prices": { "input": "0.00000095", "cache_read": "0.00000016" },
-      "counts": { "input": 23233, "cache_read": 23168 },
+      "prices": {
+        "input": "0.00000095",
+        "cache_read": "0.00000016"
+      },
+      "counts": {
+        "input": 23233,
+        "cache_read": 23168
+      },
       "markup": "1",
       "base": "0.02577823",
       "total": "0.02577823",
       "total_cents": "2.577823"
+    },
+    {
+      "name": "mistral: cache_read is a SUBSET of input, billed once",
+      "_note": "Counts from Mistral's own documented prompt-caching example (prompt_tokens=1013, cached_tokens=1008, completion_tokens=30) at live mistral-large-2512 OpenRouter rates. total_tokens=1043=prompt+completion in that payload, which only reconciles if the cached tokens sit INSIDE prompt_tokens. Only 1013-1008=5 tokens may be billed at the input rate; billing all 1013 double-charges the cached portion by 6.15x.",
+      "provider": "mistral",
+      "prices": {
+        "input": "0.0000005",
+        "output": "0.0000015",
+        "cache_read": "0.00000005"
+      },
+      "counts": {
+        "input": 1013,
+        "output": 30,
+        "cache_read": 1008
+      },
+      "markup": "1",
+      "base": "0.0000979",
+      "total": "0.0000979",
+      "total_cents": "0.00979"
+    },
+    {
+      "name": "databricks_gateway: anthropic cache_read is INSIDE input on this surface",
+      "_note": "Real shape from system.ai_gateway.usage (input=1822 containing cache_read=1812, output=4, total_tokens=1826). Anthropic's OWN api reports cache additively, so the provider name is the wrong key here: without the api override this bills all 1822 at the input rate and charges the cached portion twice.",
+      "provider": "anthropic",
+      "api": "databricks_gateway",
+      "prices": {
+        "input": "0.000003",
+        "output": "0.000015",
+        "cache_read": "0.0000003"
+      },
+      "counts": {
+        "input": 1822,
+        "output": 4,
+        "cache_read": 1812
+      },
+      "markup": "1",
+      "base": "0.0006336",
+      "total": "0.0006336",
+      "total_cents": "0.06336"
+    },
+    {
+      "name": "databricks_gateway: cache_write is INSIDE input too",
+      "_note": "The mechanism no provider-keyed set has: on this surface cache_write also sits inside input. Only one of cache_read/cache_write is non-zero per row, so this is the write half of the same real shape.",
+      "provider": "anthropic",
+      "api": "databricks_gateway",
+      "prices": {
+        "input": "0.000003",
+        "output": "0.000015",
+        "cache_write": "0.00000375"
+      },
+      "counts": {
+        "input": 1825,
+        "output": 4,
+        "cache_write": 1812
+      },
+      "markup": "1",
+      "base": "0.006894",
+      "total": "0.006894",
+      "total_cents": "0.6894"
+    },
+    {
+      "name": "native anthropic: cache_read stays ADDITIVE (the surface set must not leak)",
+      "_note": "Same counts as the databricks_gateway case above but api='native'. Measured live: Anthropic's own API returns cache_read=3962 against input=9, i.e. outside input. All 1822 input tokens are billable here. Guards the override against widening into the native path.",
+      "provider": "anthropic",
+      "api": "native",
+      "prices": {
+        "input": "0.000003",
+        "output": "0.000015",
+        "cache_read": "0.0000003"
+      },
+      "counts": {
+        "input": 1822,
+        "output": 4,
+        "cache_read": 1812
+      },
+      "markup": "1",
+      "base": "0.0060696",
+      "total": "0.0060696",
+      "total_cents": "0.60696"
+    },
+    {
+      "name": "databricks_gateway: an openai row is subtracted exactly ONCE",
+      "_note": "openai is already in _INPUT_INCLUDES_CACHE_READ, so the surface override must not subtract a second time. Correcting an openai row twice was measured at a 13% UNDER-bill.",
+      "provider": "openai",
+      "api": "databricks_gateway",
+      "prices": {
+        "input": "0.000003",
+        "output": "0.000015",
+        "cache_read": "0.0000003"
+      },
+      "counts": {
+        "input": 1000,
+        "output": 100,
+        "cache_read": 400
+      },
+      "markup": "1",
+      "base": "0.00342",
+      "total": "0.00342",
+      "total_cents": "0.342"
+    },
+    {
+      "name": "databricks_gateway: reasoning is INSIDE output for a vendor not in the provider set",
+      "_note": "gemini reports thoughts ADDITIVELY on its own API, but this surface folds reasoning into output for every vendor (total_tokens == input + output on all 246 measured rows). Billing the reasoning line as well double-charges it.",
+      "provider": "gemini",
+      "api": "databricks_gateway",
+      "prices": {
+        "input": "0.000003",
+        "output": "0.000015",
+        "cache_read": "0.0000003",
+        "reasoning": "0.00003"
+      },
+      "counts": {
+        "input": 500,
+        "output": 200,
+        "cache_read": 100,
+        "reasoning": 50
+      },
+      "markup": "1",
+      "base": "0.00423",
+      "total": "0.00423",
+      "total_cents": "0.423"
     }
   ],
   "precomputed_cases": [

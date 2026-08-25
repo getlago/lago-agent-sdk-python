@@ -55,6 +55,11 @@ from .canonical import WORKERS_AI_COMPAT_PREFIX, CanonicalUsage
 
 logger = logging.getLogger("lago_agent_sdk.pricing")
 
+# Ceiling for a pricing source's post-failure backoff — the same 60s cap the event
+# queue uses for send retries, so a persistently-broken credential settles into one
+# attempt a minute instead of one per flush tick.
+_MAX_PRICING_BACKOFF_SECONDS = 60.0
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
 AWS_PRICING_HOST = "https://pricing.us-east-1.amazonaws.com"
 AWS_BEDROCK_REGION_INDEX = f"{AWS_PRICING_HOST}/offers/v1.0/aws/AmazonBedrock/current/region_index.json"
@@ -78,7 +83,16 @@ PRICED_FIELDS = ("input", "output", "cache_read", "cache_write", "reasoning")
 # still OpenAI's. Omitting it billed the cached tokens twice: once at the full
 # input rate because they were never subtracted, and again at the cache-read
 # rate, which Cloudflare's catalog does publish for some models.
-_INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini", "workers-ai"})
+#
+# "mistral" belongs here for the same reason: the API is OpenAI-shaped and reports
+# `prompt_tokens_details.cached_tokens` as a SUBSET of `prompt_tokens`. Mistral's own
+# documented example is unambiguous — prompt_tokens=1013, cached_tokens=1008, and
+# total_tokens=1043 = prompt + completion, which only reconciles if the cached tokens
+# sit inside the prompt count. Omitting it double-billed the cached portion by 6.15x
+# on that payload. 13 of 18 Mistral models on OpenRouter publish a cache-read rate,
+# so the wrong path was reachable for most of them, including Mistral traffic routed
+# through a Cloudflare gateway (the gateway adapter leaves provider="mistral" as-is).
+_INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini", "workers-ai", "mistral"})
 
 # Providers whose reported `output` token count ALREADY includes the reasoning
 # tokens (reasoning is a subset of output). For these, reasoning is billed as
@@ -95,6 +109,52 @@ _INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini", "workers-ai"})
 # _CLOUDFLARE_UNIT_FIELD_MAP happens to carry no reasoning unit — an accident, not a
 # guard, and Cloudflare hosts reasoning models (deepseek-r1, qwen, glm).
 _OUTPUT_INCLUDES_REASONING = frozenset({"openai", "workers-ai"})
+
+# Gateway SURFACES that re-report every vendor's usage in the OpenAI shape: `input`
+# already contains cache_read AND cache_write, and `output` already contains
+# reasoning, no matter which vendor actually served the call.
+#
+# This keys on `CanonicalUsage.api` rather than the provider because on a gateway
+# it is the SURFACE that decides the shape, and a surface row reuses the live
+# vendor names. A `provider="anthropic"` row read from Databricks' system table
+# needs the correction; a `provider="anthropic"` response from Anthropic's own API
+# must NOT get it. The vendor name cannot tell those two apart, so it is the wrong
+# key — unlike "workers-ai" above, which names a vendor reachable through exactly
+# one surface and so works as a provider entry.
+#
+# Measured on `system.ai_gateway.usage`, 246 rows across 6 vendors: `total_tokens
+# == input + output` for EVERY vendor group, with cache_read and cache_write inside
+# input and reasoning inside output. Anthropic's own API reports the exact opposite
+# (cache_read=3962 against input=9, additive), which is why keying on the vendor
+# over-billed a real backfill 1.570x — 48,798 tokens reported against 31,091
+# consumed, the excess being exactly cache_read + cache_write.
+#
+# Cloudflare AI Gateway is deliberately ABSENT: its logs preserve each vendor's
+# native shape instead of normalising them. A real Anthropic entry there reads
+# input=10, output=4, total=14 with input_cached_tokens=3429 sitting OUTSIDE that
+# total — additive, exactly like the native API — so the provider-keyed sets are
+# already right for it and adding it here would UNDER-bill the cached portion.
+_OPENAI_SHAPED_APIS = frozenset({"databricks_gateway"})
+
+# Providers this SDK bills as TOKEN COUNTS by design, even in price mode — because
+# no per-token rate for them exists anywhere the SDK could read it.
+#
+# "databricks" means a Databricks-HOSTED foundation model (`system.ai.*`). Databricks
+# bills those in DBUs at a per-model rate published only as an HTML page — verified
+# absent from every column of all 88 system tables — so there is nothing to look up
+# now and nothing a later refresh could supply. Token counts are the honest, complete
+# answer for them, not a degraded one.
+#
+# This is a deliberate, NARROW exception to "a price miss is reported via on_error".
+# It applies only where the miss is *structural and permanent*. A cold table, an
+# unmatched model name, a mistyped provider — all still report, because those are
+# genuine misses a customer can act on. Reporting this one on every call would be a
+# permanent false alarm, and an alarm that always fires is one nobody reads.
+#
+# Note this keys on the PROVIDER, so it only ever covers Databricks-hosted models:
+# BYOK traffic through the same gateway is stamped "openai"/"anthropic" and prices
+# normally (verified exact against Databricks' own metered spend, 38 of 38 buckets).
+TOKEN_BILLED_PROVIDERS = frozenset({"databricks"})
 
 # Canonical field -> OpenRouter pricing key.
 _OPENROUTER_FIELD_MAP = {
@@ -157,9 +217,19 @@ _BEDROCK_VENDOR_WORDS = {
 
 _SCALE = 12
 _Q = Decimal(1).scaleb(-_SCALE)  # Decimal("1E-12")
-# A trailing version/revision marker OpenRouter usually omits from its own ids.
-# Shapes seen live: Anthropic's compact date ("-20250929") and an explicit "-v2".
-_VERSION_DATE_SUFFIX = re.compile(r"-(?:\d{8}|v\d+)$")
+# Vendors stamp resolved model names with a date in one of two shapes, and both
+# must be strippable or the price lookup misses. Anthropic uses a COMPACT date
+# ("claude-sonnet-4-5-20250929"); OpenAI uses a HYPHENATED one
+# ("gpt-5-2025-08-07", "o3-2025-04-16"). OpenRouter lists the BARE id
+# ("openai/gpt-5"), so a name we can't strip back to bare never matches.
+#
+# Handling only the compact form silently broke price mode for every current
+# OpenAI model: `create(model="gpt-5")` returns model="gpt-5-2025-08-07", and
+# `resolve_model` prefers the response's own name over the requested one, so
+# gpt-4.1 / gpt-4.1-mini / gpt-5 / gpt-5-mini / o3 / o4-mini all fell through to
+# token events. gpt-4o looked fine only by luck — OpenRouter happens to list
+# "openai/gpt-4o-2024-08-06" verbatim.
+_VERSION_DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2}|v\d+)$")
 
 # Gemini's 3-digit revision ("-002", which `model_version` can report where
 # OpenRouter lists only the bare name) is stripped for OpenRouter matching ONLY.
@@ -172,7 +242,7 @@ _VERSION_DATE_SUFFIX = re.compile(r"-(?:\d{8}|v\d+)$")
 # Bedrock 39: zero model parts end in exactly three digits), but the arm was only
 # ever motivated by OpenRouter, and scoping it makes that risk structurally zero
 # instead of empirically zero.
-_OPENROUTER_VERSION_SUFFIX = re.compile(r"-(?:\d{8}|\d{3}|v\d+)$")
+_OPENROUTER_VERSION_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2}|\d{3}|v\d+)$")
 
 
 # ----------------------------------------------------------------------
@@ -265,7 +335,7 @@ def _alnum(s: str) -> str:
 
 
 def _strip_version(model: str) -> str:
-    """Drop a trailing -YYYYMMDD date or -vN version tag."""
+    """Drop a trailing -YYYYMMDD / -YYYY-MM-DD date or -vN version tag."""
     return _VERSION_DATE_SUFFIX.sub("", model)
 
 
@@ -305,6 +375,28 @@ class CostBreakdown:
     fields: dict[str, dict[str, str]]  # field -> {tokens, unit_price, cost}
 
 
+def _token_semantics(usage: Any) -> tuple[bool, bool, bool]:
+    """Which of a record's subsets are ALREADY inside their parent count.
+
+    Returns ``(input_includes_cache_read, input_includes_cache_write,
+    output_includes_reasoning)``, the three overlaps the billing paths have to
+    remove. The SURFACE wins over the vendor: a gateway that re-reports usage in
+    its own shape has already decided the convention, so `api` is checked first
+    and the provider-keyed sets only answer for a native call.
+
+    `cache_write` is surface-only by design and has no provider set to consult:
+    Anthropic is the one vendor whose native API bills cache writes at all, and it
+    reports them additively, so no native response needs the correction.
+    """
+    provider = (getattr(usage, "provider", "") or "").lower()
+    shaped = (getattr(usage, "api", "") or "").lower() in _OPENAI_SHAPED_APIS
+    return (
+        shaped or provider in _INPUT_INCLUDES_CACHE_READ,
+        shaped,
+        shaped or provider in _OUTPUT_INCLUDES_REASONING,
+    )
+
+
 def compute_cost(usage: CanonicalUsage, price: ModelPrice, markup: Decimal) -> CostBreakdown:
     """Compute ``Σ(unit_price × count) × markup`` for the priced fields present.
 
@@ -312,18 +404,24 @@ def compute_cost(usage: CanonicalUsage, price: ModelPrice, markup: Decimal) -> C
     call whose only counts are unpriced yields total "0" so it stays accounted
     for.
     """
-    provider = (usage.provider or "").lower()
     counts = {f: (getattr(usage, f, 0) or 0) for f in PRICED_FIELDS}
-    # Remove double-counting where a provider's `input`/`output` already include
-    # a separately-listed subset (see the _INCLUDES_ sets above):
+    # Remove double-counting where the reported `input`/`output` already include a
+    # separately-listed subset (see `_token_semantics` and the sets above):
     #   • reasoning ⊆ output  → bill it as output only (drop the separate line).
     #   • cache_read ⊆ input  → bill the cached portion at the cache-read rate,
     #     so subtract it from input (only when a cache_read price exists; with no
     #     cache price the cached tokens stay in input at the prompt rate).
-    if provider in _OUTPUT_INCLUDES_REASONING:
+    #   • cache_write ⊆ input → same treatment, on the surfaces that report it
+    #     that way. Only one of cache_read/cache_write is non-zero on a given
+    #     Databricks row, but both are subtracted unconditionally so a surface
+    #     that does report both at once still reconciles.
+    inc_cache_read, inc_cache_write, inc_reasoning = _token_semantics(usage)
+    if inc_reasoning:
         counts["reasoning"] = 0
-    if provider in _INPUT_INCLUDES_CACHE_READ and price.get("cache_read") is not None:
+    if inc_cache_read and price.get("cache_read") is not None:
         counts["input"] = max(0, counts["input"] - counts["cache_read"])
+    if inc_cache_write and price.get("cache_write") is not None:
+        counts["input"] = max(0, counts["input"] - counts["cache_write"])
 
     base = Decimal(0)
     fields: dict[str, dict[str, str]] = {}
@@ -362,16 +460,18 @@ def _finalize_breakdown(
 
 
 def deoverlapped_token_total(usage: Any) -> int:
-    """Total tokens a call actually consumed, with per-provider overlaps removed.
+    """Total tokens a call actually consumed, with the reported overlaps removed.
 
     Sums the same PRICED_FIELDS the split cost path emits one event each for, so
     the single-event `unit` equals the sum of the split path's `unit`s instead of
-    reporting a different basis. Both `_INCLUDES_` sets are applied, because a
-    subset counted twice inflates the reported quantity exactly as it would inflate
-    a price:
+    reporting a different basis. Every overlap `_token_semantics` reports is
+    applied, because a subset counted twice inflates the reported quantity exactly
+    as it would inflate a price:
 
-      * reasoning ⊆ output for providers in _OUTPUT_INCLUDES_REASONING
-      * cache_read ⊆ input  for providers in _INPUT_INCLUDES_CACHE_READ
+      * reasoning   ⊆ output — providers in _OUTPUT_INCLUDES_REASONING, or any
+        row from a surface in _OPENAI_SHAPED_APIS
+      * cache_read  ⊆ input  — providers in _INPUT_INCLUDES_CACHE_READ, likewise
+      * cache_write ⊆ input  — surfaces in _OPENAI_SHAPED_APIS only
 
     Deliberately NOT gated on a unit price existing, unlike `compute_cost`'s
     subtraction — this is a token count, so whether a rate happens to be published
@@ -385,12 +485,14 @@ def deoverlapped_token_total(usage: Any) -> int:
     a breakdown OF `cache_write`, so including any of them would not be a token
     total. This mirrors price mode's documented five-field scope.
     """
-    provider = (getattr(usage, "provider", "") or "").lower()
     counts = {f: (getattr(usage, f, 0) or 0) for f in PRICED_FIELDS}
-    if provider in _OUTPUT_INCLUDES_REASONING:
+    inc_cache_read, inc_cache_write, inc_reasoning = _token_semantics(usage)
+    if inc_reasoning:
         counts["reasoning"] = 0
-    if provider in _INPUT_INCLUDES_CACHE_READ:
+    if inc_cache_read:
         counts["cache_read"] = 0
+    if inc_cache_write:
+        counts["cache_write"] = 0
     return sum(int(v or 0) for v in counts.values())
 
 
@@ -1005,6 +1107,9 @@ class PricingProvider:
         # ever requiring a separate LagoConfig.mistral_api_key.
         self._mistral_api_key_override: str | None = None
         self._refreshing: set[str] = set()
+        # Per-source post-failure backoff — see `_in_backoff`.
+        self._failure_backoff_until: dict[str, float] = {}
+        self._failure_backoff_seconds: dict[str, float] = {}
 
     def _heal_fork(self) -> None:
         """Self-heal after a fork: a lock copied from the parent may be held by a
@@ -1046,14 +1151,61 @@ class PricingProvider:
         cold-start cost. Unknown provider names are silently ignored (no
         source is warmed) rather than raising, since this is a hint, not a
         contract."""
+        # Gated on "is this table actually cold?", NOT unconditional. `prime()` is called
+        # from `_auto_prime_pricing_for` on a matching `wrap()` and from `warm_pricing()`,
+        # both of which a server can run per request — and flagging an in-TTL table stale
+        # meant the ~400-model OpenRouter catalogue was re-downloaded on essentially every
+        # flush tick, so `pricing_ttl_seconds` never applied on this path at all. Measured
+        # against the live catalogue with the shipped 1-hour TTL: 4 prime()+maybe_refresh()
+        # cycles produced 4 full downloads where 1 was correct.
+        #
+        # "Cold" is the same test `lookup()` already uses — no table, or past the TTL — so
+        # priming and looking up cannot disagree about what needs fetching.
         with self._lock:
-            self._openrouter_stale = True
+            if self._is_cold(self._openrouter, self._openrouter_fetched):
+                self._openrouter_stale = True
             for p in providers:
                 key = (p or "").lower()
                 if key == "workers-ai":
-                    self._cloudflare_stale = True
+                    if self._is_cold(self._cloudflare_workers_ai, self._cloudflare_fetched):
+                        self._cloudflare_stale = True
                 elif key == "mistral":
-                    self._mistral_stale = True
+                    if self._is_cold(self._mistral_aliases, self._mistral_fetched):
+                        self._mistral_stale = True
+
+    def _is_cold(self, table: Any, fetched_at: float) -> bool:
+        """True when a table needs fetching: absent, or older than the TTL.
+
+        Caller must hold `self._lock`.
+        """
+        return table is None or (time.time() - fetched_at) >= self._ttl
+
+    def _in_backoff(self, source: str) -> bool:
+        """True while `source` is inside its post-failure backoff window.
+
+        A failed fetch used to leave its stale flag set and nothing else, so the next tick
+        retried immediately — every tick, forever, with no delay, each attempt costing up
+        to the 10s `_get_json` timeout, all of it on the queue thread AHEAD of the drain.
+        Measured with a bad Cloudflare token: 5 ticks produced 5 real requests and 5
+        `on_error` reports.
+
+        Same 1→2→4→…→60s shape as the queue's own send backoff, tracked per source so one
+        bad credential cannot delay the three healthy tables.
+        """
+        with self._lock:
+            return time.time() < self._failure_backoff_until.get(source, 0.0)
+
+    def _note_failure(self, source: str) -> None:
+        with self._lock:
+            prev = self._failure_backoff_seconds.get(source, 0.0)
+            nxt = 1.0 if prev == 0.0 else min(prev * 2, _MAX_PRICING_BACKOFF_SECONDS)
+            self._failure_backoff_seconds[source] = nxt
+            self._failure_backoff_until[source] = time.time() + nxt
+
+    def _note_success(self, source: str) -> None:
+        with self._lock:
+            self._failure_backoff_seconds.pop(source, None)
+            self._failure_backoff_until.pop(source, None)
 
     def learn_mistral_api_key(self, api_key: str) -> None:
         """Adopt a Mistral API key discovered from a wrapped client, so
@@ -1129,16 +1281,36 @@ class PricingProvider:
         ):
             return
         with self._lock:
-            do_openrouter = self._openrouter_stale and "openrouter" not in self._refreshing
+            now = time.time()
+
+            def _ready(source: str) -> bool:
+                # Inlined rather than calling `_in_backoff`, which takes the lock we hold.
+                return now >= self._failure_backoff_until.get(source, 0.0)
+
+            do_openrouter = (
+                self._openrouter_stale and "openrouter" not in self._refreshing and _ready("openrouter")
+            )
             if do_openrouter:
                 self._refreshing.add("openrouter")
-            do_cloudflare = self._cloudflare_stale and "cloudflare_workers_ai" not in self._refreshing
+            do_cloudflare = (
+                self._cloudflare_stale
+                and "cloudflare_workers_ai" not in self._refreshing
+                and _ready("cloudflare_workers_ai")
+            )
             if do_cloudflare:
                 self._refreshing.add("cloudflare_workers_ai")
-            do_mistral = self._mistral_stale and "mistral_aliases" not in self._refreshing
+            do_mistral = (
+                self._mistral_stale
+                and "mistral_aliases" not in self._refreshing
+                and _ready("mistral_aliases")
+            )
             if do_mistral:
                 self._refreshing.add("mistral_aliases")
-            regions = [r for r in self._bedrock_stale if f"bedrock:{r}" not in self._refreshing]
+            regions = [
+                r
+                for r in self._bedrock_stale
+                if f"bedrock:{r}" not in self._refreshing and _ready(f"bedrock:{r}")
+            ]
             for r in regions:
                 self._refreshing.add(f"bedrock:{r}")
 
@@ -1149,7 +1321,9 @@ class PricingProvider:
                     self._openrouter = table
                     self._openrouter_fetched = time.time()
                     self._openrouter_stale = False
+                self._note_success("openrouter")
             except Exception as exc:  # noqa: BLE001
+                self._note_failure("openrouter")
                 self._report(exc, "pricing.fetch_openrouter")
             finally:
                 with self._lock:
@@ -1162,7 +1336,9 @@ class PricingProvider:
                     self._cloudflare_workers_ai = table_cf
                     self._cloudflare_fetched = time.time()
                     self._cloudflare_stale = False
+                self._note_success("cloudflare_workers_ai")
             except Exception as exc:  # noqa: BLE001
+                self._note_failure("cloudflare_workers_ai")
                 self._report(exc, "pricing.fetch_cloudflare_workers_ai")
             finally:
                 with self._lock:
@@ -1177,7 +1353,9 @@ class PricingProvider:
                     self._mistral_aliases = aliases
                     self._mistral_fetched = time.time()
                     self._mistral_stale = False
+                self._note_success("mistral_aliases")
             except Exception as exc:  # noqa: BLE001
+                self._note_failure("mistral_aliases")
                 self._report(exc, "pricing.fetch_mistral_aliases")
             finally:
                 with self._lock:
@@ -1190,7 +1368,9 @@ class PricingProvider:
                     self._bedrock[r] = table
                     self._bedrock_fetched[r] = time.time()
                     self._bedrock_stale.discard(r)
+                self._note_success(f"bedrock:{r}")
             except Exception as exc:  # noqa: BLE001
+                self._note_failure(f"bedrock:{r}")
                 self._report(exc, "pricing.fetch_bedrock")
             finally:
                 with self._lock:

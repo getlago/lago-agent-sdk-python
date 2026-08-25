@@ -65,6 +65,38 @@ _KNOWN_USAGE_FIELDS = {
     "output_tokens_details",
 }
 
+# Nested keys inside the *_tokens_details sub-objects that we actually MAP onto a
+# CanonicalUsage field. Anything nested that isn't listed here is drift and gets
+# surfaced in `extras` under a dotted key.
+#
+# Sweeping only top-level keys was a real hole: `prompt_tokens_details` is itself
+# a KNOWN top-level key, so nothing inside it was ever inspected. A live
+# gpt-5.6-sol response carries `prompt_tokens_details.cache_write_tokens: 3022`
+# and those 3022 tokens vanished with no error — a silent violation of the drift
+# contract test_drift.py exists to pin, which passed only because it never looked
+# one level down.
+#
+# NOTE the billing subtlety: cache_write_tokens must NOT be mapped to
+# CanonicalUsage.cache_write. For OpenAI it sits INSIDE prompt_tokens (measured:
+# prompt_tokens=3025 with cache_write_tokens=3022) and bills at the plain input
+# rate — Databricks charged exactly what billing all 3025 as input produces. But
+# OpenRouter does publish a separate cache_write rate for the model, so mapping it
+# would charge those tokens twice: $0.0341 against a true $0.0152, a 2.24x
+# over-bill. Anthropic is the opposite — its cache_creation_input_tokens sits
+# OUTSIDE input_tokens, which is why mapping is correct there and wrong here.
+# Surfacing in extras keeps the field visible without touching the money.
+_MAPPED_DETAIL_FIELDS = {
+    "prompt_tokens_details": {"cached_tokens", "audio_tokens"},
+    "input_tokens_details": {"cached_tokens", "audio_tokens"},
+    "completion_tokens_details": {"reasoning_tokens", "audio_tokens"},
+    # NOTE `output_tokens_details` deliberately omits `audio_tokens`: the Responses
+    # branch hardcodes `audio_output = 0` because the API does not expose it today, so
+    # listing it here would exclude a real, unmapped count from `extras` — 500 audio
+    # tokens vanishing with no error, which is the exact hole this table closes. Add it
+    # back only together with a Responses branch that reads it.
+    "output_tokens_details": {"reasoning_tokens"},
+}
+
 
 def _safe_dict(v: Any) -> dict[str, Any]:
     return v if isinstance(v, dict) else {}
@@ -136,11 +168,19 @@ def _infer_provider(resolved_model: str) -> str:
     return "openai"
 
 
-def extract_openai_native(response: Any, model_id: str = "") -> CanonicalUsage:
+def extract_openai_native(response: Any, model_id: str = "", provider_hint: str = "") -> CanonicalUsage:
     """Translate an OpenAI response (chat completion or responses API) → CanonicalUsage.
 
     Accepts the SDK's pydantic objects, dicts (e.g. captured fixtures), or the
     synthetic `{"usage": {...}}` blob produced by the streaming wrapper.
+
+    `provider_hint` overrides the model-string inference below. Only the wrapper
+    can supply it, because the only reliable signal for some gateways is the
+    client's `base_url` — which the response never carries. Databricks is the
+    case that forced it: a Databricks-HOSTED model answers on
+    `/ai-gateway/mlflow/v1` but echoes a served-entity name
+    ("meta-llama-4-maverick-040225") with no marker of its own, so no rule based
+    on the model string can identify it. See `wrappers/openai.py`.
     """
     resp = _to_dict(response) if not isinstance(response, dict) else response
     usage = _safe_dict(resp.get("usage"))
@@ -177,6 +217,51 @@ def extract_openai_native(response: Any, model_id: str = "") -> CanonicalUsage:
         if k not in _KNOWN_USAGE_FIELDS:
             extras[k] = v
 
+    # Drift sweep one level down, into the *_tokens_details sub-objects. Without
+    # this, an unrecognized nested field is silently dropped (see
+    # _MAPPED_DETAIL_FIELDS) because its container is a known top-level key.
+    for container, mapped in _MAPPED_DETAIL_FIELDS.items():
+        for k, v in _safe_dict(usage.get(container)).items():
+            if k not in mapped:
+                extras[f"{container}.{k}"] = v
+
+    # Consistency guard: for genuine OpenAI, total_tokens always equals
+    # prompt + completion (reasoning is a SUBSET of completion, never additive).
+    # Verified across every captured real OpenAI-shaped response — zero deltas.
+    # So a POSITIVE delta means tokens exist that neither named bucket accounts
+    # for, which only happens behind an OpenAI-COMPATIBLE proxy that under-reports.
+    #
+    # Measured on Gemini through Google's own OpenAI-compat layer:
+    # prompt_tokens=57, completion_tokens=47, total_tokens=1253 — 1149 real
+    # thinking tokens reported nowhere, and no completion_tokens_details to
+    # recover them from. Billing prompt+completion drops 92% of the call, at the
+    # output rate. Folding the remainder into `output` is the honest read: the
+    # provider's own total proves those tokens were generated.
+    #
+    # Deliberately NOT assigned to `reasoning`: compute_cost zeroes reasoning for
+    # providers in _OUTPUT_INCLUDES_REASONING, so for real OpenAI that would set the
+    # field and immediately discard it, recovering nothing.
+    #
+    # `reasoning` is subtracted from the accounted total, and that subtraction is
+    # load-bearing rather than cosmetic. This adapter no longer only ever emits
+    # provider="openai" — it also emits "workers-ai" (Cloudflare `/compat`) and
+    # "databricks" (via provider_hint), and for those compute_cost bills reasoning
+    # ADDITIVELY. A payload reporting both `reasoning_tokens` and an inflated
+    # `total_tokens` would then be charged for them twice: once inside the grown
+    # `output` and again as a separate reasoning line. Subtracting first means a
+    # provider that already broke reasoning out gets no second bill, while the case
+    # this guard exists for — a thinking model behind a proxy that reports NO
+    # breakdown at all (measured: prompt 57, completion 47, total 1253) — still
+    # recovers its 1,149 tokens, because reasoning is 0 there.
+    #
+    # A no-op for real OpenAI either way: total always equals prompt + completion.
+    declared_total = _safe_int(usage.get("total_tokens"))
+    if declared_total:
+        unaccounted = declared_total - (input_tokens + output_tokens + reasoning)
+        if unaccounted > 0:
+            output_tokens += unaccounted
+            extras["unaccounted_output_tokens"] = unaccounted
+
     resolved_model = resolve_model(resp.get("model"), model_id)
     return CanonicalUsage(
         input=input_tokens,
@@ -187,7 +272,7 @@ def extract_openai_native(response: Any, model_id: str = "") -> CanonicalUsage:
         audio_output=audio_output,
         tool_calls=tool_calls,
         model=resolved_model,
-        provider=_infer_provider(resolved_model),
+        provider=provider_hint or _infer_provider(resolved_model),
         api=api,
         extras=extras,
     )

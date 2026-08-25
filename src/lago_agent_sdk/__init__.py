@@ -9,7 +9,13 @@ from .exceptions import (
     PricingUnavailableError,
     UnknownClientError,
 )
-from .pricing import HttpPricingFetcher, ModelPrice, PricingProvider, compute_cost
+from .pricing import (
+    TOKEN_BILLED_PROVIDERS,
+    HttpPricingFetcher,
+    ModelPrice,
+    PricingProvider,
+    compute_cost,
+)
 from .sdk import LagoSDK
 
 __all__ = [
@@ -27,5 +33,6 @@ __all__ = [
     "HttpPricingFetcher",
     "ModelPrice",
     "compute_cost",
+    "TOKEN_BILLED_PROVIDERS",
 ]
 __version__ = "0.2.0"

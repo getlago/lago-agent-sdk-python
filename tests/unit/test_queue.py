@@ -268,14 +268,17 @@ def test_overflow_is_reported_through_on_error():
 
 
 # ----------------------------------------------------------------------
-# The throttling 4xxs. 429 and 408 sit inside the 400-499 range but mean "try
-# again, later" — classifying them as permanent dropped billable events and
-# aimed `max_batch_size` extra requests at a server that had just asked us to
-# slow down.
+# Which side of the permanent/transient line each 4xx belongs on. The test is
+# whether a DIFFERENT PAYLOAD is what it would take to succeed (permanent, so
+# `_send_individually` can split the batch and save what is savable) or whether
+# an OUT-OF-BAND change fixes it (transient, so the events must be held —
+# dropping them is unrecoverable, holding them is bounded by `max_buffer_size`).
+# See `_PERMANENT_STATUSES` for what each status cost when it was on the wrong
+# side, measured over a real socket.
 # ----------------------------------------------------------------------
-@pytest.mark.parametrize("status", [413, 402, 415])
+@pytest.mark.parametrize("status", [413])
 def test_batch_only_4xx_is_split_not_head_of_line_blocked(status: int):
-    """For these the SAME batch can never succeed, but its events can individually.
+    """For this one the SAME batch can never succeed, but its events can individually.
 
     Treating them as transient re-prepended the identical batch at the head of the FIFO
     and backed off to 60s forever, blocking everything behind it. Routing them to
@@ -351,6 +354,51 @@ def test_throttling_4xx_applies_backoff(status: int):
         q.shutdown(timeout=1.0)
 
 
+@pytest.mark.parametrize(
+    ("status", "cause"),
+    [
+        (401, "a rotated or revoked key"),
+        (403, "a key that lost its scope"),
+        (402, "an unpaid account"),
+        (404, "a mistyped api_url"),
+        (415, "a proxy rejecting the media type"),
+    ],
+)
+def test_out_of_band_4xx_is_held_until_it_heals(status: int, cause: str) -> None:
+    """None of these is a property of the BATCH, so dropping the events is unrecoverable
+    while holding them is not.
+
+    Each was in `_PERMANENT_STATUSES`, which routes to `_send_individually`: the batch
+    fails, every isolated send fails the same way, and each event is logged and dropped
+    for good. Measured over a real socket at a server returning 401 for 3s and then 200 —
+    the shape of a key being put back — all 5 events were destroyed inside the first
+    second and none ever reached Lago. Held, all 5 were delivered when it healed.
+
+    So this asserts recovery, not merely "not dropped": the events must survive the
+    outage AND still arrive, as one batch rather than fanned out per event.
+    """
+    attempts = {"n": 0}
+    delivered: list = []
+
+    def sender(batch):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise LagoApiError(status, cause)
+        delivered.extend(batch)  # the out-of-band fix lands
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=0.5)
+    try:
+        q.push({"id": "a"})
+        q.push({"id": "b"})
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not delivered:
+            time.sleep(0.05)
+        assert [e["id"] for e in delivered] == ["a", "b"], f"{cause}: events must survive it"
+        assert attempts["n"] == 2, "held as one batch, never fanned out into per-event sends"
+    finally:
+        q.shutdown(timeout=2.0)
+
+
 def test_unrecognized_4xx_is_treated_as_transient():
     """Only the enumerated validation statuses are permanent. An unfamiliar 4xx
     errs toward retrying: a needless delay costs latency, a wrong drop costs
@@ -375,7 +423,7 @@ def test_unrecognized_4xx_is_treated_as_transient():
         q.shutdown(timeout=2.0)
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 422])
+@pytest.mark.parametrize("status", [400, 409, 413, 422])
 def test_validation_4xx_still_isolates_and_drops(status: int):
     """The statuses that genuinely cannot succeed on a re-send keep the
     isolate-one-by-one behaviour, so a single bad transaction_id still doesn't
@@ -478,5 +526,116 @@ def test_isolated_retries_keep_their_fifo_order() -> None:
         q._send_individually([{"id": i} for i in "abcde"], LagoApiError(413, "too large"))
         with q._lock:
             assert [e["id"] for e in q._buffer] == ["b", "c", "d"]
+    finally:
+        q.shutdown(timeout=1.0)
+
+
+# ----------------------------------------------------------------------
+# No unbounded respin after isolating a batch. Mirrors
+# `EventQueue — no unbounded respin after isolating a batch` in the JS port.
+# ----------------------------------------------------------------------
+def test_isolation_requeue_is_paced_not_spun() -> None:
+    """A permanent batch error plus a transient error on every isolated send used to
+    loop with no delay: `_send_individually` put the events back and `_run` continued
+    straight into re-taking them. Measured before the fix: 280,388 HTTP requests in
+    1.2s, aimed at the server that had just returned 429."""
+    calls = {"n": 0}
+
+    def sender(batch):
+        calls["n"] += 1
+        # Permanent on the batch, transient on every isolated send: the exact pair.
+        raise LagoApiError(422 if len(batch) > 1 else 429, "x")
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=60.0)
+    try:
+        for name in ("a", "b", "c"):
+            q.push({"transaction_id": name})
+        time.sleep(1.2)
+        # 1 batch + 3 isolated + at most a couple of paced retries.
+        assert calls["n"] < 40, f"expected paced retries, got {calls['n']} calls"
+        assert q._backoff_seconds > 0, "a partial re-queue must arm the backoff"
+    finally:
+        q.shutdown(timeout=0.5)
+
+
+def test_exit_drain_does_not_respin_either(caplog) -> None:
+    """The exit drain has no later retry, so re-queuing a transient sub-failure there
+    means re-taking it immediately — a hot loop for the whole drain budget. Those
+    events must be reported as lost instead."""
+    calls = {"n": 0}
+
+    def sender(batch):
+        calls["n"] += 1
+        raise LagoApiError(422 if len(batch) > 1 else 429, "x")
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=10, max_retry_seconds=60.0)
+    for name in ("a", "b", "c"):
+        q.push({"transaction_id": name})
+    time.sleep(0.4)
+    before = calls["n"]
+    with caplog.at_level("WARNING"):
+        q.shutdown(timeout=1.5)
+    # 1 batch + 3 isolated sends per pass, not thousands.
+    assert calls["n"] - before < 20, f"exit drain spun: {calls['n'] - before} calls"
+    assert any("LOST" in r.getMessage() for r in caplog.records)
+
+
+def test_keeps_draining_when_isolation_fully_resolves_the_batch() -> None:
+    """The counterpart: nothing re-queued means the buffer shrank, so the loop should
+    keep going immediately rather than waiting out a whole flush interval."""
+    delivered: list[str] = []
+
+    def sender(batch):
+        if len(batch) > 1:
+            raise LagoApiError(422, "batch rejected")
+        delivered.append(batch[0]["transaction_id"])
+
+    q = EventQueue(
+        sender=sender, flush_interval=0.05, max_batch_size=2, max_buffer_size=10_000, max_retry_seconds=0.5
+    )
+    try:
+        for name in ("a", "b", "c", "d"):
+            q.push({"transaction_id": name})
+        assert q.flush(timeout=3.0)
+        assert set(delivered) == {"a", "b", "c", "d"}
+    finally:
+        q.shutdown(timeout=1.0)
+
+
+# ----------------------------------------------------------------------
+# A slow pricing refresh must not delay event delivery. Mirrors
+# `EventQueue — a slow pricing refresh does not delay event delivery` in JS.
+# ----------------------------------------------------------------------
+def test_slow_pricing_refresh_does_not_delay_delivery() -> None:
+    """`maybe_refresh()` used to run BEFORE the drain, so its HTTP latency sat in front
+    of every queued billable event on every tick. Measured before the fix: a 600ms
+    refresh pushed first delivery to 629ms."""
+    refresh_seconds = 0.6
+    state = {"refresh_done": False, "delivered_before_refresh": None}
+
+    class SlowPricing:
+        def maybe_refresh(self) -> None:
+            time.sleep(refresh_seconds)
+            state["refresh_done"] = True
+            raise RuntimeError("bad credential")  # the failing case, repeated every tick
+
+    def sender(batch):
+        if state["delivered_before_refresh"] is None:
+            state["delivered_before_refresh"] = not state["refresh_done"]
+
+    q = EventQueue(
+        sender=sender,
+        flush_interval=0.025,
+        max_batch_size=100,
+        max_buffer_size=10_000,
+        max_retry_seconds=60.0,
+        pricing=SlowPricing(),
+    )
+    try:
+        q.push({"transaction_id": "t1"})
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and state["delivered_before_refresh"] is None:
+            time.sleep(0.01)
+        assert state["delivered_before_refresh"] is True
     finally:
         q.shutdown(timeout=1.0)

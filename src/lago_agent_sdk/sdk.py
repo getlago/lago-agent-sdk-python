@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from typing import Any
 
 from .canonical import CanonicalUsage
@@ -15,6 +16,7 @@ from .detector import detect_client_kind
 from .exceptions import PricingUnavailableError, UnknownClientError
 from .lago_client import LagoClient
 from .pricing import (
+    TOKEN_BILLED_PROVIDERS,
     CostBreakdown,
     PricingProvider,
     apply_markup,
@@ -31,6 +33,24 @@ logger = logging.getLogger("lago_agent_sdk")
 _subscription_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "lago_subscription", default=None
 )
+
+
+def _to_epoch_seconds(value: int | float | datetime) -> int:
+    """A caller-supplied event time as the unix seconds Lago's `timestamp` wants."""
+    if isinstance(value, datetime):
+        # A naive datetime is taken as UTC — the same rule `_as_utc` documents
+        # for the window bound, so a caller who reads a window and bills it cannot
+        # have the two disagree by their machine's UTC offset.
+        moment = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return int(moment.timestamp())
+    # `not bool`: it is an `int` subclass, so `True` would otherwise bill at epoch 1.
+    # The JS port's `typeof value === "number"` rejects it, and the two must agree.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    raise TypeError(
+        f"timestamp={value!r} not understood — pass a datetime or epoch seconds "
+        "(an ISO-8601 string is deliberately not accepted; see emit())"
+    )
 
 
 class LagoSDK:
@@ -57,6 +77,24 @@ class LagoSDK:
         at all: a local instance behind a self-signed cert (Traefik's default) is
         reachable with ``LagoSDK(api_key=..., api_url=..., verify_ssl=False)``.
         """
+        if isinstance(api_key, LagoConfig):
+            # `LagoSDK(cfg)` is the natural-looking call and it is silently, totally
+            # wrong: the config becomes the BEARER TOKEN while ``config`` stays None, so
+            # a fresh default ``LagoConfig`` is built and every field the caller set is
+            # discarded. Measured live: a config naming a local Lago produced an SDK
+            # posting to PRODUCTION ``api.getlago.com`` with an unusable key — every
+            # event 401, ``flush()`` still returning True, and the caller's own
+            # ``on_error`` never invoked, because that hook was one of the discarded
+            # fields. The only trace was a WARNING per event. Whether the queue then
+            # drops those events or holds them is beside the point: no key the caller
+            # passed is ever used, so nothing downstream can recover. It has to fail at
+            # construction.
+            raise TypeError(
+                "LagoSDK's first positional parameter is `api_key`, not `config`. "
+                "Passing a LagoConfig here makes it the bearer token and leaves the "
+                "rest of your config unused, so every event is sent to the default "
+                "api_url with a key that 401s. Use LagoSDK(config.api_key, config=config)."
+            )
         self.config = config or LagoConfig(api_key=api_key)
         # explicit args win over `config` — guarded on "was it actually passed?"
         # rather than on truthiness, so a config value survives when it wasn't.
@@ -70,12 +108,33 @@ class LagoSDK:
         # classifies it transient, re-prepends the batch and retries at the 60s ceiling
         # forever. All billing stops, nothing is dropped or escalated, and the only
         # symptom is a growing buffer.
+        #
+        # Falling back is right, but it must not be SILENT — see the report below.
         if api_url:
             self.config.api_url = api_url
         if default_subscription_id is not None:
             self.config.default_subscription_id = default_subscription_id
         if verify_ssl is not None:
             self.config.verify_ssl = verify_ssl
+
+        # A caller who passed `api_url` explicitly MEANT to point somewhere specific.
+        # Discarding a falsy one is the safe choice for delivery, but doing it silently
+        # is the one outcome that must not happen here: `LagoConfig`'s default is
+        # PRODUCTION, so `api_url=os.environ.get("LAGO_API_URL", "")` with the var unset
+        # now resolves to production Lago and every event is accepted. For a CI job or a
+        # developer holding a real production key that writes live billing data, and
+        # ingested events cannot be un-ingested. `on_error` is opt-in, so this reports
+        # through the same log-plus-callback floor as every other drop path rather than
+        # trusting a callback to exist.
+        if api_url is not None and not api_url:
+            self._report_error(
+                ValueError(
+                    f"api_url was explicitly set to an empty value; falling back to "
+                    f"{self.config.api_url}. Set LAGO_API_URL (or pass config.api_url) "
+                    f"if you did not intend to send events there."
+                ),
+                "config.api_url",
+            )
 
         self._lago_client = LagoClient(
             api_key=self.config.api_key,
@@ -96,6 +155,9 @@ class LagoSDK:
         )
         if self.config.pricing_mode == "price":
             self._pricing.prime()  # eager warm when price mode is the global default
+        # (provider, model) pairs already noted as token-billed, so the explanation is
+        # logged once rather than on every call. See `_note_token_billed`.
+        self._token_billed_noted: set[tuple[str, str]] = set()
         self._queue = EventQueue(
             sender=self._lago_client.send_batch,
             flush_interval=self.config.flush_interval_seconds,
@@ -236,6 +298,7 @@ class LagoSDK:
         markup: float | None = None,
         usd_cost: float | None = None,
         event_id: str | None = None,
+        timestamp: int | float | datetime | None = None,
     ) -> None:
         """Emit usage to Lago.
 
@@ -258,6 +321,19 @@ class LagoSDK:
         same window never double-bills. A live, one-shot call has no natural
         id to reuse and should leave this as None.
 
+        ``timestamp``: bill the events at this instant instead of at now — pass
+        the source row's own time when replaying/backfilling from a gateway's
+        logs, or a window reaching back a week bills every one of its calls into
+        the period the script happens to run in. Accepts a ``datetime`` (a naive
+        one is read as UTC) or epoch seconds. Deliberately NOT an ISO-8601
+        string: Python 3.10 is still supported here and its ``fromisoformat``
+        rejects the trailing "Z" that gateway APIs emit, while the JS port's
+        ``new Date()`` accepts it — so a string would parse in one repo and fail
+        in the other. Connectors parse their own source column instead, where the
+        shapes that column really returns are known and tested (see
+        ``DatabricksUsageRow.occurred_at``). A live call has no source time and
+        should leave this as None.
+
         Both multi-event paths suffix per field so they don't collide with each
         other, and they use DIFFERENT namespaces so they can't collide across
         modes either:
@@ -276,6 +352,11 @@ class LagoSDK:
         were never billed, only the raw token counts, and nothing surfaced it.
         """
         try:
+            # Resolved ONCE, ahead of every branch: a price-lookup miss falls through
+            # to the token path, so one usage row can reach two of the push paths
+            # below. Two separate `time.time()` reads there let a call that straddles
+            # a billing-period boundary land half in each period.
+            at = self._event_time(timestamp)
             sub = self._resolve_subscription(subscription)
             if not sub:
                 # `_report_error` is the single channel: it invokes on_error AND
@@ -313,7 +394,7 @@ class LagoSDK:
                         ),
                         "pricing",
                     )
-                self._emit_token_events(usage, sub, dimensions, event_id)
+                self._emit_token_events(usage, sub, dimensions, event_id, at)
                 return
 
             markup_value, ok = coerce_markup(markup if markup is not None else self.config.markup)
@@ -327,6 +408,14 @@ class LagoSDK:
 
             if usd_cost is not None:
                 breakdown = compute_precomputed_cost(usd_cost, markup_value)
+            elif usage.provider in TOKEN_BILLED_PROVIDERS:
+                # NOT a failure, so deliberately not routed through on_error: this
+                # provider publishes no per-token rate at all, so token counts are the
+                # complete answer rather than a fallback. Said once per model instead
+                # of once per call. See TOKEN_BILLED_PROVIDERS for the reasoning.
+                self._note_token_billed(usage)
+                self._emit_token_events(usage, sub, dimensions, event_id, at)
+                return
             else:
                 price = self._pricing.lookup(usage.provider, usage.model, usage.api)
                 if price is None:
@@ -334,16 +423,56 @@ class LagoSDK:
                     self._report_error(
                         PricingUnavailableError(usage.provider, usage.model, usage.api), "pricing"
                     )
-                    self._emit_token_events(usage, sub, dimensions, event_id)
+                    self._emit_token_events(usage, sub, dimensions, event_id, at)
                     return
                 breakdown = compute_cost(usage, price, markup_value)
 
-            self._push_cost_event(usage, breakdown, sub, dimensions, event_id)
+            self._push_cost_event(usage, breakdown, sub, dimensions, event_id, at)
         except Exception as exc:  # noqa: BLE001 — never raise from emit
             self._report_error(exc, "emit")
 
+    def _event_time(self, timestamp: int | float | datetime | None) -> int:
+        """The instant to stamp this call's events with — the caller's, or now.
+
+        A value we cannot read is reported and falls back to `now` rather than
+        dropping the call. Stamping the wrong period is a reconciliation problem the
+        operator can see and fix; losing the event is revenue that never appears at
+        all. Same trade-off as a missed price lookup.
+        """
+        if timestamp is not None:
+            try:
+                return _to_epoch_seconds(timestamp)
+            # OverflowError/OSError: `datetime.timestamp()` raises them, platform
+            # dependently, for a year outside the C time range.
+            except (TypeError, ValueError, OverflowError, OSError) as exc:
+                self._report_error(exc, "timestamp")
+        return int(time.time())
+
+    def _note_token_billed(self, usage: CanonicalUsage) -> None:
+        """Say it once per model, at info level.
+
+        It is a standing fact about the provider, not an event about this call, so
+        repeating it per request would bury the log in something the reader can neither
+        fix nor act on.
+        """
+        key = (usage.provider, usage.model)
+        if key in self._token_billed_noted:
+            return
+        self._token_billed_noted.add(key)
+        logger.info(
+            "lago: %s bills %r in its own units, not per token — emitting token counts "
+            "for it instead of a dollar cost",
+            usage.provider,
+            usage.model,
+        )
+
     def _emit_token_events(
-        self, usage: CanonicalUsage, sub: str, dimensions: dict[str, Any] | None, event_id: str | None = None
+        self,
+        usage: CanonicalUsage,
+        sub: str,
+        dimensions: dict[str, Any] | None,
+        event_id: str | None = None,
+        at: int | None = None,
     ) -> None:
         nonzero = usage.nonzero_numeric()
         # A negative count is silently unbillable — Lago would otherwise sum it into
@@ -361,7 +490,9 @@ class LagoSDK:
         if not nonzero:
             # Mistral legacy / empty — nothing to bill
             return
-        now = int(time.time())
+        # `emit` already resolved the instant; the fallback covers nothing today and
+        # is kept only so this stays callable on its own without stamping the epoch.
+        now = at if at is not None else int(time.time())
         for field_name, value in nonzero.items():
             code = self.config.metric_codes.get(field_name)
             if not code:
@@ -392,6 +523,7 @@ class LagoSDK:
         sub: str,
         dimensions: dict[str, Any] | None,
         event_id: str | None = None,
+        at: int | None = None,
     ) -> None:
         """Push one llm_cost event — or several, one per token_type, when a
         real per-field breakdown exists.
@@ -411,7 +543,8 @@ class LagoSDK:
         grouped by model only; no `token_type` at all rather than a fabricated
         one.
         """
-        now = int(time.time())
+        # See the note in `_emit_token_events` — `emit` is the one authority on this.
+        now = at if at is not None else int(time.time())
         # Caller dimensions are spread LAST in each `properties` below, not here —
         # they must win over every SDK-computed key, exactly as they already do in
         # `_emit_token_events`. Spreading them into `base_properties` put them
@@ -523,6 +656,138 @@ class LagoSDK:
         provider name wasn't recognized)."""
         self._pricing.prime(providers)
         self._pricing.maybe_refresh()
+
+    def backfill_databricks(
+        self,
+        source: Any,
+        since: Any = "1 day",
+        *,
+        default_subscription: str | None = None,
+        unified: bool = False,
+        dimensions: dict[str, Any] | None = None,
+        event_id_prefix: str = "dbx",
+    ) -> dict[str, int]:
+        """Read a window of Databricks AI Gateway usage and bill all of it.
+
+        The one-call entrypoint: give it a window, it does the rest. Returns counts
+        of what it handed to ``emit()``, e.g.
+        ``{"cost": 56, "tokens": 45, "skipped": 0, "deferred": 0}``.
+
+        The last two are billing GAPS, and both are also reported through
+        ``config.on_error`` (``where="backfill"``) — the hook every other gap in this
+        SDK uses — so a caller does not have to inspect the return value to notice
+        one. They fail differently: ``skipped`` rows had no resolvable subscription
+        and stay lost until they are tagged or a default is set, while ``deferred``
+        buckets are billable revenue that the NEXT run of the same window collects
+        once Databricks has aggregated their spend row. A run with both at 0 is the
+        only one that billed the whole window.
+
+        ``source`` is normally a :class:`DatabricksSource`, and ``since`` the window.
+        It also accepts an already-read iterable of ``DatabricksUsageRow`` — pass one
+        when you have inspected the rows first, so the window is read ONCE. Reading
+        twice is not just slow: a SQL warehouse costs roughly 1,500x the model-serving
+        usage it reports on, and rows landing between the two reads make the summary
+        you printed disagree with what was billed.
+
+        Billing follows the rule the connector establishes rather than re-deriving
+        it: a BYOK row carries Databricks' own metered USD and bills as a dollar
+        cost; a Databricks-hosted row has no per-request dollar figure anywhere in
+        Databricks' system tables and bills as token counts.
+
+        ``unified=True`` bills everything to ``default_subscription``, ignoring
+        per-call ``request_tags`` — right when one gateway serves one customer.
+        Left False, each row goes to the subscription its own tags name, falling
+        back to ``default_subscription`` only when a row is untagged.
+
+        Every event also carries the Databricks-side grouping key for its row —
+        ``endpoint_name`` for hosted, ``bucket`` for BYOK — so grouping Lago the
+        same way the Databricks page groups puts the two side by side. See
+        ``DatabricksUsageRow.reconcile_dimensions``. Anything in ``dimensions``
+        is added on top and wins on a key collision.
+
+        Idempotent: every event id is derived from the source row's own id and
+        scoped by subscription, so re-running the same window has Lago reject the
+        duplicates rather than double-bill. Does not flush — call ``flush()`` when
+        you want to block on delivery.
+        """
+        counts = {"cost": 0, "tokens": 0, "skipped": 0, "deferred": 0}
+        reader = source if hasattr(source, "read_usage") else None
+        rows = reader.read_usage(since, event_id_prefix=event_id_prefix) if reader else source
+        for row in rows:
+            sub = default_subscription if unified else (row.subscription or default_subscription)
+            if not sub:
+                # No attribution and no fallback — emit() would drop it anyway, but
+                # counting it here makes the gap visible instead of silent.
+                counts["skipped"] += 1
+                continue
+            # Row's own reconciliation key first, so an explicit caller dimension of
+            # the same name wins rather than being silently overwritten.
+            dims = {**row.reconcile_dimensions, **(dimensions or {})}
+            if row.usd_cost is not None:
+                self.emit(
+                    row.usage,
+                    subscription=sub,
+                    dimensions=dims,
+                    mode="price",
+                    usd_cost=row.usd_cost,
+                    # Keyed off the subscription actually billed, not the row's own
+                    # tag — an untagged row billed to the default must not carry an
+                    # id that blocks it from a different default on a later run.
+                    event_id=row.event_id_for(sub),
+                    # The row's own time, not the run's — see `occurred_at`. A
+                    # backfill that stamps `now` bills last week's usage into this
+                    # week's period, and nothing in Lago can tell afterwards.
+                    timestamp=row.occurred_at,
+                )
+                counts["cost"] += 1
+            else:
+                self.emit(
+                    row.usage,
+                    subscription=sub,
+                    dimensions=dims,
+                    mode="tokens",
+                    event_id=row.event_id_for(sub),
+                    timestamp=row.occurred_at,
+                )
+                counts["tokens"] += 1
+
+        # Both gaps below were counted but never reported: measured live over a
+        # window with one hour's spend rows withheld — the shape of real spend-table
+        # lag — this returned `{'cost': 12, 'tokens': 54, 'skipped': 0}` while 54
+        # BYOK buckets went unbilled and `on_error` fired zero times. `cost` alone
+        # dropping from 66 to 12 is not something an automated caller can read as a
+        # gap, so route both through the hook that already means "billing gap".
+        if counts["skipped"]:
+            self._report_error(
+                ValueError(
+                    f"{counts['skipped']} Databricks row(s) had no resolvable subscription "
+                    f"and were NOT billed. Pass default_subscription=..., set "
+                    f"LagoConfig.default_subscription_id, or tag the calls."
+                ),
+                "backfill",
+            )
+        # Only the reader knows about a bucket it never yielded, so a caller who
+        # passed an already-read iterable gets 0 here — they hold the source and can
+        # read `deferred_buckets` off it directly. `getattr` because `source` is
+        # duck-typed: a caller's own reader need not carry the attribute.
+        deferred = list(getattr(reader, "deferred_buckets", ())) if reader is not None else []
+        counts["deferred"] = len(deferred)
+        if deferred:
+            first = deferred[0]
+            # `read_usage` logs this too. That is deliberate, not a stutter: a caller who
+            # reads the window itself never reaches this line, and one who ran the backfill
+            # needs it on the channel they reconcile against. Worded from the RUN's side so
+            # the two read as one gap seen from two layers rather than as two gaps.
+            self._report_error(
+                ValueError(
+                    f"this run left {len(deferred)} Databricks BYOK bucket(s) unbilled: no "
+                    f"external_model_spend row yet (e.g. hour={first['hour']} "
+                    f"provider={first['provider']} model={first['model']}). The spend table "
+                    f"lags; re-run this window later to bill them."
+                ),
+                "backfill",
+            )
+        return counts
 
     def flush(self, timeout: float = 5.0) -> bool:
         return self._queue.flush(timeout=timeout)
