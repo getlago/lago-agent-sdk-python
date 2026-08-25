@@ -1,0 +1,14 @@
+{
+  "CREDITS": "0.008703000",
+  "END_TIME": "1787662800",
+  "FUNCTION_NAME": "AI_COMPLETE",
+  "IS_COMPLETED": "true",
+  "METRICS": "[\n  {\n    \"key\": {\n      \"metric\": \"input\",\n      \"unit\": \"tokens\"\n    },\n    \"value\": 4815\n  },\n  {\n    \"key\": {\n      \"metric\": \"output\",\n      \"unit\": \"tokens\"\n    },\n    \"value\": 4\n  }\n]",
+  "MODEL_NAME": "claude-sonnet-4-5",
+  "QUERY_ID": "01c6a016-0102-dcf5-001e-6063000c7f6e",
+  "QUERY_TAG": "",
+  "ROLE_NAMES": "[\n  \"LAGO_CORTEX_ROLE\"\n]",
+  "START_TIME": "1787659200",
+  "USER_ID": "1",
+  "WAREHOUSE_ID": "21"
+}

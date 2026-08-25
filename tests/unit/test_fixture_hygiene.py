@@ -3,8 +3,9 @@
 These fixtures are captured from live provider and gateway calls, and both repos
 publish to a PUBLIC package index. A capture therefore arrives carrying whatever the
 provider chose to log about the operator who made it — `system.ai_gateway.usage`
-records the caller's account email and source IP on every row, neither of which any
-adapter reads. Twenty-two Databricks fixtures shipped with a personal Gmail address, a
+records the caller's account email and source IP on every row, and Snowflake's Cortex
+views name the caller in ROLE_NAMES and carry a customer-controlled QUERY_TAG — none of
+which any adapter reads. Twenty-two Databricks fixtures shipped with a personal Gmail address, a
 residential IP, a real workspace subdomain and one live Lago subscription id before
 this test existed.
 
@@ -29,8 +30,15 @@ _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 # A Databricks workspace subdomain is a real, addressable host.
 _DBX_HOST = re.compile(r"\bdbc-[0-9a-f]{4,}-[0-9a-f]{4,}\b")
 
+# Snowflake's ACCOUNT_USAGE views name the caller in ROLE_NAMES as `USER$<login>`, and a
+# Snowflake account hostname is a real, addressable host. No adapter reads either.
+_SF_USER_ROLE = re.compile(r"\bUSER\$[A-Za-z0-9_]+")
+_SF_HOST = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9-]*\.snowflakecomputing\.com\b")
+
 _ALLOWED_EMAIL_DOMAINS = {"example.com", "example.org", "example.net"}
 _PLACEHOLDER_DBX_HOST = "dbc-00000000-0000"
+_PLACEHOLDER_SF_USER = "USER$EXAMPLE_USER"
+_PLACEHOLDER_SF_HOST = "example-account.snowflakecomputing.com"
 
 
 def _fixtures() -> list[pathlib.Path]:
@@ -83,3 +91,23 @@ def test_no_real_databricks_workspace_hosts() -> None:
     assert not offenders, (
         f"fixtures name a real Databricks workspace — use {_PLACEHOLDER_DBX_HOST}: {offenders}"
     )
+
+
+def test_no_real_snowflake_users() -> None:
+    offenders = [
+        f"{p.relative_to(FIXTURE_ROOT)}: {name}"
+        for p in _fixtures()
+        for name in set(_SF_USER_ROLE.findall(p.read_text(encoding="utf-8")))
+        if name != _PLACEHOLDER_SF_USER
+    ]
+    assert not offenders, f"fixtures name a real Snowflake user — use {_PLACEHOLDER_SF_USER}: {offenders}"
+
+
+def test_no_real_snowflake_account_hosts() -> None:
+    offenders = [
+        f"{p.relative_to(FIXTURE_ROOT)}: {host}"
+        for p in _fixtures()
+        for host in set(_SF_HOST.findall(p.read_text(encoding="utf-8")))
+        if host != _PLACEHOLDER_SF_HOST
+    ]
+    assert not offenders, f"fixtures name a real Snowflake account — use {_PLACEHOLDER_SF_HOST}: {offenders}"

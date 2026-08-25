@@ -1,0 +1,14 @@
+{
+  "CREDITS": "0.000000090",
+  "END_TIME": "1787662800",
+  "FUNCTION_NAME": "AI_EMBED",
+  "IS_COMPLETED": "true",
+  "METRICS": "[\n  {\n    \"key\": {\n      \"metric\": \"total\",\n      \"unit\": \"tokens\"\n    },\n    \"value\": 3\n  }\n]",
+  "MODEL_NAME": "snowflake-arctic-embed-m",
+  "QUERY_ID": "01c6a022-0102-dd95-001e-6063000d07fa",
+  "QUERY_TAG": "",
+  "ROLE_NAMES": "[\n  \"LAGO_CORTEX_ROLE\"\n]",
+  "START_TIME": "1787659200",
+  "USER_ID": "1",
+  "WAREHOUSE_ID": "21"
+}
