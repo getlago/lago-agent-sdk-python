@@ -1,0 +1,14 @@
+{
+  "CREDITS": "0.000002508",
+  "END_TIME": "1787166000",
+  "FUNCTION_NAME": "AI_COMPLETE",
+  "IS_COMPLETED": "true",
+  "METRICS": "[\n  {\n    \"key\": {\n      \"metric\": \"input\",\n      \"unit\": \"tokens\"\n    },\n    \"value\": 17\n  },\n  {\n    \"key\": {\n      \"metric\": \"output\",\n      \"unit\": \"tokens\"\n    },\n    \"value\": 2\n  }\n]",
+  "MODEL_NAME": "llama3.1-8b",
+  "QUERY_ID": "01c67fd2-0302-c6c5-001e-6063000320e6",
+  "QUERY_TAG": "{\"app\":\"cortex_code_sandbox\",\"request_id\":\"00000000-0000-0000-0000-000000000000\"}",
+  "ROLE_NAMES": "[\n  \"ACCOUNTADMIN\",\n  \"ORGADMIN\",\n  \"USER$EXAMPLE_USER\"\n]",
+  "START_TIME": "1787162400",
+  "USER_ID": "1",
+  "WAREHOUSE_ID": "21"
+}

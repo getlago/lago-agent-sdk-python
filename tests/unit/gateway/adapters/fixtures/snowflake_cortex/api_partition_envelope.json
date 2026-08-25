@@ -1,0 +1,64 @@
+{
+  "inlineRowCount": 472,
+  "note": "Real /api/v2/statements pagination envelope. Rows are synthetic (GENERATOR) \u2014 only the envelope shape is the evidence.",
+  "numRows": 60000,
+  "partitionContentEncoding": "gzip",
+  "partitionCount": 8,
+  "partitionInfo": [
+    {
+      "compressedSize": 72602,
+      "rowCount": 472,
+      "uncompressedSize": 99963
+    },
+    {
+      "compressedSize": 130549,
+      "rowCount": 849,
+      "uncompressedSize": 180318
+    },
+    {
+      "compressedSize": 230570,
+      "rowCount": 1500,
+      "uncompressedSize": 319509
+    },
+    {
+      "compressedSize": 431495,
+      "rowCount": 2808,
+      "uncompressedSize": 598113
+    },
+    {
+      "compressedSize": 832612,
+      "rowCount": 5418,
+      "uncompressedSize": 1155090
+    },
+    {
+      "compressedSize": 1665447,
+      "rowCount": 10834,
+      "uncompressedSize": 2318485
+    },
+    {
+      "compressedSize": 3301295,
+      "rowCount": 21476,
+      "uncompressedSize": 4595873
+    },
+    {
+      "compressedSize": 2558397,
+      "rowCount": 16643,
+      "uncompressedSize": 3561611
+    }
+  ],
+  "partitionResponseKeys": [
+    "data"
+  ],
+  "rowType": [
+    {
+      "name": "N",
+      "nullable": false,
+      "type": "fixed"
+    },
+    {
+      "name": "PAD",
+      "nullable": false,
+      "type": "text"
+    }
+  ]
+}

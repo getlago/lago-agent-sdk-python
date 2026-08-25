@@ -1,0 +1,14 @@
+{
+  "CREDITS": "0.000068400",
+  "END_TIME": "1787166000",
+  "FUNCTION_NAME": "AI_COMPLETE",
+  "IS_COMPLETED": "true",
+  "METRICS": "[\n  {\n    \"key\": {\n      \"metric\": \"input\",\n      \"unit\": \"tokens\"\n    },\n    \"value\": 13\n  },\n  {\n    \"key\": {\n      \"metric\": \"output\",\n      \"unit\": \"tokens\"\n    },\n    \"value\": 5\n  }\n]",
+  "MODEL_NAME": "claude-sonnet-4-5",
+  "QUERY_ID": "01c67fe9-0302-ce36-001e-606300034516",
+  "QUERY_TAG": "",
+  "ROLE_NAMES": "[\n  \"ACCOUNTADMIN\",\n  \"ORGADMIN\",\n  \"USER$EXAMPLE_USER\"\n]",
+  "START_TIME": "1787162400",
+  "USER_ID": "1",
+  "WAREHOUSE_ID": "21"
+}
