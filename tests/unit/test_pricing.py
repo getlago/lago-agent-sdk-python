@@ -1878,6 +1878,70 @@ def test_token_billed_provider_emits_tokens_without_reporting_an_error() -> None
     assert errors == []
 
 
+def test_snowflake_emits_tokens_in_price_mode_without_reporting_an_error() -> None:
+    """Snowflake bills Cortex in CREDITS, at an edition/region/contract rate published
+    in no API, view or table the SDK can read — so this miss is structural and permanent
+    in exactly the way the Databricks one is, and reporting it per call would be a
+    permanent false alarm. The customer prices these token counts with a Lago charge.
+
+    Note the global mode here is "price": the provider set is what decides, so nothing
+    on the Snowflake path forces `mode="tokens"` per call."""
+    errors: list = []
+    sdk, received = _price_sdk(
+        _warm_provider(), on_error=lambda exc, where: errors.append((type(exc).__name__, where))
+    )
+    sdk.emit(
+        CanonicalUsage(
+            input=42, output=7, model="claude-sonnet-4-5", provider="snowflake", api="chat_completions"
+        )
+    )
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    assert {e["code"] for e in flat} == {"llm_input_tokens", "llm_output_tokens"}
+    assert [e["properties"]["value"] for e in flat if e["code"] == "llm_output_tokens"] == ["7"]
+    assert errors == []
+
+
+def test_a_cortex_model_named_like_a_vendors_own_never_prices() -> None:
+    """The reason "snowflake" is absent from _VENDOR_MAP, made concrete.
+
+    Cortex serves Anthropic's and OpenAI's models under their real names, so the SAME
+    model string is priceable under the vendor and must NOT be under Snowflake — the
+    vendor's public rate is not what Snowflake charged. Giving "snowflake" a vendor
+    prefix would turn every one of these calls into a confident mispricing."""
+    errors: list = []
+    sdk, received = _price_sdk(
+        _warm_provider(), on_error=lambda exc, where: errors.append((type(exc).__name__, where))
+    )
+    priced = CanonicalUsage(input=1000, output=500, model="claude-opus-4.8", provider="anthropic", api="x")
+    through_cortex = CanonicalUsage(
+        input=1000, output=500, model="claude-opus-4.8", provider="snowflake", api="x"
+    )
+    sdk.emit(priced, event_id="evt_vendor")
+    sdk.emit(through_cortex, event_id="evt_cortex")
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    flat = [e for batch in received for e in batch]
+    by_txn = {e["transaction_id"]: e["code"] for e in flat}
+    assert {c for t, c in by_txn.items() if t.startswith("evt_vendor")} == {"llm_cost"}
+    assert {c for t, c in by_txn.items() if t.startswith("evt_cortex")} == {
+        "llm_input_tokens",
+        "llm_output_tokens",
+    }
+    assert errors == []
+
+
+def test_snowflake_is_absent_from_the_vendor_map() -> None:
+    """Pinned as a decision, not left as an accident: the absence IS the guard against
+    the mispricing above, so a later "why isn't snowflake in the map?" cleanup has to
+    delete a test that says why."""
+    from lago_agent_sdk.pricing import _VENDOR_MAP
+
+    assert "snowflake" not in _VENDOR_MAP
+    assert _warm_provider().lookup("snowflake", "claude-opus-4.8", "chat_completions") is None
+
+
 def test_a_real_price_miss_still_reports() -> None:
     """The narrow exception above must not become a blanket silence: an unmatched model
     on a provider that DOES publish rates is a genuine miss the customer can act on."""

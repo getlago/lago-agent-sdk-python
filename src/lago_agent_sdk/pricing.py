@@ -92,6 +92,16 @@ PRICED_FIELDS = ("input", "output", "cache_read", "cache_write", "reasoning")
 # on that payload. 13 of 18 Mistral models on OpenRouter publish a cache-read rate,
 # so the wrong path was reachable for most of them, including Mistral traffic routed
 # through a Cloudflare gateway (the gateway adapter leaves provider="mistral" as-is).
+#
+# "snowflake" is deliberately ABSENT even though Cortex answers on an OpenAI-WIRE
+# endpoint, and this is the case an OpenAI-shaped payload gets wrong: measured on the
+# live surface 2026-08-25, `prompt_tokens: 7`, `cached_tokens: 8745`,
+# `completion_tokens: 6`, `total_tokens: 8758` — the cached block sits OUTSIDE
+# `prompt_tokens` and INSIDE the total, Anthropic's ADDITIVE convention on OpenAI's
+# wire. Adding it here would subtract 8,745 tokens that were never in `input`.
+# Nothing on the Snowflake path reaches `compute_cost` today (TOKEN_BILLED_PROVIDERS
+# short-circuits first), so this is a note for whoever is tempted to "complete" the
+# set by wire shape rather than by measurement.
 _INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini", "workers-ai", "mistral"})
 
 # Providers whose reported `output` token count ALREADY includes the reasoning
@@ -134,6 +144,16 @@ _OUTPUT_INCLUDES_REASONING = frozenset({"openai", "workers-ai"})
 # input=10, output=4, total=14 with input_cached_tokens=3429 sitting OUTSIDE that
 # total — additive, exactly like the native API — so the provider-keyed sets are
 # already right for it and adding it here would UNDER-bill the cached portion.
+#
+# Neither Snowflake Cortex surface qualifies, established from real rows in INT-224
+# and left out on purpose. The REST view is additive: `TOKENS` equals the sum of every
+# `TOKENS_GRANULAR` value on 24 of 24 captured rows, so `input` EXCLUDES the cached
+# block (`rest_cache_read.json`, and the wire agrees — see _INPUT_INCLUDES_CACHE_READ
+# above). It also spells its cache keys `cache_read_input` / `cache_write_input`,
+# which no other surface in this tree uses. The functions view reports no cache keys
+# at all. Adding either would drop a cached row from 4,698 tokens to 14; INT-221's
+# reconciliation test asserts the sum against Snowflake's own TOKENS column and fails
+# if someone does.
 _OPENAI_SHAPED_APIS = frozenset({"databricks_gateway"})
 
 # Providers this SDK bills as TOKEN COUNTS by design, even in price mode — because
@@ -154,7 +174,19 @@ _OPENAI_SHAPED_APIS = frozenset({"databricks_gateway"})
 # Note this keys on the PROVIDER, so it only ever covers Databricks-hosted models:
 # BYOK traffic through the same gateway is stamped "openai"/"anthropic" and prices
 # normally (verified exact against Databricks' own metered spend, 38 of 38 buckets).
-TOKEN_BILLED_PROVIDERS = frozenset({"databricks"})
+# "snowflake" means Snowflake Cortex, on either surface. Snowflake bills Cortex in
+# CREDITS, at a per-credit rate that depends on edition, region and contract and is
+# published in no API, no view and no account-level table the SDK could read — and the
+# credit consumption tables that do exist are warehouse-level, not per-request. So
+# there is no per-token rate to find now and no later refresh that could supply one.
+# Token counts are what we bill; customers price them with their own Lago charges.
+#
+# Deliberately NOT in _VENDOR_MAP, and this is the load-bearing half: Cortex serves
+# `claude-sonnet-4-5` and `openai-gpt-5` under those very names, so giving "snowflake"
+# a real vendor prefix would let a near-miss model string match Anthropic's or
+# OpenAI's own OpenRouter rate — a silent mispricing of a call Snowflake charged in
+# credits. The absence is the guard; do not "fix" it.
+TOKEN_BILLED_PROVIDERS = frozenset({"databricks", "snowflake"})
 
 # Canonical field -> OpenRouter pricing key.
 _OPENROUTER_FIELD_MAP = {
