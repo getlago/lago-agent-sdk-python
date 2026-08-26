@@ -78,6 +78,7 @@ def wrap_boto3_bedrock_client(
             )
         except Exception as exc:  # noqa: BLE001 — never break the call
             logger.warning("lago: converse instrumentation failed: %s", exc)
+            sdk._report_error(exc, "emit")
         return response
 
     # ------------------------------------------------------------------
@@ -115,6 +116,7 @@ def wrap_boto3_bedrock_client(
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("lago: converse_stream instrumentation failed: %s", exc)
+                        sdk._report_error(exc, "emit")
 
         response["stream"] = _wrap_stream()
         return response
@@ -144,8 +146,10 @@ def wrap_boto3_bedrock_client(
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("lago: invoke_model parse/emit failed: %s", exc)
+                    sdk._report_error(exc, "emit")
         except Exception as exc:  # noqa: BLE001 — never break the call
             logger.warning("lago: invoke_model instrumentation failed: %s", exc)
+            sdk._report_error(exc, "emit")
 
         return response
 
@@ -214,6 +218,7 @@ def wrap_boto3_bedrock_client(
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("lago: invoke_model_with_response_stream instrumentation failed: %s", exc)
+                    sdk._report_error(exc, "emit")
 
         response["body"] = _wrap_invoke_stream()
         return response

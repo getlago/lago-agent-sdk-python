@@ -59,6 +59,7 @@ def wrap_gemini_client(
             sdk.emit(usage, **opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: gemini emit failed: %s", exc)
+            sdk._report_error(exc, "emit")
 
     def _make_sync_generate(original: Any) -> Any:
         def _generate(*args: Any, **kwargs: Any) -> Any:

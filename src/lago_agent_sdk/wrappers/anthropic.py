@@ -150,6 +150,7 @@ def wrap_anthropic_client(
             sdk.emit(usage, **opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: anthropic emit failed: %s", exc)
+            sdk._report_error(exc, "emit")
 
     # ------------------------------------------------------------------
     # Sync messages.create — auto-detects streaming via response shape
@@ -313,6 +314,7 @@ class _LagoStreamManager:
                 self._sdk.emit(usage, **self._opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: anthropic stream-manager emit failed: %s", exc)
+            self._sdk._report_error(exc, "emit")
 
     async def _emit_final_async(self) -> None:
         """Async path — `AsyncMessageStream.get_final_message()` is a coroutine.
@@ -332,3 +334,4 @@ class _LagoStreamManager:
                 self._sdk.emit(usage, **self._opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: anthropic async stream-manager emit failed: %s", exc)
+            self._sdk._report_error(exc, "emit")
