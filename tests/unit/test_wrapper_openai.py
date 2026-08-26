@@ -813,3 +813,188 @@ def test_databricks_abandoned_stream_bills_the_partial_total() -> None:
     sdk.shutdown(timeout=1.0)
     by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
     assert by_code.get("llm_output_tokens") == 7, "partial cumulative count at abandonment"
+
+
+# ----------------------------------------------------------------------
+# Snowflake Cortex: an OpenAI-WIRE endpoint that is not OpenAI
+#
+# Cortex answers chat completions at
+# `https://<account>.snowflakecomputing.com/api/v2/cortex/v1/chat/completions`, so a
+# customer reaches it with the ordinary `openai.OpenAI` client and a base_url. The
+# response body is an ordinary chat completion — nothing in it names Snowflake — so
+# base_url is again the only signal.
+# ----------------------------------------------------------------------
+_SNOW = "https://example-account.snowflakecomputing.com"
+_SNOW_CORTEX = f"{_SNOW}/api/v2/cortex/v1"
+
+
+@pytest.mark.parametrize(
+    "base_url,expected",
+    [
+        # The OpenAI-compatible wire, i.e. what a wrapped client is actually pointed at.
+        (_SNOW_CORTEX, "snowflake"),
+        (f"{_SNOW_CORTEX}/", "snowflake"),
+        # The Anthropic wire and the native inference endpoint live under the same
+        # path, and both are model inference billed in credits.
+        (f"{_SNOW}/api/v2/cortex/v1/messages", "snowflake"),
+        (f"{_SNOW}/api/v2/cortex/inference:complete", "snowflake"),
+        # NOT the host: the SQL API on the same host is what this SDK's own gateway
+        # reader drives, and a warehouse query is not model inference.
+        (f"{_SNOW}/api/v2/statements", ""),
+        (_SNOW, ""),
+        (f"{_SNOW}/", ""),
+        # No segment after `cortex` is not a reachable OpenAI base_url — the client
+        # would POST `/api/v2/cortex/chat/completions`, which Cortex does not serve.
+        # Requiring the trailing slash is what keeps `/api/v2/cortexsomething` out.
+        (f"{_SNOW}/api/v2/cortex", ""),
+    ],
+)
+def test_provider_hint_keys_on_the_cortex_path_only(base_url: str, expected: str) -> None:
+    assert _provider_hint_for(_FakeClient(base_url)) == expected
+
+
+def test_the_hint_table_is_ordered_and_first_match_wins() -> None:
+    """The shape, not the rows: a base_url matching two entries resolves to the first,
+    so entries stay ordered most-specific-first. Pinned because the next row (Ramp) is
+    added by someone reading the table, not this test."""
+    from lago_agent_sdk.wrappers.openai import _PROVIDER_BY_BASE_URL_PATH
+
+    assert _provider_hint_for(_FakeClient(f"{_DBX}/ai-gateway/mlflow/v1/api/v2/cortex/v1")) == "databricks"
+    # Every provider a hint can produce must be one `emit()` bills as token counts,
+    # or the hint silently turns a priceable call into a permanent price miss.
+    from lago_agent_sdk.pricing import TOKEN_BILLED_PROVIDERS
+
+    assert {p for _, p in _PROVIDER_BY_BASE_URL_PATH} <= TOKEN_BILLED_PROVIDERS
+
+
+class _CortexCompletions:
+    """A Cortex chat-completions endpoint. Streaming and non-streaming report the SAME
+    usage on purpose — the QA scenario is that the two paths agree — and the numbers
+    are an UNCACHED call so they read the same whether or not the additive-cache fix
+    for `total_tokens` is on the branch. The cached shape is pinned by that fix's own
+    adapter fixtures (11/12_snowflake_cortex_*.json), not here."""
+
+    #: What Cortex echoes back. Note it is Anthropic's model name on an OpenAI wire.
+    MODEL = "claude-sonnet-4-5"
+    USAGE = {
+        "prompt_tokens": 42,
+        "completion_tokens": 7,
+        "total_tokens": 49,
+        "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+        "completion_tokens_details": {"reasoning_tokens": 0},
+    }
+
+    def __init__(self) -> None:
+        self.last_kwargs: dict[str, Any] | None = None
+        self.raw_response_headers: dict[str, str] = {}
+        self.with_raw_response = _RawResponseProxy(self)
+
+    def create(self, **kwargs: Any) -> Any:
+        self.last_kwargs = dict(kwargs)
+        model = kwargs.get("model") or self.MODEL
+        if kwargs.get("stream"):
+            return iter(
+                [
+                    FakeStreamChunk({"model": model, "choices": [{"delta": {"content": "hi"}}]}),
+                    FakeStreamChunk({"model": model, "choices": [], "usage": dict(self.USAGE)}),
+                ]
+            )
+        return FakeChatCompletion(
+            {"model": model, "choices": [{"message": {"content": "hi"}}], "usage": dict(self.USAGE)}
+        )
+
+
+class _CortexClient:
+    def __init__(self, base_url: str = _SNOW_CORTEX) -> None:
+        self.completions = _CortexCompletions()
+        self.chat = type("C", (), {"completions": self.completions})()
+        self.base_url = base_url
+
+
+_CortexClient.__module__ = "openai.fake"
+
+
+def test_cortex_call_is_stamped_snowflake_end_to_end() -> None:
+    """The stamp asserted on a WRAPPED call, not on `_provider_hint_for` in isolation:
+    the stream-hint bug survived a green suite precisely because one repo only pinned
+    the helper. Without the hint every one of these events says provider="openai" for
+    usage Snowflake billed in credits."""
+    sdk, received = _new_sdk()
+    client = sdk.wrap(_CortexClient())
+    client.chat.completions.create(model="claude-sonnet-4-5", messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert received, "nothing emitted"
+    assert all(e["properties"]["provider"] == "snowflake" for e in received)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code == {"llm_input_tokens": 42, "llm_output_tokens": 7}
+
+
+def test_cortex_streaming_matches_the_non_streaming_call() -> None:
+    """Same usage, same stamp, and the model comes from the response rather than the
+    requested string — the streaming path takes the hint through a different code
+    route (a closure over a synthetic payload), so it needs its own assertion."""
+    sdk, received = _new_sdk()
+    client = sdk.wrap(_CortexClient())
+    list(client.chat.completions.create(model="claude-sonnet-4-5", messages=[], stream=True))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code == {"llm_input_tokens": 42, "llm_output_tokens": 7}
+    assert all(e["properties"]["provider"] == "snowflake" for e in received)
+    assert all(e["properties"]["model"] == "claude-sonnet-4-5" for e in received)
+
+
+def test_a_snowflake_host_that_is_not_cortex_is_not_stamped() -> None:
+    """The mirror of the BYOK case: same host, same client class, not model inference.
+    A host-only match would stamp "snowflake" on it and make it unpriceable forever."""
+    sdk, received = _new_sdk()
+    client = sdk.wrap(_CortexClient(base_url=f"{_SNOW}/api/v2/statements"))
+    client.chat.completions.create(model="gpt-4o", messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert all(e["properties"]["provider"] == "openai" for e in received)
+
+
+def test_a_plain_openai_client_is_behaviourally_unchanged() -> None:
+    """The regression the table refactor could break: no row matches api.openai.com,
+    so an ordinary client must emit exactly what it emitted before."""
+    sdk, received = _new_sdk()
+    fake = FakeOpenAI()
+    fake.base_url = "https://api.openai.com/v1"
+    client = sdk.wrap(fake)
+    client.chat.completions.create(model="gpt-4o-mini", messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    by_code = {e["code"]: int(float(e["properties"]["value"])) for e in received}
+    assert by_code == {"llm_input_tokens": 8, "llm_output_tokens": 16}
+    assert all(e["properties"]["provider"] == "openai" for e in received)
+
+
+def test_cortex_params_are_not_mutated_across_calls() -> None:
+    """`stream_options` is the one nested object the wrapper writes to. Mutating the
+    caller's copy would leak `include_usage` into a later non-streaming call and, worse,
+    make a params dict reused across two clients carry the first one's settings."""
+    sdk, received = _new_sdk()
+    client = sdk.wrap(_CortexClient())
+    params: dict[str, Any] = {"model": "claude-sonnet-4-5", "messages": [], "stream_options": {}}
+    list(client.chat.completions.create(**params, stream=True))
+    list(client.chat.completions.create(**params, stream=True))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert params["stream_options"] == {}, "the caller's nested dict was written to"
+    assert all(e["properties"]["provider"] == "snowflake" for e in received)
+    assert len([e for e in received if e["code"] == "llm_input_tokens"]) == 2
+
+
+def test_a_fully_qualified_cortex_model_keeps_the_customers_spelling() -> None:
+    """A fine-tuned Cortex model is named `database.schema.model`. `CanonicalUsage.model`
+    reports it verbatim — normalizing it here would misreport what the customer ran, and
+    there is nothing to normalize it FOR: "snowflake" reaches no price table at all."""
+    sdk, received = _new_sdk()
+    client = sdk.wrap(_CortexClient())
+    client.chat.completions.create(model="LAGO_DB.CORTEX.my_tuned_mistral7b", messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert all(e["properties"]["model"] == "LAGO_DB.CORTEX.my_tuned_mistral7b" for e in received)
+    assert all(e["properties"]["provider"] == "snowflake" for e in received)
