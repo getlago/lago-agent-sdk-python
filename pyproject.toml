@@ -41,6 +41,8 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=5",
     "hypothesis>=6",
+    "pytest-socket>=0.7",
+    "responses>=0.25",
     # tooling
     "ruff>=0.6",
     "mypy>=1.10",
@@ -65,6 +67,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Localhost stays open so a test can stand up a real server (test_connection_reuse).
+addopts = "--disable-socket --allow-hosts=127.0.0.1,::1"
 
 [tool.ruff]
 line-length = 110
