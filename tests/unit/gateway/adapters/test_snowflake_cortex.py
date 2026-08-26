@@ -533,12 +533,13 @@ def test_a_metric_repeated_in_the_array_is_summed() -> None:
 
 
 def test_an_incomplete_row_is_handed_over_rather_than_judged() -> None:
-    """Hypothetical: all 42 captured rows are `IS_COMPLETED = true`, and a failure
-    produces no row at all — so the plausible reading is "still in flight", UNVERIFIED.
-    Whether such a row is later RESTATED decides the backfill's closed-window rule
-    (billing a row that is restated burns its idempotency key, so the corrected re-run
-    is rejected as a duplicate), which is the caller's decision. The adapter extracts
-    what is there and passes the flag through."""
+    """Hypothetical row, but no longer a hypothetical CASE. Measured 2026-08-26: an
+    in-flight query writes no row at all (19 polls over the 937s one ran, nothing), and
+    the row lands 141s after the query ends already `true` and never moves — so FALSE is
+    not reachable the way this test once guessed. It IS reachable across an hour
+    boundary, where the flag means "completed in THIS aggregation window" and one query
+    writes a row per bucket. The adapter extracts what is there and passes the flag to
+    the caller, who owns the window and idempotency rules."""
     u = extract_snowflake_functions_log(
         {
             "FUNCTION_NAME": "AI_COMPLETE",

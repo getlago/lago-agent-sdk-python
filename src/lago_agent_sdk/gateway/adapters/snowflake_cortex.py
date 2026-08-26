@@ -303,9 +303,10 @@ _TOKEN_UNITS = frozenset({"tokens", ""})
 #                 per query, so it is a genuine property of its row — it stays in
 #                 `extras` and out of the dimensions on CARDINALITY grounds: one
 #                 dimension value per query is a group-by nobody can use.
-#   IS_COMPLETED  handed over rather than acted on — see the docstring. Whether a FALSE
-#                 row is restated later decides the backfill's closed-window rule, and
-#                 that is not a decision a pure extractor gets to make.
+#   IS_COMPLETED  handed over rather than acted on — see the docstring. Measured: an
+#                 in-flight query writes no row at all, so a FALSE row is reachable only
+#                 where a query spans two hour buckets — exactly where `QUERY_ID` also
+#                 stops being unique. Both are the caller's rule, not a pure extractor's.
 _FUNCTIONS_EXTRA_COLUMNS = (
     "FUNCTION_NAME",
     "MODEL_NAME",
@@ -450,13 +451,23 @@ def extract_snowflake_functions_log(row: dict[str, Any]) -> CanonicalUsage:
     alongside a success, and only the success ever appeared. The all-zero path below is
     therefore written and tested from hand-made rows — it guards a shape nobody has seen.
 
-    `IS_COMPLETED` IS REPORTED, NOT ACTED ON. All 42 captured rows are `true`; a FALSE
-    row has never been observed, and since a failure produces no row at all the plausible
-    reading is "query still in flight" rather than "query failed" — UNVERIFIED, and the
-    open question is whether such a row is later RESTATED with final counts. That decides
-    the backfill's window rule (billing a row that is restated later burns its idempotency
-    key, so the corrected re-run is rejected as a duplicate and the remainder never
-    bills), which is why the flag is passed through to the caller who owns that rule.
+    `IS_COMPLETED` IS REPORTED, NOT ACTED ON — and the reason is measured, not guessed.
+    Driven live 2026-08-26: one query ran 200 `AI_COMPLETE` calls then held itself open
+    for 900s, with the whole view polled every 45s. Across 19 polls covering all 937s it
+    ran, NO ROW EXISTED. The row appeared 141s AFTER the query completed, already `true`,
+    with final METRICS and CREDITS, and did not move over the next six minutes. Snowflake
+    documents "running queries are updated every 2 minutes (best effort), SLA 5 minutes";
+    that did not happen with three times the SLA to observe it. So usage is invisible
+    until its query ends, then lands complete — the RESTATEMENT this flag was feared to
+    signal did not reproduce, and rows already billed are not rewritten underneath us.
+
+    Do NOT read that as "FALSE is unreachable". The flag means "was the query completed IN
+    THIS AGGREGATION WINDOW", and the view is hour-bucketed: Snowflake documents a query
+    running 5:30->8:30 writing FOUR rows, one per bucket. The run above stayed inside one
+    bucket, so the multi-window case is untested — and there the flag is the smaller half
+    of the problem, because `QUERY_ID` stops being unique and an idempotency key built
+    from it collides. That is a caller's rule, not a pure extractor's, which is why the
+    flag is handed over rather than acted on here.
     """
     counts, drift = _read_metrics(_column(row, "METRICS"))
 
