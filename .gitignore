@@ -28,3 +28,10 @@ htmlcov/
 .idea/
 .vscode/
 *.swp
+
+# Examples. Kept out of the repo deliberately: the notebooks carry account
+# identifiers, live subscription ids and warehouse names in their saved cells,
+# and a notebook's outputs are the easiest place to leak one by accident. Write
+# them locally; the prose that matters lives in README.md, where it is
+# reviewable as a diff.
+examples/

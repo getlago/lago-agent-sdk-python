@@ -97,7 +97,10 @@ uv lock --upgrade-package X  # bump a single package
    gateway is the implicit default.
 4. Add `tests/unit/gateway/adapters/test_<gateway>.py` against the captured fixtures.
 5. Add a `## <Gateway> AI Gateway` README section and a `CHANGELOG.md` entry.
-6. Add `examples/<gateway>_gateway_demo.ipynb` showing backfill and live calls.
+6. Write `examples/<gateway>_gateway_demo.ipynb` showing backfill and live calls, and
+   keep it local — `examples/` is gitignored, because a saved notebook carries account
+   identifiers and live subscription ids in its cells and outputs. The reviewable
+   artefact is the README section; write that in the same PR.
 
 ### A connector is only as good as the comparison
 
