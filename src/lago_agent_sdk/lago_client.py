@@ -16,6 +16,11 @@ class LagoClient:
         self.api_url = api_url.rstrip("/")
         self.timeout = timeout
         self.verify_ssl = verify_ssl
+        # Not `requests.post`: that builds and closes a Session per call, so every
+        # batch pays a fresh TCP + TLS handshake. Safe to share across sender threads
+        # (urllib3's pool is thread-safe), but size `pool_maxsize` (default 10) to the
+        # sender count — past it connections are opened and discarded, undoing this.
+        self._session = requests.Session()
         if not verify_ssl:
             # The customer explicitly opted out via config — they've already
             # accepted the risk; requests/urllib3's warning on every single
@@ -47,6 +52,12 @@ class LagoClient:
             f"timeout={self.timeout}, verify_ssl={self.verify_ssl})"
         )
 
+    def close(self) -> None:
+        try:
+            self._session.close()
+        except Exception:  # noqa: BLE001
+            pass
+
     def send_batch(self, events: list[dict[str, Any]]) -> None:
         if not events:
             return
@@ -56,7 +67,7 @@ class LagoClient:
             "Content-Type": "application/json",
         }
         payload = {"events": events}
-        resp = requests.post(
+        resp = self._session.post(
             url, headers=headers, data=json.dumps(payload), timeout=self.timeout, verify=self.verify_ssl
         )
         if not (200 <= resp.status_code < 300):

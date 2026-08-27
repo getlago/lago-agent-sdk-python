@@ -166,6 +166,7 @@ def wrap_openai_client(
             sdk.emit(usage, **opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: openai emit failed: %s", exc)
+            sdk._report_error(exc, "emit")
 
     def _extract_stream_usage(payload: Any) -> dict[str, Any] | None:
         """Pull usage out of a stream event, handling both API shapes.

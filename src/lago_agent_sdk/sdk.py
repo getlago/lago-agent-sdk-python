@@ -793,4 +793,6 @@ class LagoSDK:
         return self._queue.flush(timeout=timeout)
 
     def shutdown(self, timeout: float = 5.0) -> None:
+        # Drain first, then release the socket — the queue's exit drain still needs it.
         self._queue.shutdown(timeout=timeout)
+        self._lago_client.close()

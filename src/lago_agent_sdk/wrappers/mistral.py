@@ -80,6 +80,7 @@ def wrap_mistral_client(
             sdk.emit(usage, **opts)
         except Exception as exc:  # noqa: BLE001 — never break the call
             logger.warning("lago: mistral.chat.complete instrumentation failed: %s", exc)
+            sdk._report_error(exc, "emit")
         return response
 
     # ------------------------------------------------------------------
@@ -108,6 +109,7 @@ def wrap_mistral_client(
                         sdk.emit(usage, **opts)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("lago: mistral.chat.stream instrumentation failed: %s", exc)
+                        sdk._report_error(exc, "emit")
 
         return _wrap_iter()
 
@@ -125,6 +127,7 @@ def wrap_mistral_client(
             sdk.emit(usage, **opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: mistral.chat.complete_async instrumentation failed: %s", exc)
+            sdk._report_error(exc, "emit")
         return response
 
     # mistralai v2 `chat.stream_async` is `async def`, so customers naturally
@@ -154,6 +157,7 @@ def wrap_mistral_client(
                         sdk.emit(usage, **opts)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("lago: mistral.chat.stream_async instrumentation failed: %s", exc)
+                        sdk._report_error(exc, "emit")
 
         return _agen()
 

@@ -17,7 +17,10 @@ from lago_agent_sdk.sdk import LagoSDK
 def test_verify_ssl_defaults_to_true() -> None:
     client = LagoClient(api_key="k", api_url="https://api.getlago.com/api/v1")
     assert client.verify_ssl is True
-    with patch("requests.post") as mock_post:
+    # Patch the SESSION, not `requests.post` — the client keeps one Session alive so
+    # the TLS handshake is not repeated per batch. Patching the module-level function
+    # here silently stopped intercepting and let a real request out to the network.
+    with patch.object(client._session, "post") as mock_post:
         mock_post.return_value.status_code = 200
         client.send_batch([{"transaction_id": "t1"}])
     assert mock_post.call_args.kwargs["verify"] is True
@@ -26,7 +29,7 @@ def test_verify_ssl_defaults_to_true() -> None:
 def test_verify_ssl_false_is_passed_through_to_requests() -> None:
     client = LagoClient(api_key="k", api_url="https://api.lago.dev/api/v1", verify_ssl=False)
     assert client.verify_ssl is False
-    with patch("requests.post") as mock_post:
+    with patch.object(client._session, "post") as mock_post:
         mock_post.return_value.status_code = 200
         client.send_batch([{"transaction_id": "t1"}])
     assert mock_post.call_args.kwargs["verify"] is False

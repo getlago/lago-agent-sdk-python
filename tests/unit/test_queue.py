@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Any
 
 import pytest
 
@@ -639,3 +640,80 @@ def test_slow_pricing_refresh_does_not_delay_delivery() -> None:
         assert state["delivered_before_refresh"] is True
     finally:
         q.shutdown(timeout=1.0)
+
+
+# ----------------------------------------------------------------------
+# flush() must not report success on a batch that is still in flight
+# ----------------------------------------------------------------------
+def test_flush_waits_for_an_in_flight_batch() -> None:
+    """`_take_batch` pops events OUT of the buffer before the POST is attempted, so an
+    empty buffer alone never meant delivered. Before the in-flight counter this
+    returned True on five events that then failed."""
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_sender(batch: list[dict[str, Any]]) -> None:
+        entered.set()
+        release.wait(timeout=5)
+        raise RuntimeError("network blip")
+
+    q = EventQueue(sender=slow_sender, flush_interval=0.05, max_batch_size=100, max_buffer_size=1000)
+    try:
+        for i in range(5):
+            q.push({"i": i})
+        assert entered.wait(timeout=3), "sender never picked the batch up"
+
+        # Buffer is empty here, but nothing has been delivered.
+        with q._lock:
+            assert not q._buffer
+            assert q._in_flight == 5
+
+        assert q.flush(timeout=0.3) is False, "flush() claimed success mid-POST"
+    finally:
+        release.set()
+        q._stopping.set()
+
+
+def test_flush_returns_true_once_the_batch_actually_lands() -> None:
+    """The counter must not pin flush() open forever — a delivered batch settles."""
+    delivered: list[int] = []
+
+    def sender(batch: list[dict[str, Any]]) -> None:
+        time.sleep(0.05)
+        delivered.extend(e["i"] for e in batch)
+
+    q = EventQueue(sender=sender, flush_interval=0.05, max_batch_size=100, max_buffer_size=1000)
+    try:
+        for i in range(5):
+            q.push({"i": i})
+        assert q.flush(timeout=5.0) is True
+        assert sorted(delivered) == [0, 1, 2, 3, 4]
+        with q._lock:
+            assert q._in_flight == 0
+    finally:
+        q._stopping.set()
+
+
+def test_a_requeued_batch_is_not_left_counted_as_in_flight() -> None:
+    """A transient failure puts the batch back on the buffer. It is accounted for
+    there, so it must be settled — otherwise `_in_flight` leaks upward on every retry
+    and flush() can never return True again."""
+    calls = {"n": 0}
+
+    def flaky(batch: list[dict[str, Any]]) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient")
+
+    q = EventQueue(sender=flaky, flush_interval=0.05, max_batch_size=100, max_buffer_size=1000)
+    try:
+        for i in range(3):
+            q.push({"i": i})
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and calls["n"] < 2:
+            time.sleep(0.02)
+        assert calls["n"] >= 2, "batch was never retried"
+        assert q.flush(timeout=5.0) is True
+        with q._lock:
+            assert q._in_flight == 0
+    finally:
+        q._stopping.set()

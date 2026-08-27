@@ -125,6 +125,9 @@ class EventQueue:
         self._stopping = threading.Event()
         self._backoff_seconds = 0.0
         self._http_calls = 0  # for tests
+        # `_take_batch` pops events out before the send, so mid-POST they are in
+        # neither the buffer nor Lago. `flush()` has to wait on this too.
+        self._in_flight = 0
         # Per-thread "already reporting an overflow" flag — see push().
         self._reporting = threading.local()
 
@@ -132,10 +135,9 @@ class EventQueue:
         self._thread.start()
         atexit.register(self._atexit_shutdown)
 
-        # After fork, the daemon thread is gone in the child. Recreate it
-        # along with fresh sync primitives — the buffer's contents are copied
-        # over (which is fine: child re-emits its own events) but the lock
-        # state from the parent is unsafe to reuse.
+        # After fork the daemon thread is gone in the child. Recreate it with fresh
+        # sync primitives; the parent's buffer is dropped rather than inherited (see
+        # `_after_in_child`) so the two can never both deliver the same events.
         if hasattr(os, "register_at_fork"):
             os.register_at_fork(after_in_child=self._after_in_child)
 
@@ -146,6 +148,7 @@ class EventQueue:
         self._buffer = deque()  # don't replay parent's events from the child
         self._backoff_seconds = 0.0
         self._http_calls = 0
+        self._in_flight = 0
         self._reporting = threading.local()
         # Note: the PricingProvider self-heals on fork via a PID check inside
         # lookup()/maybe_refresh(); we deliberately do NOT call into it from this
@@ -210,8 +213,8 @@ class EventQueue:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self._lock:
-                empty = not self._buffer
-            if empty:
+                settled = not self._buffer and self._in_flight == 0
+            if settled:
                 return True
             self._wake.set()
             time.sleep(0.01)
@@ -235,11 +238,21 @@ class EventQueue:
                 return []
             n = min(self._max_batch_size, len(self._buffer))
             batch = [self._buffer.popleft() for _ in range(n)]
+            self._in_flight += n
         return batch
+
+    def _settle(self, n: int) -> None:
+        """Delivered, dropped for good, or back on the buffer — no longer in flight."""
+        if n <= 0:
+            return
+        with self._lock:
+            self._in_flight = max(0, self._in_flight - n)
 
     def _replay_failed(self, batch: list[dict[str, Any]]) -> None:
         with self._lock:
             self._buffer.extendleft(reversed(batch))
+            # Same lock acquisition as the re-queue, or flush() sees neither.
+            self._in_flight = max(0, self._in_flight - len(batch))
 
     def _report_error(self, exc: Exception, where: str = "send_batch") -> None:
         """Best-effort `on_error` callback — a customer's own callback must
@@ -303,7 +316,8 @@ class EventQueue:
                         exc,
                     )
         if retry:
-            self._replay_failed(retry)
+            self._replay_failed(retry)  # settles those
+        self._settle(len(batch) - len(retry))
         return len(retry)
 
     def _next_backoff(self) -> float:
@@ -338,6 +352,7 @@ class EventQueue:
                 self._http_calls += 1
                 self._sender(batch)
                 self._backoff_seconds = 0.0
+                self._settle(len(batch))
             except Exception as exc:  # noqa: BLE001
                 if _is_permanent_failure(exc):
                     # Lago's batch endpoint is all-or-nothing: a single bad
@@ -415,6 +430,7 @@ class EventQueue:
                 break
             try:
                 self._sender(batch)
+                self._settle(len(batch))
             except Exception as exc:  # noqa: BLE001
                 if _is_permanent_failure(exc):
                     # `requeue_transient=False`: re-queuing here would put the event
@@ -430,6 +446,7 @@ class EventQueue:
                         len(batch),
                         exc,
                     )
+                    self._settle(len(batch))
         with self._lock:
             stranded = len(self._buffer)
         if stranded:
