@@ -1,9 +1,9 @@
-"""Snowflake Cortex REST adapter — verified against real captured view rows.
+"""Snowflake Cortex adapters — verified against real captured view rows.
 
-Fixtures were read from a live account's `CORTEX_REST_API_USAGE_HISTORY` over the SQL
-API, one file per scenario, exactly as the adapter receives them. Hand-made rows appear
-only where the live surface cannot produce the shape (a failed row, malformed JSON, a
-fine-tuned model) and say so.
+Fixtures were read from a live account's `CORTEX_REST_API_USAGE_HISTORY` and
+`CORTEX_AI_FUNCTIONS_USAGE_HISTORY` over the SQL API, one file per scenario, exactly as
+the adapters receive them. Hand-made rows appear only where the live surface cannot
+produce the shape (a failed row, malformed JSON, a fine-tuned model) and say so.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import pathlib
 from typing import Any
 
 from lago_agent_sdk.gateway.adapters import (
+    extract_snowflake_functions_log,
     extract_snowflake_rest_log,
     resolve_snowflake_subscription,
 )
@@ -21,6 +22,7 @@ from lago_agent_sdk.pricing import deoverlapped_token_total
 FIX = pathlib.Path(__file__).parent / "fixtures" / "snowflake_cortex"
 
 REST_FIXTURES = sorted(p.name for p in FIX.glob("rest_*.json"))
+FUNCTIONS_FIXTURES = sorted(p.name for p in FIX.glob("functions_*.json"))
 
 
 def _load(name: str) -> dict[str, Any]:
@@ -300,3 +302,287 @@ def test_non_numeric_tokens_column_does_not_throw() -> None:
     u = extract_snowflake_rest_log({"TOKENS": "n/a", "TOKENS_GRANULAR": None})
     assert u.nonzero_numeric() == {}
     assert "tokens_granular_missing" not in u.extras
+
+
+# --------------------------------------------------------------------------
+# CORTEX_AI_FUNCTIONS_USAGE_HISTORY — real fixtures
+# --------------------------------------------------------------------------
+def test_real_ai_complete_row_splits_input_and_output() -> None:
+    """The one function type that reports a split: `{input, output}`, no total."""
+    u = extract_snowflake_functions_log(_load("functions_ai_complete.json"))
+    assert u.input == 13
+    assert u.output == 5
+    assert u.model == "claude-sonnet-4-5"
+    assert u.provider == "snowflake"
+    assert u.api == "snowflake_cortex_functions"
+    assert u.extras["function_name"] == "AI_COMPLETE"
+    # No total on this row, so nothing to record and no invented split to declare.
+    assert "metrics_total" not in u.extras
+    assert "metrics_total_only" not in u.extras
+
+
+def test_total_only_row_bills_its_tokens_instead_of_zero() -> None:
+    """The whole reason `total` is a mapped key.
+
+    `AI_CLASSIFY` reports `{total: 195}` and nothing else — measured, and true of five
+    of the six function types. Leaving `total` to the drift sweep extracts all-zero
+    here, so `nonzero_numeric()` is empty, the caller emits nothing, and every
+    task-specific AI SQL function bills ZERO with no error anywhere. This test fails if
+    `total` is ever demoted to `extras`.
+    """
+    u = extract_snowflake_functions_log(_load("functions_total_only_no_model.json"))
+    assert u.nonzero_numeric() == {"input": 195}
+    assert u.extras["metrics_total"] == 195
+    # The count is Snowflake's; the split is ours, and it says so.
+    assert u.extras["metrics_total_only"] is True
+    assert "metrics_unmapped" not in u.extras
+
+
+def test_total_only_row_with_a_model_bills_the_same_way() -> None:
+    """`AI_EMBED` reports `{total: 3}` AND a model, so the empty `MODEL_NAME` and the
+    total-only shape vary independently — an adapter keyed off one to detect the other
+    would mis-handle both of these rows."""
+    u = extract_snowflake_functions_log(_load("functions_total_only_with_model.json"))
+    assert u.nonzero_numeric() == {"input": 3}
+    assert u.model == "snowflake-arctic-embed-m"
+    assert u.extras["metrics_total_only"] is True
+
+
+def test_empty_model_name_is_reported_not_a_crash() -> None:
+    """The four task functions take no model argument, so `MODEL_NAME` is "" on a
+    perfectly good row."""
+    u = extract_snowflake_functions_log(_load("functions_total_only_no_model.json"))
+    assert u.model == ""
+    assert u.extras["function_name"] == "AI_CLASSIFY"
+
+
+def test_every_captured_functions_row_bills_something() -> None:
+    """No captured row may extract to all-zero. This is the 100% under-bill guard: five
+    of the six function types report `{total}` alone, so an adapter that maps only
+    `input`/`output` passes every other test in this file and bills nothing for them."""
+    assert FUNCTIONS_FIXTURES, "no functions_*.json fixtures — capture is missing, not passing"
+    for name in FUNCTIONS_FIXTURES:
+        u = extract_snowflake_functions_log(_load(name))
+        assert u.nonzero_numeric(), name
+        assert u.provider == "snowflake", name
+        assert u.api == "snowflake_cortex_functions", name
+
+
+def test_billed_tokens_reconcile_against_the_views_own_metrics() -> None:
+    """What Lago is told equals what Snowflake metered, on every captured row.
+
+    Sums the token values out of the raw `METRICS` array and compares against the SDK's
+    own de-overlapped total. Nothing on this view overlaps — no cache key, no reasoning
+    key, 0 of 42 rows — so the two are equal by construction, and this fails if a future
+    change makes the adapter double-count (mapping `total` alongside a split) or drop a
+    metric.
+    """
+    for name in FUNCTIONS_FIXTURES:
+        row = _load(name)
+        metered = sum(
+            entry["value"] for entry in json.loads(row["METRICS"]) if entry["key"]["unit"] == "tokens"
+        )
+        assert deoverlapped_token_total(extract_snowflake_functions_log(row)) == metered, name
+
+
+def test_credits_are_recorded_and_never_billed() -> None:
+    """`CREDITS` is what a customer sees in Snowflake's own cost view, so it is what they
+    reconcile against — and it is not a billing input. There is no price mode on this
+    path: no credit rate, no dollar figure, no cost event."""
+    row = _load("functions_ai_complete.json")
+    u = extract_snowflake_functions_log(row)
+    assert u.extras["credits"] == "0.000068400"
+    assert set(u.nonzero_numeric()) == {"input", "output"}
+    assert not [k for k in u.extras if "cost" in k or "usd" in k]
+
+
+def test_row_identity_and_grouping_keys_are_read() -> None:
+    """`QUERY_ID` is the row id the caller's idempotency key is built from — rows are
+    per query, and a key derived from the hour bucket instead collapses the twelve
+    identical calls that share one bucket into a single event. It stays in `extras`
+    rather than the dimensions purely on cardinality grounds; `FUNCTION_NAME` and
+    `MODEL_NAME` are the dimensions worth grouping by."""
+    u = extract_snowflake_functions_log(_load("functions_query_tag.json"))
+    assert u.extras["query_id"] == "01c67fd2-0302-c6c5-001e-6063000320e6"
+    assert u.extras["function_name"] == "AI_COMPLETE"
+    assert u.model == "llama3.1-8b"
+    assert u.extras["warehouse_id"] == "21"
+    assert u.extras["is_completed"] == "true"
+    # `timestamp_ltz`, so a bare epoch — not REST's "epoch nanos offset" triple. Handed
+    # over unparsed; the caller stamps the event.
+    assert u.extras["start_time"] == "1787162400"
+    assert u.extras["end_time"] == "1787166000"
+
+
+def test_a_real_functions_row_resolves_through_role_names() -> None:
+    """Unlike the REST view, this one carries `ROLE_NAMES` — and a Snowflake-written
+    `QUERY_TAG` (`{"app": "cortex_code_sandbox"}`) that must not be read as an id."""
+    assert resolve_snowflake_subscription(_load("functions_large_prompt.json")) == "LAGO_CORTEX_ROLE"
+    tagged = _load("functions_query_tag.json")
+    assert resolve_snowflake_subscription(tagged, order=("query_tag",)) is None
+    assert resolve_snowflake_subscription(tagged) == "ACCOUNTADMIN"
+
+
+def test_metrics_accepted_as_a_list_not_only_a_json_string() -> None:
+    """The SQL API serializes ARRAY columns as TEXT; a typed connector hands back a real
+    list. Reading zeros out of one of them is a silent 100% under-bill."""
+    row = _load("functions_ai_complete.json")
+    as_string = extract_snowflake_functions_log(row)
+    row["METRICS"] = json.loads(row["METRICS"])
+    assert extract_snowflake_functions_log(row).nonzero_numeric() == as_string.nonzero_numeric()
+
+
+# --------------------------------------------------------------------------
+# Shapes the live surface cannot produce — hand-made rows, labelled as such
+# --------------------------------------------------------------------------
+def test_a_split_row_that_also_reports_a_total_bills_the_split_only() -> None:
+    """Unobserved — no captured row reports both (0 of 42). Guarded because it is the
+    one shape where mapping `total` double-bills: 12 real tokens billed as 24."""
+    u = extract_snowflake_functions_log(
+        {
+            "FUNCTION_NAME": "AI_COMPLETE",
+            "METRICS": (
+                '[{"key": {"metric": "input", "unit": "tokens"}, "value": 10},'
+                ' {"key": {"metric": "output", "unit": "tokens"}, "value": 2},'
+                ' {"key": {"metric": "total", "unit": "tokens"}, "value": 12}]'
+            ),
+        }
+    )
+    assert u.nonzero_numeric() == {"input": 10, "output": 2}
+    assert u.extras["metrics_total"] == 12
+    assert "metrics_total_only" not in u.extras
+
+
+def test_failed_or_empty_row_extracts_to_all_zero_and_is_not_marked() -> None:
+    """A failed call produces NO row on this view either (driven live: a 403 and a 400
+    alongside a success; only the success appeared). This row is hypothetical, and with
+    no metric and no credits there is nothing to say — the markers must stay off, or
+    every ignorable row looks like lost revenue."""
+    u = extract_snowflake_functions_log(
+        {
+            "FUNCTION_NAME": "AI_COMPLETE",
+            "MODEL_NAME": "claude-sonnet-4-5",
+            "METRICS": None,
+            "CREDITS": None,
+            "IS_COMPLETED": "true",
+        }
+    )
+    assert u.nonzero_numeric() == {}
+    assert u.model == "claude-sonnet-4-5"
+    assert "metrics_unmapped" not in u.extras
+    assert "metrics_total_only" not in u.extras
+
+
+def test_malformed_metrics_json_degrades_without_throwing_and_is_marked() -> None:
+    """Malformed JSON bills zero — but `CREDITS` proves Snowflake charged for the row,
+    so this is lost revenue rather than an ignorable failure and it says so."""
+    u = extract_snowflake_functions_log(
+        {"FUNCTION_NAME": "AI_SUMMARIZE", "METRICS": "[not json", "CREDITS": "0.000271050"}
+    )
+    assert u.nonzero_numeric() == {}
+    assert u.extras["function_name"] == "AI_SUMMARIZE"
+    assert u.extras["metrics_unmapped"] is True
+
+
+def test_unmapped_metric_reaches_extras_and_is_not_counted() -> None:
+    """A metric name nobody has classified must not be miscounted as one of the three
+    mapped ones, and must not vanish. Cortex adds functions continually, and the sibling
+    REST view grew two token keys and a whole column inside one day."""
+    u = extract_snowflake_functions_log(
+        {
+            "METRICS": (
+                '[{"key": {"metric": "input", "unit": "tokens"}, "value": 100},'
+                ' {"key": {"metric": "guardrail", "unit": "tokens"}, "value": 42}]'
+            ),
+        }
+    )
+    assert u.nonzero_numeric() == {"input": 100}
+    assert u.extras["metrics.guardrail"] == 42
+    assert "metrics.input" not in u.extras
+
+
+def test_a_metric_measured_in_something_other_than_tokens_is_not_billed_as_tokens() -> None:
+    """`METRICS` is a metric NAME plus a UNIT and only the pair means anything — Cortex
+    meters `AI_PARSE_DOCUMENT` per page. Billing 12 pages as 12 tokens is wrong in a way
+    no later test can see, so a foreign unit goes to the sweep — and because that leaves
+    the row billing zero, it is marked."""
+    u = extract_snowflake_functions_log(
+        {
+            "FUNCTION_NAME": "AI_PARSE_DOCUMENT",
+            "METRICS": '[{"key": {"metric": "input", "unit": "pages"}, "value": 12}]',
+            "CREDITS": "0.010000000",
+        }
+    )
+    assert u.nonzero_numeric() == {}
+    assert u.extras["metrics.input.pages"] == 12
+    assert u.extras["metrics_unmapped"] is True
+
+
+def test_a_metric_repeated_in_the_array_is_summed() -> None:
+    """`METRICS` is a list, not an object, so it can carry a metric twice. Last-wins
+    would drop the first value with nothing to show for it."""
+    u = extract_snowflake_functions_log(
+        {
+            "METRICS": (
+                '[{"key": {"metric": "input", "unit": "tokens"}, "value": 30},'
+                ' {"key": {"metric": "input", "unit": "tokens"}, "value": 12}]'
+            ),
+        }
+    )
+    assert u.input == 42
+
+
+def test_an_incomplete_row_is_handed_over_rather_than_judged() -> None:
+    """Hypothetical row, but no longer a hypothetical CASE. Measured 2026-08-26: an
+    in-flight query writes no row at all (19 polls over the 937s one ran, nothing), and
+    the row lands 141s after the query ends already `true` and never moves — so FALSE is
+    not reachable the way this test once guessed. It IS reachable across an hour
+    boundary, where the flag means "completed in THIS aggregation window" and one query
+    writes a row per bucket. The adapter extracts what is there and passes the flag to
+    the caller, who owns the window and idempotency rules."""
+    u = extract_snowflake_functions_log(
+        {
+            "FUNCTION_NAME": "AI_COMPLETE",
+            "IS_COMPLETED": "false",
+            "METRICS": '[{"key": {"metric": "total", "unit": "tokens"}, "value": 7}]',
+            "CREDITS": "0.000000900",
+        }
+    )
+    assert u.extras["is_completed"] == "false"
+    assert u.nonzero_numeric() == {"input": 7}
+
+
+def test_lowercase_functions_column_keys_are_accepted() -> None:
+    u = extract_snowflake_functions_log(
+        {
+            "function_name": "AI_SENTIMENT",
+            "model_name": "",
+            "metrics": '[{"key": {"metric": "total", "unit": "tokens"}, "value": 21}]',
+        }
+    )
+    assert u.input == 21
+    assert u.extras["function_name"] == "AI_SENTIMENT"
+
+
+def test_functions_extractor_never_throws_on_a_malformed_row() -> None:
+    """A window of rows runs through this; one bad row must not take the run down."""
+    rows: list[Any] = [
+        {},
+        {"METRICS": 7},
+        {"METRICS": "{}"},
+        {"METRICS": '[{"key": "input", "value": 5}]'},
+        {"METRICS": '[["input", 5]]'},
+        {"METRICS": '[{"key": {"metric": "input"}, "value": "n/a"}]'},
+        {"MODEL_NAME": 42, "CREDITS": "n/a"},
+    ]
+    for row in rows:
+        u = extract_snowflake_functions_log(row)
+        assert u.nonzero_numeric() == {}
+        assert u.api == "snowflake_cortex_functions"
+
+
+def test_an_array_entry_of_the_wrong_shape_is_kept_by_position() -> None:
+    """Two unusable entries must not collide in `extras`, and neither may disappear."""
+    u = extract_snowflake_functions_log({"METRICS": '["input", "output"]'})
+    assert u.extras["metrics.0"] == "input"
+    assert u.extras["metrics.1"] == "output"
