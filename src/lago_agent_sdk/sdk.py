@@ -789,6 +789,155 @@ class LagoSDK:
             )
         return counts
 
+    def backfill_snowflake(
+        self,
+        source: Any,
+        since: Any = "1 day",
+        *,
+        default_subscription: str | None = None,
+        unified: bool = False,
+        dimensions: dict[str, Any] | None = None,
+        event_id_prefix: str = "sfc",
+        views: Any = None,
+        subscription_order: Any = None,
+    ) -> dict[str, int]:
+        """Read a window of Snowflake Cortex usage and bill all of it.
+
+        The one-call entrypoint: give it a window, it does the rest. Returns
+        ``{"tokens": ..., "skipped": ...}`` — and those are the only two counts there
+        can be. There is no ``cost``, because Snowflake meters Cortex in CREDITS
+        against a rate card that exists in no view, so every row on this path bills as
+        token counts; ``provider = "snowflake"`` is in ``TOKEN_BILLED_PROVIDERS``,
+        which is what routes a customer running ``pricing_mode="price"`` globally to
+        token events here with no price-miss report. There is no ``deferred`` separate
+        from ``skipped`` either — a deferred row is simply one this run did not bill.
+
+        ``skipped`` is a billing GAP and is also reported through ``config.on_error``
+        (``where="backfill"``) — the hook every other gap in this SDK uses — so a
+        caller does not have to inspect the return value to notice one. It has two
+        causes, reported separately because they are fixed differently: a row with no
+        resolvable subscription stays lost until it is tagged or a default is set,
+        while a DEFERRED row is billable revenue held back because an hour-bucketed
+        query's ``QUERY_ID`` is not unique and whether its per-window ``METRICS`` is
+        incremental or cumulative is unmeasured. See ``SnowflakeSource.read_usage``. A
+        run with ``skipped == 0`` is the only one that billed the whole window.
+
+        **Reads the functions view only, unless you ask for more.** The REST view
+        reports the calls a wrapped client already billed live, so backfilling it over
+        the same window bills each of those calls twice — the two ``transaction_id``s
+        are unrelated and Lago cannot reject the duplicate. Pass ``views=("rest",)``
+        only for traffic ``wrap()`` never saw. The functions view is the opposite
+        case: ``AI_COMPLETE`` and friends run as SQL inside the warehouse, there is no
+        client to patch, and a backfill is the ONLY way to bill them.
+
+        ``unified=True`` bills everything to ``default_subscription``, ignoring each
+        row's own attribution — right when one account serves one customer. Left
+        False, each row goes to the subscription its ``QUERY_TAG`` names, falling back
+        to ``default_subscription``. Be deliberate about ``subscription_order``: the
+        default order ends at ``USER_ID``, a numeric Snowflake identity that matches a
+        Lago subscription only if you maintain that mapping yourself. Pass
+        ``("query_tag",)`` to let an unattributed row go unbilled, which is
+        recoverable — billing the wrong subscription is not.
+
+        Every event also carries the Snowflake-side grouping key for its row —
+        ``FUNCTION_NAME`` + ``MODEL_NAME`` for functions rows, ``INFERENCE_REGION``
+        for REST — so grouping Lago the same way you ``GROUP BY`` the view puts the
+        two side by side. Anything in ``dimensions`` is merged on top and wins on a
+        key collision.
+
+        Idempotent: every event id derives from the source row's own id and is scoped
+        by subscription, so re-running the same window has Lago reject the duplicates
+        rather than double-bill. Does not flush — call ``flush()`` when you want to
+        block on delivery.
+
+        ``source`` is normally a :class:`SnowflakeSource`, and ``since`` the window. It
+        also accepts an already-read iterable of ``SnowflakeUsageRow`` — pass one when
+        you have inspected the rows first, so the window is read ONCE. Reading twice is
+        not just slow: a SQL warehouse is a real cost centre, and rows landing between
+        the two reads make the summary you printed disagree with what was billed.
+        """
+        counts = {"tokens": 0, "skipped": 0}
+        reader = source if hasattr(source, "read_usage") else None
+        if reader is not None:
+            kwargs: dict[str, Any] = {"event_id_prefix": event_id_prefix}
+            # Only forwarded when set, so the reader's own safe default — functions
+            # only — is what applies when a caller says nothing.
+            if views is not None:
+                kwargs["views"] = views
+            if subscription_order is not None:
+                kwargs["subscription_order"] = subscription_order
+            rows = reader.read_usage(since, **kwargs)
+        else:
+            rows = source
+        unattributed = 0
+        for row in rows:
+            sub = default_subscription if unified else (row.subscription or default_subscription)
+            if not sub:
+                # No attribution and no fallback — emit() would drop it anyway, but
+                # counting it here makes the gap visible instead of silent.
+                unattributed += 1
+                continue
+            # Row's own reconciliation key first, so an explicit caller dimension of
+            # the same name wins rather than being silently overwritten.
+            dims = {**row.reconcile_dimensions, **(dimensions or {})}
+            # Never mode="tokens" per call: `TOKEN_BILLED_PROVIDERS` is checked inside
+            # the price-mode branch, so forcing the mode here would diverge from what a
+            # global pricing_mode="price" customer gets and suppress the
+            # discarded-usd_cost report.
+            self.emit(
+                row.usage,
+                subscription=sub,
+                dimensions=dims,
+                # Keyed off the subscription actually billed, not the row's own tag —
+                # an unattributed row billed to the default must not carry an id that
+                # blocks it from a different default on a later run.
+                event_id=row.event_id_for(sub),
+                # The row's own time, not the run's — the start of its hour bucket. A
+                # backfill that stamps `now` bills last week's usage into this week's
+                # period, and nothing in Lago can tell afterwards.
+                timestamp=row.occurred_at,
+            )
+            counts["tokens"] += 1
+
+        # Only the reader knows about a row it never yielded, so a caller who passed an
+        # already-read iterable gets 0 here — they hold the source and can read
+        # `deferred_rows` off it directly. `getattr` because `source` is duck-typed: a
+        # caller's own reader need not carry the attribute.
+        deferred = list(getattr(reader, "deferred_rows", ())) if reader is not None else []
+        # Both causes are the same kind of outcome — revenue this run did not bill — so
+        # they share one count, per the connector's {tokens, skipped} contract. They are
+        # reported separately below because the operator fixes them differently.
+        counts["skipped"] = unattributed + len(deferred)
+
+        if unattributed:
+            self._report_error(
+                ValueError(
+                    f"{unattributed} Snowflake row(s) had no resolvable subscription and "
+                    f"were NOT billed. Pass default_subscription=..., set "
+                    f"LagoConfig.default_subscription_id, or tag the queries with "
+                    f"""ALTER SESSION SET QUERY_TAG = '{{"lago_subscription": "..."}}'."""
+                ),
+                "backfill",
+            )
+        if deferred:
+            first = deferred[0]
+            # `read_usage` logs this too. Deliberate, not a stutter: a caller who reads
+            # the window themselves never reaches this line, and one who ran the backfill
+            # needs it on the channel they reconcile against. Worded from the RUN's side
+            # so the two read as one gap seen from two layers rather than as two gaps.
+            self._report_error(
+                ValueError(
+                    f"this run left {len(deferred)} Snowflake functions row(s) unbilled "
+                    f"(e.g. QUERY_ID={first.get('query_id')} reason={first.get('reason')}). "
+                    f"An hour-bucketed query writes one row per bucket under one QUERY_ID, "
+                    f"so the idempotency key collides and whether each row's METRICS is "
+                    f"incremental or cumulative is unmeasured — billing either way would "
+                    f"over- or under-charge by the query's hour count."
+                ),
+                "backfill",
+            )
+        return counts
+
     def flush(self, timeout: float = 5.0) -> bool:
         return self._queue.flush(timeout=timeout)
 
