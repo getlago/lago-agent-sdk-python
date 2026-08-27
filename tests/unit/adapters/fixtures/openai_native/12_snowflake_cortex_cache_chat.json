@@ -1,0 +1,50 @@
+{
+  "_model_id": "claude-sonnet-4-5",
+  "_response": {
+    "choices": [
+      {
+        "finish_reason": "",
+        "index": 0,
+        "message": {
+          "annotations": null,
+          "audio": {
+            "data": "",
+            "expires_at": 0,
+            "id": "",
+            "transcript": ""
+          },
+          "content": "Acknowledged.",
+          "function_call": {
+            "arguments": "",
+            "name": ""
+          },
+          "refusal": "",
+          "role": "assistant",
+          "tool_calls": null
+        }
+      }
+    ],
+    "created": 1787679488,
+    "id": "",
+    "model": "claude-sonnet-4-5",
+    "object": "chat.completion",
+    "service_tier": "",
+    "system_fingerprint": "",
+    "usage": {
+      "completion_tokens": 6,
+      "completion_tokens_details": {
+        "accepted_prediction_tokens": 0,
+        "audio_tokens": 0,
+        "reasoning_tokens": 0,
+        "rejected_prediction_tokens": 0
+      },
+      "prompt_tokens": 7,
+      "prompt_tokens_details": {
+        "audio_tokens": 0,
+        "cache_write_tokens": 0,
+        "cached_tokens": 4805
+      },
+      "total_tokens": 4818
+    }
+  }
+}
