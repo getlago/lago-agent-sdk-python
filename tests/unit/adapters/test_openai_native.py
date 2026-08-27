@@ -168,6 +168,23 @@ def test_model_falls_back_to_request_when_response_is_silent() -> None:
     assert u.model == "gpt-4o-mini"
 
 
+def test_snowflake_cortex_keeps_the_customers_model_spelling() -> None:
+    """A Cortex fine-tune answers as `database.schema.model`. CanonicalUsage.model
+    keeps it verbatim — normalising here would report a model the customer cannot
+    find in their own Snowflake account. (The hint is what a wrapped client whose
+    base_url matches the Cortex path supplies — see _provider_hint_for.)"""
+    u = extract_openai_native(
+        {
+            "model": "mydb.myschema.my_tuned_model",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+        },
+        model_id="mydb.myschema.my_tuned_model",
+        provider_hint="snowflake",
+    )
+    assert u.model == "mydb.myschema.my_tuned_model"
+    assert u.provider == "snowflake"
+
+
 # --------------------------------------------------------------------------
 # Robustness
 # --------------------------------------------------------------------------
@@ -355,9 +372,11 @@ def test_total_tokens_guard_does_not_fold_an_additive_cache_write() -> None:
     tokens outside `prompt_tokens` but inside `total_tokens`. It was answered
     "unreachable on the three surfaces we have", which was true at the time —
     Snowflake Cortex then shipped the same class of payload with `cached_tokens`.
-    Accounted for now whether or not a live surface reports it this way, because
-    `cache_write_tokens` is deliberately never mapped to CanonicalUsage.cache_write
-    and so has no other route into the accounting."""
+    The write is accounted for from the raw payload because `cache_write_tokens`
+    is deliberately never mapped to CanonicalUsage.cache_write and so has no
+    other route into the accounting — but only under a provider whose convention
+    IS additive: for OpenAI itself the write sits inside prompt_tokens (see
+    test_total_tokens_guard_survives_openai_cache_write_beside_a_remainder)."""
     u = extract_openai_native(
         {
             "usage": {
@@ -366,11 +385,34 @@ def test_total_tokens_guard_does_not_fold_an_additive_cache_write() -> None:
                 "total_tokens": 1829,
                 "prompt_tokens_details": {"cache_write_tokens": 1812},
             }
-        }
+        },
+        provider_hint="snowflake",
     )
     assert u.output == 4, "was 1816"
     assert "unaccounted_output_tokens" not in u.extras
     assert u.extras["prompt_tokens_details.cache_write_tokens"] == 1812
+
+
+def test_total_tokens_guard_handles_an_additive_cache_write_on_the_responses_shape() -> None:
+    """Same convention, other API branch: the Responses shape spells the container
+    `input_tokens_details`, so a chat-only `prompt_tokens_details` lookup would
+    leave this exact payload folding 1,812 cached-write tokens into `output` —
+    the two API shapes must not disagree about one provider's convention."""
+    u = extract_openai_native(
+        {
+            "usage": {
+                "input_tokens": 13,
+                "output_tokens": 4,
+                "total_tokens": 1829,
+                "input_tokens_details": {"cache_write_tokens": 1812},
+            }
+        },
+        provider_hint="snowflake",
+    )
+    assert u.api == "responses"
+    assert u.output == 4, "was 1816"
+    assert "unaccounted_output_tokens" not in u.extras
+    assert u.extras["input_tokens_details.cache_write_tokens"] == 1812
 
 
 def test_total_tokens_guard_still_recovers_a_remainder_beside_a_cache_count() -> None:
@@ -385,10 +427,59 @@ def test_total_tokens_guard_still_recovers_a_remainder_beside_a_cache_count() ->
                 "total_tokens": 200,
                 "prompt_tokens_details": {"cached_tokens": 100},
             }
-        }
+        },
+        provider_hint="snowflake",
     )
     assert u.output == 80
     assert u.extras["unaccounted_output_tokens"] == 75
+
+
+def test_total_tokens_guard_keeps_a_subtractive_fold_beside_a_cache_count() -> None:
+    """The case that rules out subtracting the cache unconditionally, raised in
+    review on #23: a SUBSET-convention surface reporting a cached block AND a
+    genuine remainder. Gemini through Google's own OpenAI-compat layer reports
+    `cached_tokens` inside `prompt_tokens` (that is why "gemini"/"openai" are in
+    INPUT_INCLUDES_CACHE_READ) while thinking tokens appear only in the total —
+    so the 1,000 cached tokens are ALREADY accounted for by prompt_tokens, and
+    also adding them to the accounted sum would shrink the fold to 149: 1,000
+    generated tokens unbilled, silently, with no on_error. The full 1,149 must
+    fold."""
+    u = extract_openai_native(
+        {
+            "model": "gemini-2.5-flash",
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 47,
+                "total_tokens": 2396,
+                "prompt_tokens_details": {"cached_tokens": 1000},
+            },
+        }
+    )
+    assert u.provider == "openai", "no hint: OpenAI-compat traffic is stamped openai"
+    assert u.cache_read == 1000
+    assert u.output == 1196, "47 reported + 1149 unaccounted — NOT 196"
+    assert u.extras["unaccounted_output_tokens"] == 1149
+
+
+def test_total_tokens_guard_survives_openai_cache_write_beside_a_remainder() -> None:
+    """The documented-real OpenAI shape (see the NOTE on _MAPPED_DETAIL_FIELDS:
+    prompt_tokens=3025 measured WITH cache_write_tokens=3022 inside it) behind a
+    proxy that under-reports 1,171 tokens. OpenAI's write sits inside
+    prompt_tokens, so it must NOT join the accounted sum — subtracting it
+    unconditionally would swallow the delta and disarm the guard on the one
+    payload shape this file documents as measured."""
+    u = extract_openai_native(
+        {
+            "usage": {
+                "prompt_tokens": 3025,
+                "completion_tokens": 4,
+                "total_tokens": 4200,
+                "prompt_tokens_details": {"cache_write_tokens": 3022},
+            }
+        }
+    )
+    assert u.output == 1175, "4 reported + 1171 unaccounted — NOT 4"
+    assert u.extras["unaccounted_output_tokens"] == 1171
 
 
 def test_total_tokens_guard_is_a_noop_for_genuine_openai() -> None:
@@ -457,28 +548,42 @@ def test_snowflake_cortex_cached_tokens_are_additive() -> None:
     that did not exist yet."""
     model_id, resp = _load("12_snowflake_cortex_cache_chat.json")
     usage = resp["usage"]
-    assert usage["prompt_tokens"] + 4805 + usage["completion_tokens"] == usage["total_tokens"]
+    # Read the cached count off the fixture rather than pinning a literal: the
+    # assertion is the additive IDENTITY, so a recapture with a different cached
+    # count must keep passing instead of nudging someone toward the hand-edit
+    # the header above forbids.
+    cached = usage["prompt_tokens_details"]["cached_tokens"]
+    assert cached > 0, "recapture produced no cached block — see capture_snowflake_cortex.py"
+    assert usage["prompt_tokens"] + cached + usage["completion_tokens"] == usage["total_tokens"]
 
     u = extract_openai_native(resp, model_id=model_id, provider_hint="snowflake")
-    assert u.input == 7
-    assert u.output == 6, "NOT 4811"
-    assert u.cache_read == 4805
-    assert u.cache_write == 0
+    assert u.input == usage["prompt_tokens"]
+    assert u.output == usage["completion_tokens"], "NOT completion + cached"
+    assert u.cache_read == cached
+    # cache_write stays unmapped BY DESIGN (u.cache_write is 0 on every path, so
+    # asserting it proves nothing) — the load-bearing check is that the raw key
+    # is still visible in extras rather than silently consumed by the guard.
+    assert u.extras["prompt_tokens_details.cache_write_tokens"] == 0
     assert u.reasoning == 0
     assert "unaccounted_output_tokens" not in u.extras
 
 
-def test_snowflake_cortex_keeps_the_customers_model_spelling() -> None:
-    """A Cortex fine-tune answers as `database.schema.model`. CanonicalUsage.model
-    keeps it verbatim — normalising here would report a model the customer cannot
-    find in their own Snowflake account."""
-    u = extract_openai_native(
-        {
-            "model": "mydb.myschema.my_tuned_model",
-            "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
-        },
-        model_id="mydb.myschema.my_tuned_model",
-        provider_hint="snowflake",
-    )
-    assert u.model == "mydb.myschema.my_tuned_model"
-    assert u.provider == "snowflake"
+def test_snowflake_cortex_without_a_hint_is_stamped_openai_and_folds() -> None:
+    """Pins what REAL traffic does until the wrapper carries a Cortex base_url
+    rule (PR #26 adds `/api/v2/cortex/` → "snowflake" to _provider_hint_for):
+    the response body has no marker of its own, so an unhinted Cortex payload is
+    stamped "openai", whose SUBSET convention folds the additive cached block
+    into `output` again. This is deliberate — the payload cannot carry the
+    convention, so identification is the fix, not looser arithmetic. If this
+    test starts failing because the fold stopped, the guard has been loosened
+    for every genuine OpenAI-compat proxy; if it fails on `provider`, the hint
+    now reaches this adapter by default and the test should assert the fixed
+    behaviour instead."""
+    model_id, resp = _load("12_snowflake_cortex_cache_chat.json")
+    usage = resp["usage"]
+    cached = usage["prompt_tokens_details"]["cached_tokens"]
+
+    u = extract_openai_native(resp, model_id=model_id)
+    assert u.provider == "openai"
+    assert u.output == usage["completion_tokens"] + cached
+    assert u.extras["unaccounted_output_tokens"] == cached

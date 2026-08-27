@@ -40,6 +40,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from ..canonical import WORKERS_AI_COMPAT_PREFIX, CanonicalUsage
+from ..token_semantics import token_semantics
 from ._common import resolve_model
 
 # Cloudflare Workers AI names every model "@cf/<vendor>/<model>". Reaching one
@@ -189,12 +190,19 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
     # Responses API uses input_tokens. They never both appear.
     is_responses_api = "input_tokens" in usage and "prompt_tokens" not in usage
 
+    # `cache_write` here is the RAW reported count, kept out of CanonicalUsage
+    # (see _MAPPED_DETAIL_FIELDS) and read per-branch from that branch's own
+    # details container — the Responses API spells it input_tokens_details, so a
+    # single prompt_tokens_details lookup would leave the Responses branch
+    # answering the total_tokens reconciliation below differently from the chat
+    # branch for the same convention.
     if is_responses_api:
         input_tokens = _safe_int(usage.get("input_tokens"))
         output_tokens = _safe_int(usage.get("output_tokens"))
         input_details = _safe_dict(usage.get("input_tokens_details"))
         output_details = _safe_dict(usage.get("output_tokens_details"))
         cache_read = _safe_int(input_details.get("cached_tokens"))
+        cache_write = _safe_int(input_details.get("cache_write_tokens"))
         reasoning = _safe_int(output_details.get("reasoning_tokens"))
         audio_input = _safe_int(input_details.get("audio_tokens"))
         audio_output = 0  # not exposed by Responses API today
@@ -206,6 +214,7 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
         prompt_details = _safe_dict(usage.get("prompt_tokens_details"))
         completion_details = _safe_dict(usage.get("completion_tokens_details"))
         cache_read = _safe_int(prompt_details.get("cached_tokens"))
+        cache_write = _safe_int(prompt_details.get("cache_write_tokens"))
         reasoning = _safe_int(completion_details.get("reasoning_tokens"))
         audio_input = _safe_int(prompt_details.get("audio_tokens"))
         audio_output = _safe_int(completion_details.get("audio_tokens"))
@@ -225,11 +234,14 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
             if k not in mapped:
                 extras[f"{container}.{k}"] = v
 
+    resolved_model = resolve_model(resp.get("model"), model_id)
+    provider = provider_hint or _infer_provider(resolved_model)
+
     # Consistency guard: for genuine OpenAI, total_tokens always equals
     # prompt + completion (reasoning is a SUBSET of completion, never additive).
-    # Verified across every captured real OpenAI-shaped response — zero deltas.
-    # So a POSITIVE delta means tokens exist that neither named bucket accounts
-    # for, which only happens behind an OpenAI-COMPATIBLE proxy that under-reports.
+    # Verified across every fixture under openai_native/ — zero deltas. So a
+    # POSITIVE delta means tokens exist that neither named bucket accounts for,
+    # which only happens behind an OpenAI-COMPATIBLE proxy that under-reports.
     #
     # Measured on Gemini through Google's own OpenAI-compat layer:
     # prompt_tokens=57, completion_tokens=47, total_tokens=1253 — 1149 real
@@ -239,56 +251,67 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
     # provider's own total proves those tokens were generated.
     #
     # Deliberately NOT assigned to `reasoning`: compute_cost zeroes reasoning for
-    # providers in _OUTPUT_INCLUDES_REASONING, so for real OpenAI that would set the
+    # providers in OUTPUT_INCLUDES_REASONING, so for real OpenAI that would set the
     # field and immediately discard it, recovering nothing.
     #
-    # `reasoning` is subtracted from the accounted total, and that subtraction is
-    # load-bearing rather than cosmetic. This adapter no longer only ever emits
-    # provider="openai" — it also emits "workers-ai" (Cloudflare `/compat`) and
-    # "databricks" (via provider_hint), and for those compute_cost bills reasoning
-    # ADDITIVELY. A payload reporting both `reasoning_tokens` and an inflated
-    # `total_tokens` would then be charged for them twice: once inside the grown
-    # `output` and again as a separate reasoning line. Subtracting first means a
-    # provider that already broke reasoning out gets no second bill, while the case
-    # this guard exists for — a thinking model behind a proxy that reports NO
-    # breakdown at all (measured: prompt 57, completion 47, total 1253) — still
-    # recovers its 1,149 tokens, because reasoning is 0 there.
+    # WHAT COUNTS AS ACCOUNTED is a per-provider fact, not a payload fact. The
+    # wire is one shape, but the convention behind it splits: OpenAI puts the
+    # cache and reasoning counts INSIDE prompt/completion, while Snowflake
+    # Cortex answers on the same wire with Anthropic's ADDITIVE convention —
+    # measured 2026-08-25, prompt_tokens=7, cached_tokens=4805,
+    # completion_tokens=6, total_tokens=4818: the cached block sits OUTSIDE
+    # prompt_tokens and INSIDE total_tokens. Accounting for input+output only
+    # made those 4,805 cached tokens look unaccounted, so they were folded into
+    # `output` — 4,811 reported for a call that generated 6, while the same
+    # tokens also shipped as cache_read. 2.0x on the call, 800x on the output
+    # line. See 12_snowflake_cortex_cache_chat.json.
     #
-    # The cache counts are subtracted for the SAME reason as reasoning, and this was
-    # the half that was missing. The guard assumed every OpenAI-shaped surface reports
-    # cache_read INSIDE prompt_tokens, which held for all three surfaces that existed
-    # when it was written (native OpenAI: zero deltas; Databricks: 112/112 rows with
-    # total == input + output; Cloudflare: cache outside `input` but outside `total`
-    # too, so it never inflated the delta). Snowflake Cortex is the surface that broke
-    # it — an OpenAI-WIRE endpoint with Anthropic's ADDITIVE convention: measured
-    # 2026-08-25, prompt_tokens=7, cached_tokens=4805, completion_tokens=6,
-    # total_tokens=4818, i.e. the cached block sits OUTSIDE prompt_tokens and INSIDE
-    # total_tokens. Accounting for only input+output+reasoning made those 4,805 cached
-    # tokens look unaccounted, so they were folded into `output` — 4,811 reported for a
-    # call that generated 6, while the same tokens also shipped as cache_read. 2.0x on
-    # the call, 800x on the output line. See 12_snowflake_cortex_cache_chat.json.
+    # So the accounted sum adds each subset field exactly when the provider
+    # reports it OUTSIDE its parent count, read from the same token_semantics
+    # table compute_cost and deoverlapped_token_total bill from — the guard and
+    # the money paths cannot answer the convention question differently. It
+    # cannot be decided from the payload instead: `accounted <= total` admits a
+    # small subtractive cache (folds too little), `cache_read > input` rejects a
+    # small additive one (folds tokens never generated) — both were tried
+    # against real shapes and both leak. And subtracting unconditionally
+    # disarms the guard where it is load-bearing: on a SUBSET surface the cache
+    # is already inside `input`, so also adding it to the accounted sum eats a
+    # genuine remainder — Gemini-compat's own cached+thinking payload would
+    # under-fold by exactly the cached count, silently, with no on_error.
     #
-    # `cache_write_tokens` is read straight from the payload rather than from a
-    # canonical field because it is deliberately NOT mapped to CanonicalUsage.cache_write
-    # (for OpenAI it sits inside prompt_tokens and billing it separately over-charges
-    # 2.24x — see _MAPPED_DETAIL_FIELDS). It still has to be accounted for here, or an
-    # additive cache WRITE would inflate `output` exactly the way the read did.
+    # `cache_write` is the raw prompt/input_tokens_details count because it is
+    # deliberately NOT mapped to CanonicalUsage.cache_write (for OpenAI it sits
+    # inside prompt_tokens and billing it separately over-charges 2.24x — see
+    # _MAPPED_DETAIL_FIELDS), yet an additive cache WRITE would inflate `output`
+    # exactly the way the read did. `cache_write_tokens` is the only spelling
+    # accounted for — an OpenAI-compat proxy re-reporting Anthropic's
+    # `cache_creation_input_tokens` (or `cache_creation.*`) inside a details
+    # block would still fold. Known limit: those spellings land in `extras` via
+    # the drift sweep, which is the signal to add them HERE, deliberately —
+    # deriving the accounting from the sweep itself would assume every unmapped
+    # count is additive, the same payload-only guess ruled out above.
     #
-    # Subtracting them cannot suppress a genuine fold on a subtractive surface: there
-    # the cache counts are already inside `input`, so removing them again only drives
-    # the delta further negative, where the `> 0` guard already no-ops. Verified against
-    # every captured OpenAI, Databricks and Cloudflare fixture — all still 0.
+    # The residual: an UNRECOGNIZED additive proxy arrives as provider="openai"
+    # and folds its cached block, exactly as Cortex did before its base_url rule
+    # existed. The payload carries no convention, so identification (a
+    # _provider_hint_for entry) is the fix — not loosening this arithmetic.
     #
     # A no-op for real OpenAI either way: total always equals prompt + completion.
     declared_total = _safe_int(usage.get("total_tokens"))
     if declared_total:
-        cache_write = _safe_int(_safe_dict(usage.get("prompt_tokens_details")).get("cache_write_tokens"))
-        unaccounted = declared_total - (input_tokens + output_tokens + reasoning + cache_read + cache_write)
+        inc_cache_read, inc_cache_write, inc_reasoning = token_semantics(provider, api)
+        accounted = input_tokens + output_tokens
+        if not inc_reasoning:
+            accounted += reasoning
+        if not inc_cache_read:
+            accounted += cache_read
+        if not inc_cache_write:
+            accounted += cache_write
+        unaccounted = declared_total - accounted
         if unaccounted > 0:
             output_tokens += unaccounted
             extras["unaccounted_output_tokens"] = unaccounted
 
-    resolved_model = resolve_model(resp.get("model"), model_id)
     return CanonicalUsage(
         input=input_tokens,
         output=output_tokens,
@@ -298,7 +321,7 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
         audio_output=audio_output,
         tool_calls=tool_calls,
         model=resolved_model,
-        provider=provider_hint or _infer_provider(resolved_model),
+        provider=provider,
         api=api,
         extras=extras,
     )

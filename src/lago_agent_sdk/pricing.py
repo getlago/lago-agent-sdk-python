@@ -52,6 +52,7 @@ from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from typing import Any, Protocol
 
 from .canonical import WORKERS_AI_COMPAT_PREFIX, CanonicalUsage
+from .token_semantics import token_semantics
 
 logger = logging.getLogger("lago_agent_sdk.pricing")
 
@@ -69,92 +70,12 @@ MISTRAL_MODELS_URL = "https://api.mistral.ai/v1/models"
 # Canonical usage fields we know how to price.
 PRICED_FIELDS = ("input", "output", "cache_read", "cache_write", "reasoning")
 
-# Providers whose reported `input` token count ALREADY includes the cached
-# (`cache_read`) tokens — i.e. cache_read is a subset of input, not additive.
-# For these, the cached portion must be billed at the cache-read rate, not the
-# full prompt rate, so compute_cost moves it out of `input`. Anthropic reports
-# input EXCLUSIVE of cache (cache_read/cache_write are additive), so it's absent.
-#
-# "workers-ai" belongs here because it is only ever reached through Cloudflare's
-# OpenAI-COMPATIBLE endpoint (`.../compat`), so its usage payload is the OpenAI
-# shape: `prompt_tokens` includes `prompt_tokens_details.cached_tokens`. It is a
-# distinct provider only because it prices against Cloudflare's own catalog
-# (see _infer_provider in adapters/openai_native.py) — the token semantics are
-# still OpenAI's. Omitting it billed the cached tokens twice: once at the full
-# input rate because they were never subtracted, and again at the cache-read
-# rate, which Cloudflare's catalog does publish for some models.
-#
-# "mistral" belongs here for the same reason: the API is OpenAI-shaped and reports
-# `prompt_tokens_details.cached_tokens` as a SUBSET of `prompt_tokens`. Mistral's own
-# documented example is unambiguous — prompt_tokens=1013, cached_tokens=1008, and
-# total_tokens=1043 = prompt + completion, which only reconciles if the cached tokens
-# sit inside the prompt count. Omitting it double-billed the cached portion by 6.15x
-# on that payload. 13 of 18 Mistral models on OpenRouter publish a cache-read rate,
-# so the wrong path was reachable for most of them, including Mistral traffic routed
-# through a Cloudflare gateway (the gateway adapter leaves provider="mistral" as-is).
-#
-# "snowflake" is deliberately ABSENT even though Cortex answers on an OpenAI-WIRE
-# endpoint, and this is the case an OpenAI-shaped payload gets wrong: measured on the
-# live surface 2026-08-25, `prompt_tokens: 7`, `cached_tokens: 8745`,
-# `completion_tokens: 6`, `total_tokens: 8758` — the cached block sits OUTSIDE
-# `prompt_tokens` and INSIDE the total, Anthropic's ADDITIVE convention on OpenAI's
-# wire. Adding it here would subtract 8,745 tokens that were never in `input`.
-# Nothing on the Snowflake path reaches `compute_cost` today (TOKEN_BILLED_PROVIDERS
-# short-circuits first), so this is a note for whoever is tempted to "complete" the
-# set by wire shape rather than by measurement.
-_INPUT_INCLUDES_CACHE_READ = frozenset({"openai", "gemini", "workers-ai", "mistral"})
-
-# Providers whose reported `output` token count ALREADY includes the reasoning
-# tokens (reasoning is a subset of output). For these, reasoning is billed as
-# part of output and must NOT be billed again separately. (Gemini's `thoughts`
-# are additive to output, so it's absent here.)
-# "workers-ai" belongs here for the same reason it is in _INPUT_INCLUDES_CACHE_READ
-# above: it is only ever reached through Cloudflare's OpenAI-COMPATIBLE endpoint, so
-# its usage payload is the OpenAI shape — and in that shape
-# `completion_tokens_details.reasoning_tokens` is a SUBSET of `completion_tokens`,
-# exactly as it is for real OpenAI. `extract_openai_native` fills `reasoning` from that
-# key with no provider gate, so omitting it counted the subset twice: measured, a
-# 100/1000/reasoning-800 call reported unit=1900 against 1100 consumed. `compute_cost`
-# would double-BILL the same tokens and does not today only because
-# _CLOUDFLARE_UNIT_FIELD_MAP happens to carry no reasoning unit — an accident, not a
-# guard, and Cloudflare hosts reasoning models (deepseek-r1, qwen, glm).
-_OUTPUT_INCLUDES_REASONING = frozenset({"openai", "workers-ai"})
-
-# Gateway SURFACES that re-report every vendor's usage in the OpenAI shape: `input`
-# already contains cache_read AND cache_write, and `output` already contains
-# reasoning, no matter which vendor actually served the call.
-#
-# This keys on `CanonicalUsage.api` rather than the provider because on a gateway
-# it is the SURFACE that decides the shape, and a surface row reuses the live
-# vendor names. A `provider="anthropic"` row read from Databricks' system table
-# needs the correction; a `provider="anthropic"` response from Anthropic's own API
-# must NOT get it. The vendor name cannot tell those two apart, so it is the wrong
-# key — unlike "workers-ai" above, which names a vendor reachable through exactly
-# one surface and so works as a provider entry.
-#
-# Measured on `system.ai_gateway.usage`, 246 rows across 6 vendors: `total_tokens
-# == input + output` for EVERY vendor group, with cache_read and cache_write inside
-# input and reasoning inside output. Anthropic's own API reports the exact opposite
-# (cache_read=3962 against input=9, additive), which is why keying on the vendor
-# over-billed a real backfill 1.570x — 48,798 tokens reported against 31,091
-# consumed, the excess being exactly cache_read + cache_write.
-#
-# Cloudflare AI Gateway is deliberately ABSENT: its logs preserve each vendor's
-# native shape instead of normalising them. A real Anthropic entry there reads
-# input=10, output=4, total=14 with input_cached_tokens=3429 sitting OUTSIDE that
-# total — additive, exactly like the native API — so the provider-keyed sets are
-# already right for it and adding it here would UNDER-bill the cached portion.
-#
-# Neither Snowflake Cortex surface qualifies, established from real rows in INT-224
-# and left out on purpose. The REST view is additive: `TOKENS` equals the sum of every
-# `TOKENS_GRANULAR` value on 24 of 24 captured rows, so `input` EXCLUDES the cached
-# block (`rest_cache_read.json`, and the wire agrees — see _INPUT_INCLUDES_CACHE_READ
-# above). It also spells its cache keys `cache_read_input` / `cache_write_input`,
-# which no other surface in this tree uses. The functions view reports no cache keys
-# at all. Adding either would drop a cached row from 4,698 tokens to 14; INT-221's
-# reconciliation test asserts the sum against Snowflake's own TOKENS column and fails
-# if someone does.
-_OPENAI_SHAPED_APIS = frozenset({"databricks_gateway"})
+# The subset-vs-additive convention sets (_INPUT_INCLUDES_CACHE_READ and friends)
+# used to live here. They moved to token_semantics.py the day the total_tokens
+# guard in adapters/openai_native.py needed the same answers: the guard, the cost
+# split and the token total are three readings of one convention, and keeping the
+# sets in this module would have forced the adapter layer to import pricing's
+# HTTP machinery to reach them.
 
 # Providers this SDK bills as TOKEN COUNTS by design, even in price mode — because
 # no per-token rate for them exists anywhere the SDK could read it.
@@ -408,24 +329,14 @@ class CostBreakdown:
 
 
 def _token_semantics(usage: Any) -> tuple[bool, bool, bool]:
-    """Which of a record's subsets are ALREADY inside their parent count.
+    """`token_semantics` read off a CanonicalUsage — see token_semantics.py.
 
-    Returns ``(input_includes_cache_read, input_includes_cache_write,
-    output_includes_reasoning)``, the three overlaps the billing paths have to
-    remove. The SURFACE wins over the vendor: a gateway that re-reports usage in
-    its own shape has already decided the convention, so `api` is checked first
-    and the provider-keyed sets only answer for a native call.
-
-    `cache_write` is surface-only by design and has no provider set to consult:
-    Anthropic is the one vendor whose native API bills cache writes at all, and it
-    reports them additively, so no native response needs the correction.
+    Kept as the module-internal spelling so the billing paths keep reading the
+    convention from the record they are billing, not from loose strings.
     """
-    provider = (getattr(usage, "provider", "") or "").lower()
-    shaped = (getattr(usage, "api", "") or "").lower() in _OPENAI_SHAPED_APIS
-    return (
-        shaped or provider in _INPUT_INCLUDES_CACHE_READ,
-        shaped,
-        shaped or provider in _OUTPUT_INCLUDES_REASONING,
+    return token_semantics(
+        getattr(usage, "provider", "") or "",
+        getattr(usage, "api", "") or "",
     )
 
 
@@ -500,10 +411,11 @@ def deoverlapped_token_total(usage: Any) -> int:
     applied, because a subset counted twice inflates the reported quantity exactly
     as it would inflate a price:
 
-      * reasoning   ⊆ output — providers in _OUTPUT_INCLUDES_REASONING, or any
-        row from a surface in _OPENAI_SHAPED_APIS
-      * cache_read  ⊆ input  — providers in _INPUT_INCLUDES_CACHE_READ, likewise
-      * cache_write ⊆ input  — surfaces in _OPENAI_SHAPED_APIS only
+      * reasoning   ⊆ output — providers in OUTPUT_INCLUDES_REASONING, or any
+        row from a surface in OPENAI_SHAPED_APIS
+      * cache_read  ⊆ input  — providers in INPUT_INCLUDES_CACHE_READ, likewise
+      * cache_write ⊆ input  — providers in INPUT_INCLUDES_CACHE_WRITE, likewise
+        (all in token_semantics.py)
 
     Deliberately NOT gated on a unit price existing, unlike `compute_cost`'s
     subtraction — this is a token count, so whether a rate happens to be published

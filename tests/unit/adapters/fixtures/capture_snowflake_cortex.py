@@ -10,12 +10,18 @@ serves them. They are the surface that proves the `total_tokens` reconciliation
 cannot assume OpenAI's subtractive cache convention — on Cortex, `cached_tokens`
 sits OUTSIDE `prompt_tokens` and INSIDE `total_tokens`.
 
-Two things about Cortex that this script encodes, both measured 2026-08-25:
+Three things about Cortex that this script encodes, all measured 2026-08-25:
 
   * Caching only happens with an explicit Anthropic-style `cache_control` part.
     The same 4,800-token prompt sent twice WITHOUT it reports `cached_tokens: 0`
     both times, so the "call1 then call2" pattern the OpenAI cache fixtures use
     captures nothing here.
+  * One cold call is enough for fixture 12: unlike Anthropic's own wire, Cortex
+    reports a cache CREATION under `cached_tokens` too (`cache_write_tokens`
+    stays 0), so the first `cache_control` call already carries the cached
+    block. Measured on a matched pair — both calls returned identical usage
+    while the account-usage view logged one `cache_write_input` row and one
+    `cache_read_input` row. No warm-up call, no 5-minute-TTL race on recapture.
   * `max_tokens` is rejected outright ("deprecated in favor of
     max_completion_tokens"), unlike OpenAI which still accepts it.
 
@@ -63,11 +69,16 @@ def call(host: str, pat: str, body: dict) -> dict:
     return r.json()
 
 
-def save(name: str, response: dict) -> None:
+def save(name: str, body: dict, host: str, pat: str) -> None:
+    # The existence check runs BEFORE the request: `save(..., call(...))` would
+    # evaluate the call first and fire two live Cortex requests — the 4,800-token
+    # cacheable one included — on a checkout where both fixtures already exist,
+    # then print "skip". Idempotent means no request, not just no write.
     path = OUT / name
     if path.exists():
         print(f"skip {name} (exists)")
         return
+    response = call(host, pat, body)
     path.write_text(json.dumps({"_model_id": MODEL, "_response": response}, indent=2) + "\n")
     print(f"wrote {name}")
 
@@ -80,43 +91,40 @@ def main() -> None:
 
     save(
         "11_snowflake_cortex_plain_chat.json",
-        call(
-            host,
-            pat,
-            {
-                "model": MODEL,
-                "messages": [{"role": "user", "content": "What is 2 + 2? Answer in one word."}],
-                "max_completion_tokens": 32,
-            },
-        ),
+        {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "What is 2 + 2? Answer in one word."}],
+            "max_completion_tokens": 32,
+        },
+        host,
+        pat,
     )
 
     # The regression fixture. `cache_control` is what makes Cortex report a cached
     # block at all, and the resulting payload is the one that used to inflate
-    # `output` by the whole cached count.
+    # `output` by the whole cached count. One call suffices — see the docstring's
+    # creation-reports-as-cached_tokens note.
     save(
         "12_snowflake_cortex_cache_chat.json",
-        call(
-            host,
-            pat,
-            {
-                "model": MODEL,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": CACHEABLE_PREFIX,
-                                "cache_control": {"type": "ephemeral"},
-                            },
-                            {"type": "text", "text": "Reply with one word."},
-                        ],
-                    }
-                ],
-                "max_completion_tokens": 32,
-            },
-        ),
+        {
+            "model": MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": CACHEABLE_PREFIX,
+                            "cache_control": {"type": "ephemeral"},
+                        },
+                        {"type": "text", "text": "Reply with one word."},
+                    ],
+                }
+            ],
+            "max_completion_tokens": 32,
+        },
+        host,
+        pat,
     )
 
 
