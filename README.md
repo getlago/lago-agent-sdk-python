@@ -286,6 +286,8 @@ The `base_url` is what identifies these calls as Snowflake rather than OpenAI �
 
 **Cortex's `cached_tokens` is additive, the opposite of OpenAI's convention.** A cached call reports `prompt_tokens: 7`, `cached_tokens: 8745`, `completion_tokens: 6`, `total_tokens: 8758` — the cached block is *not* inside `prompt_tokens`. Caching also only happens when you send an explicit `cache_control: {"type": "ephemeral"}` content part; the same prompt twice without one reports zero cached both times.
 
+**The wire cannot tell a cache creation from a read; the view can.** A creation call reports the same `cached_tokens` with `cache_write_tokens: 0`, so the live `wrap()` path bills a creation as a cache read (`llm_cached_input_tokens`). The REST view records the same call as `cache_write_input`, so a backfilled row bills `llm_cache_creation_tokens` instead. Verified live on a matched pair (INT-230): identical wire usage, one `cache_write_input` row and three `cache_read_input` rows. If you price creation and read differently, know that live-path traffic reports everything at the read metric.
+
 ### Backfill — the SQL functions surface
 
 ```python
@@ -310,7 +312,7 @@ sdk.backfill_snowflake(
 )
 ```
 
-The window reads **whole closed hours only** — floored at both ends, with the current hour excluded, because a bucket is not complete until its hour closes and billing it early burns that row's idempotency key so the correction is rejected as a duplicate. The newest hour therefore arrives on the next run: pass a window comfortably wider than your run interval, since this reader keeps no cursor.
+The window reads **whole closed hours only** — floored at both ends, with the current hour excluded, because a bucket is not complete until its hour closes and billing it early burns that row's idempotency key so the correction is rejected as a duplicate. The newest hour therefore arrives on the next run: pass a window comfortably wider than your run interval, since this reader keeps no cursor. One more boundary Lago itself draws: events stamped before the subscription started are **accepted and silently never billed** — a window reaching back past the subscription's start reports its rows as billed while nothing lands in usage, so start backfills at the subscription's start date.
 
 **Attribution comes from `QUERY_TAG`**, the only customer-injectable key on either view, and the same `lago_subscription` key Cloudflare and Databricks read from their own metadata:
 
@@ -319,7 +321,7 @@ ALTER SESSION SET QUERY_TAG = '{"lago_subscription": "sub_123"}';
 SELECT AI_COMPLETE('claude-sonnet-4-5', 'summarize this');
 ```
 
-Be deliberate about `subscription_order`. The default tries `query_tag`, then `role_names`, then `user_id` — and `USER_ID` is a *numeric Snowflake identity*, which matches a Lago subscription only if you maintain that mapping yourself. Pass `subscription_order=("query_tag",)` to let an untagged row go unbilled instead: that is recoverable, and billing the wrong subscription is not.
+By default the tag is the **only** attribution source: an untagged row falls to `default_subscription`, and to a skip (counted, reported) when there is none. `role_names` and `user_id` are opt-in — `subscription_order=("query_tag", "role_names")` — for accounts that really map one Snowflake role or user to one customer. They are not in the default because every live row carries both, so they would swallow untagged rows and bill them to a Snowflake identity instead of your default: that is a wrong subscription, and unlike a skip it is not recoverable.
 
 **Grouping matches the view.** Each event carries the grouping key of the surface it came from — `function_name` + `model_name` for functions rows, `inference_region` for REST — so a `GROUP BY` on the view and the same grouping in Lago line up. `dimensions={...}` adds your own; yours win on a collision.
 
