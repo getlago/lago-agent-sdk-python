@@ -4,6 +4,10 @@ All notable changes to this project will be documented here. Format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- **README restructured.** The gateway deep-dives (Cloudflare, Databricks, Snowflake, Ramp Router) and the provider coverage/token-semantics tables moved to `docs/`, verbatim; the README keeps a short quickstart per provider and per gateway with a link to each full guide.
+
 ### Added
 
 - **Ramp Router support: a customer pointing a client at Router billed nothing at all.** Router is an OpenAI-Responses-compatible gateway in front of OpenAI, Anthropic, Google Vertex, Fireworks and xAI, so a wrapped OpenAI client aimed at it made real, paid calls that produced **zero events** — the SDK had no way to tell a Router-routed call from a direct OpenAI one. The trick that identifies Cloudflare Workers AI cannot work here: Router's model ids are account-specific and opaque (its docs: "Never invent one or reuse a provider's public model name"), and an Anthropic-served response arrives in OpenAI's schema, byte-indistinguishable from a real OpenAI one. `base_url` is the only signal, read once at wrap time so the hot path gains no per-call work — and matched on the parsed HOST, because `"api.router.com" in base_url` also matches `https://evil.example.com/api.router.com/v1` and would stamp an unrelated endpoint's traffic as Router-served.
