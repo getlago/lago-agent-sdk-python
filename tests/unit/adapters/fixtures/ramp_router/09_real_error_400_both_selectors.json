@@ -1,0 +1,31 @@
+{
+  "_probe": "P7",
+  "_question": "error envelope for: both route selectors at once",
+  "_captured": "real capture against a live Ramp Router account",
+  "_scrubbed": "credentials, emails, IPs, dashboard URLs; prompt and completion text blanked to \"\"",
+  "_status": 400,
+  "_headers": {
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "cf-cache-status": "DYNAMIC",
+    "cf-ray": "a323837ffcfe0956-EWR",
+    "connection": "keep-alive",
+    "content-length": "174",
+    "content-type": "application/json",
+    "date": "Fri, 28 Aug 2026 13:03:01 GMT",
+    "server": "cloudflare",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "vary": "Origin",
+    "x-content-type-options": "nosniff",
+    "x-request-id": "21dcb9c3-d76d-4de6-b3df-a1d352e1dcf5",
+    "x-trace-id": "21dcb9c3-d76d-4de6-b3df-a1d352e1dcf5"
+  },
+  "_body": {
+    "error": {
+      "message": "`models` cannot be provided with `model`; provide either `model` or `models`.",
+      "type": "invalid_request_error",
+      "param": "models",
+      "code": "invalid_request"
+    }
+  },
+  "_body_was_json": true
+}

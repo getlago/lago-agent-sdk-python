@@ -1,0 +1,32 @@
+{
+  "_probe": "P7",
+  "_question": "error envelope for: an id not in this key's catalog",
+  "_captured": "real capture against a live Ramp Router account",
+  "_scrubbed": "credentials, emails, IPs, dashboard URLs; prompt and completion text blanked to \"\"",
+  "_status": 404,
+  "_headers": {
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "cf-cache-status": "DYNAMIC",
+    "cf-ray": "a323837edfea0956-EWR",
+    "connection": "keep-alive",
+    "content-encoding": "br",
+    "content-type": "application/json",
+    "date": "Fri, 28 Aug 2026 13:03:00 GMT",
+    "server": "cloudflare",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "transfer-encoding": "chunked",
+    "vary": "Origin",
+    "x-content-type-options": "nosniff",
+    "x-request-id": "275b1569-5760-4ab4-9ac5-816b1714c31c",
+    "x-trace-id": "275b1569-5760-4ab4-9ac5-816b1714c31c"
+  },
+  "_body": {
+    "error": {
+      "message": "The model `definitely-not-a-model-id` does not exist or you do not have access to it.",
+      "type": "invalid_request_error",
+      "param": "model",
+      "code": "model_not_found"
+    }
+  },
+  "_body_was_json": true
+}

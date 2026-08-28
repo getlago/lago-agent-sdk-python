@@ -37,6 +37,7 @@ Known gaps (intentional, documented):
 
 from __future__ import annotations
 
+import re
 from typing import Any, cast
 
 from ..canonical import WORKERS_AI_COMPAT_PREFIX, CanonicalUsage
@@ -52,6 +53,93 @@ from ._common import resolve_model
 _WORKERS_AI_MODEL_PREFIX = "@cf/"
 
 # Top-level usage fields we recognize across BOTH chat completions and responses APIs.
+#: Provider stamped on any call that reached a model through Ramp Router.
+#:
+#: Router is an OpenAI-Responses-compatible gateway in front of OpenAI, Anthropic, Google
+#: Vertex, Fireworks and xAI. It is treated as a provider in its own right here, rather
+#: than resolved to the vendor that actually served the call, because Router's model ids
+#: are ACCOUNT-SPECIFIC and opaque — its docs are explicit: "Valid model IDs are
+#: account-specific. They come from `GET /v1/models`. Never invent one or reuse a
+#: provider's public model name." So unless the caller named an explicit
+#: `provider:provider-model` candidate, nothing in the response says who served it, and
+#: the model-string rule `_infer_provider` uses cannot see it.
+#:
+#: "ramp_router" is in `TOKEN_BILLED_PROVIDERS` and deliberately absent from
+#: `_VENDOR_MAP`. Two distinct things would otherwise go wrong at once:
+#:
+#:   * A price lookup under a guessed vendor can be flatly wrong. Router bills at list
+#:     price on its shared key but $0 for a BYOK-served request, and a non-default
+#:     service tier bills at a rate its own catalog says "may differ" from the base one.
+#:   * The overlap semantics belong to ROUTER, not to the served vendor. Measured
+#:     2026-08-28 on an Anthropic-served model — the case that would diverge if anything
+#:     did: Router normalizes the NUMBERS to OpenAI's convention, not just the schema
+#:     (cached block INSIDE input, reasoning inside output; fixtures
+#:     06b_real_cache_control_warm.json / 07_real_reasoning.json). So stamping the served
+#:     vendor would de-overlap with the WRONG convention whenever that vendor's native
+#:     one differs — "ramp_router" carries its own OPENAI_SHAPED_APIS entry instead.
+#:
+#: Token mode is unaffected and exact either way: it emits the counts Router reported.
+#: Price mode routes to those same token events via `TOKEN_BILLED_PROVIDERS`, with no
+#: per-call price-miss report — a structural, permanent miss must not cry wolf on the
+#: error hook (the same decision Databricks and Snowflake got). The catalog DOES publish
+#: per-model rates (`router.pricing`, 01_real_models_catalog.json), so a Router price
+#: mode is buildable — but the response still cannot say whether a BYOK key served the
+#: call ($0) or which tier rate applied, and every observed catalog entry carries an
+#: EMPTY input rate, so token counts stay the honest default.
+RAMP_ROUTER_PROVIDER = "ramp_router"
+
+# Router's documented service tiers, appearing as the third segment of a candidate id
+# (`openai:gpt-5.4-mini:flex`). OpenAI sells `auto`/`default`/`flex`/`priority`,
+# Fireworks `default`/`priority`.
+#
+# Matched against this set rather than read as "whatever follows the last colon": a model
+# segment may contain a colon of its own, and mistaking one for a tier would silently
+# rename the model and split it into a second row in Lago. An unrecognized trailing
+# segment therefore stays part of the model, which is recoverable; a renamed model is
+# not.
+_ROUTER_SERVICE_TIERS = frozenset({"auto", "default", "flex", "priority"})
+
+# A provider segment is a short lowercase token. Anything else is part of the model.
+_ROUTER_PROVIDER_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
+
+
+def _parse_router_model(model_id: str) -> tuple[str, str, str]:
+    """Split a Router model id into its (provider, model, service-tier) parts.
+
+    Router names a model two ways, and only one of them is parseable. A plain `model` is
+    an account-specific id that reveals nothing; a `models` candidate is
+    `provider:provider-model[:service-tier]`. Both arrive in the same response field, so
+    this decides which one it is looking at rather than assuming.
+
+    Split on the FIRST colon, never on all of them: Fireworks candidates carry a path as
+    their model segment (`fireworks:accounts/fireworks/models/kimi-k2p7-code`), so a
+    naive split loses everything after the second separator.
+
+    The model comes back BARE, provider prefix and tier stripped, so a model served
+    through Router rolls up in Lago against the same name a direct call to it reports.
+    Leaving the prefix on splits one model across two rows for no billing benefit.
+    """
+    first_colon = model_id.find(":")
+    if first_colon <= 0:
+        return "", model_id, ""
+
+    head = model_id[:first_colon].lower()
+    rest = model_id[first_colon + 1 :]
+    # A head that is not a plausible provider token — a path, or something long — means
+    # this is an opaque id that merely happens to contain a colon, not a candidate.
+    if not rest or not _ROUTER_PROVIDER_SEGMENT.match(head):
+        return "", model_id, ""
+
+    tier = ""
+    last_colon = rest.rfind(":")
+    if last_colon > 0:
+        trailing = rest[last_colon + 1 :].lower()
+        if trailing in _ROUTER_SERVICE_TIERS:
+            tier = trailing
+            rest = rest[:last_colon]
+    return head, rest, tier
+
+
 _KNOWN_USAGE_FIELDS = {
     # chat completions
     "prompt_tokens",
@@ -312,6 +400,30 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
             output_tokens += unaccounted
             extras["unaccounted_output_tokens"] = unaccounted
 
+    # `resolve_model` prefers the response's own model over the requested one, which is
+    # what makes a Router fallback bill correctly with no extra work: a `models` request
+    # sends no `model` at all, and Switchyard routing can serve a different model than
+    # the one asked for, so the response is the only place the SERVED model appears.
+    model = resolved_model
+    if provider_hint == RAMP_ROUTER_PROVIDER:
+        router_provider, parsed_model, tier = _parse_router_model(resolved_model)
+        if router_provider:
+            model = parsed_model
+            # Recorded, not promoted to `provider` — see RAMP_ROUTER_PROVIDER for why
+            # the served vendor cannot drive the de-overlap convention.
+            extras["router_provider"] = router_provider
+        # The tier is billing-relevant on its own: Router's catalog says tiers "may use
+        # different rates" than the base ones it publishes, so a pinned non-default tier
+        # is the difference between a correct price and an over-bill at the standard
+        # rate.
+        if tier:
+            extras["service_tier"] = tier
+        # Which of Router's two OpenAI-shaped surfaces answered. Router documents only
+        # `/v1/responses` (`/v1/chat/completions` 404s), so a `chat_completions` value
+        # here is drift worth seeing rather than a case to handle.
+        extras["router_surface"] = api
+        api = RAMP_ROUTER_PROVIDER
+
     return CanonicalUsage(
         input=input_tokens,
         output=output_tokens,
@@ -320,7 +432,7 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
         audio_input=audio_input,
         audio_output=audio_output,
         tool_calls=tool_calls,
-        model=resolved_model,
+        model=model,
         provider=provider,
         api=api,
         extras=extras,

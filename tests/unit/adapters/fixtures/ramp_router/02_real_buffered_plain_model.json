@@ -1,0 +1,124 @@
+{
+  "_probe": "P2",
+  "_question": "does response.model echo the requested id or the served candidate?",
+  "_captured": "real capture against a live Ramp Router account",
+  "_scrubbed": "credentials, emails, IPs, dashboard URLs; prompt and completion text blanked to \"\"",
+  "_requested_model": "gpt-5.4-nano",
+  "_status": 200,
+  "_headers": {
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "cf-cache-status": "DYNAMIC",
+    "cf-ray": "a323832a6ad50956-EWR",
+    "connection": "keep-alive",
+    "content-encoding": "br",
+    "content-type": "application/json",
+    "date": "Fri, 28 Aug 2026 13:02:48 GMT",
+    "server": "cloudflare",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "transfer-encoding": "chunked",
+    "vary": "Origin",
+    "x-content-type-options": "nosniff",
+    "x-request-id": "c8767890-1450-4010-bbf1-1f545a3aca2a",
+    "x-trace-id": "c8767890-1450-4010-bbf1-1f545a3aca2a"
+  },
+  "_body": {
+    "background": false,
+    "billing": {
+      "payer": "developer"
+    },
+    "completed_at": 1787922168,
+    "conversation": null,
+    "created_at": 1787922167,
+    "error": null,
+    "frequency_penalty": 0,
+    "id": "resp_0e30162a5607e9f1006a9186f7c65c87d2a054e3b761db3b11",
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": 16,
+    "max_tool_calls": null,
+    "metadata": {
+      "lago_subscription": "rr_gateway_test_sub"
+    },
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "object": "response",
+    "output": [
+      {
+        "id": "msg_0e30162a5607e9f1006a9186f8850c87d2ad3e33844fd0a54a",
+        "type": "message",
+        "status": "completed",
+        "content": [
+          {
+            "type": "output_text",
+            "annotations": [],
+            "logprobs": [],
+            "text": ""
+          }
+        ],
+        "phase": "final_answer",
+        "role": "assistant"
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0,
+    "previous_response_id": null,
+    "prompt": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "in_memory",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "generate_summary": null,
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "flex",
+    "status": "completed",
+    "store": true,
+    "temperature": 1,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+      "input_tokens": 14,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 5,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 19
+    },
+    "user": null
+  },
+  "_body_was_json": true
+}

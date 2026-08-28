@@ -107,7 +107,7 @@ PRICED_FIELDS = ("input", "output", "cache_read", "cache_write", "reasoning")
 # a real vendor prefix would let a near-miss model string match Anthropic's or
 # OpenAI's own OpenRouter rate — a silent mispricing of a call Snowflake charged in
 # credits. The absence is the guard; do not "fix" it.
-TOKEN_BILLED_PROVIDERS = frozenset({"databricks", "snowflake"})
+TOKEN_BILLED_PROVIDERS = frozenset({"databricks", "snowflake", "ramp_router"})
 
 # Canonical field -> OpenRouter pricing key.
 _OPENROUTER_FIELD_MAP = {

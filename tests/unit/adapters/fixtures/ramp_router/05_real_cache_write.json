@@ -1,0 +1,84 @@
+{
+  "_probe": "P5",
+  "_question": "first call — does it report cache_write/creation tokens?",
+  "_captured": "real capture against a live Ramp Router account",
+  "_scrubbed": "credentials, emails, IPs, dashboard URLs; prompt and completion text blanked to \"\"",
+  "_status": 200,
+  "_headers": {
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "cf-cache-status": "DYNAMIC",
+    "cf-ray": "a323833a594d0956-EWR",
+    "connection": "keep-alive",
+    "content-encoding": "br",
+    "content-type": "application/json",
+    "date": "Fri, 28 Aug 2026 13:02:50 GMT",
+    "server": "cloudflare",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "transfer-encoding": "chunked",
+    "vary": "Origin",
+    "x-content-type-options": "nosniff",
+    "x-request-id": "79334ffd-c833-4a08-97de-46e934325b4a",
+    "x-trace-id": "79334ffd-c833-4a08-97de-46e934325b4a"
+  },
+  "_body": {
+    "id": "resp_msg_011CeVC5Nk6htG3Wwq2qnwNt",
+    "created_at": 1787922170.8472354,
+    "error": null,
+    "incomplete_details": null,
+    "instructions": null,
+    "metadata": null,
+    "model": "claude-haiku-4-5-20251001",
+    "object": "response",
+    "output": [
+      {
+        "id": "msg_011CeVC5Nk6htG3Wwq2qnwNt",
+        "content": [
+          {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": null
+          }
+        ],
+        "role": "assistant",
+        "status": "completed",
+        "type": "message",
+        "phase": null
+      }
+    ],
+    "parallel_tool_calls": false,
+    "temperature": null,
+    "tool_choice": "auto",
+    "tools": [],
+    "top_p": null,
+    "background": null,
+    "completed_at": null,
+    "conversation": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "previous_response_id": null,
+    "prompt": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": null,
+    "reasoning": null,
+    "safety_identifier": null,
+    "service_tier": "default",
+    "status": "completed",
+    "text": null,
+    "top_logprobs": null,
+    "truncation": null,
+    "usage": {
+      "input_tokens": 1457,
+      "input_tokens_details": {
+        "cached_tokens": 0
+      },
+      "output_tokens": 5,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 1462
+    },
+    "user": null
+  },
+  "_body_was_json": true
+}
