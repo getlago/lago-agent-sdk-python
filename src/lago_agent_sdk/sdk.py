@@ -858,7 +858,10 @@ class LagoSDK:
         ``event_id_prefix`` AND resolves the same subscription the live path billed —
         a custom prefix, or a different ``default_subscription`` than the wrapper's
         resolution, silently makes the two keys unrelated again and nothing reports
-        it. Know also what a fully-duplicate window costs: ``/events/batch`` rejects a
+        it. Nor does it cover a cache-creation call's cached block: the wire reports
+        creations as reads, so the live path billed ``cache_read`` while this backfill
+        bills the row's ``cache_write`` under a different id — input and output dedup,
+        that one component double-counts. Know also what a fully-duplicate window costs: ``/events/batch`` rejects a
         batch containing any duplicate wholesale, so the queue re-sends it one event
         at a time — N rows become N individual POSTs. Correct billing, through the
         mechanism built for emergencies; acceptable because reading this view at all
