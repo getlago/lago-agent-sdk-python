@@ -7,10 +7,8 @@
   </a>
 </p>
 
-<h1 align="center">lago-agent-sdk</h1>
-
 <p align="center">
-  Instrument LLM clients and emit usage events to <a href="https://www.getlago.com">Lago</a> for billing.
+  <strong>lago-agent-sdk</strong> — Instrument LLM clients and emit usage events to <a href="https://www.getlago.com">Lago</a> for billing.
 </p>
 
 ```text
