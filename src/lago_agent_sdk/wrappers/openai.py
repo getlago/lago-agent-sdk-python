@@ -38,6 +38,13 @@ from typing import Any
 
 from ..adapters import extract_openai_native
 
+# The one import a wrapper takes from gateway code, and it is load-bearing: the REST-view
+# dedup only works if this wrapper and `gateway/snowflake.py` compute the IDENTICAL
+# transaction id, so both call one helper instead of keeping two copies of a string
+# format that would drift without an error. The module is pure (canonical-only imports,
+# no I/O), so this pulls nothing heavy into the wrap() path.
+from ..gateway.adapters.snowflake_cortex import SNOWFLAKE_EVENT_ID_PREFIX, snowflake_event_id
+
 logger = logging.getLogger("lago_agent_sdk.wrappers.openai")
 
 _INSTRUMENTED_ATTR = "_lago_instrumented"
@@ -92,6 +99,30 @@ def _is_cache_hit(raw_response: Any) -> bool:
         return bool(raw_response.headers.get("cf-aig-cache-status") == "HIT")
     except Exception:  # noqa: BLE001
         return False
+
+
+def _snowflake_request_id(header_owner: Any) -> str:
+    """The Snowflake-side id of a Cortex call, read off the raw response.
+
+    `x-snowflake-request-id` IS the `REQUEST_ID` the call lands under in
+    `CORTEX_REST_API_USAGE_HISTORY` (measured byte-identical, 2026-08-26), which is what
+    lets the live path and a REST-view backfill produce one transaction id — see
+    `snowflake_event_id`. The response BODY is not a route in: Cortex returns `"id": ""`.
+
+    `header_owner` is whatever carries `.headers` on the path at hand: the raw response
+    on the `.with_raw_response` path, the stream's own `.response` (httpx) when
+    streaming — headers arrive before the body, so reading them consumes nothing. Same
+    defensiveness as `_is_cache_hit`: an owner without headers, or a response without
+    the header, yields "" and the event keeps its UUID — never breaks the customer's
+    call.
+    """
+    try:
+        headers = getattr(header_owner, "headers", None)
+        if headers is None:
+            return ""
+        return str(headers.get("x-snowflake-request-id") or "")
+    except Exception:  # noqa: BLE001 — a broken fake's property must not break billing
+        return ""
 
 
 # Provider overrides implied by the client's `base_url`, in match order — the first
@@ -195,6 +226,34 @@ def wrap_openai_client(
             "markup": lago_opts.get("markup"),
         }
 
+    def _with_rest_event_id(opts: dict[str, Any], header_owner: Any) -> dict[str, Any]:
+        """Attach the idempotency key that makes a REST-view backfill of this same call
+        a duplicate Lago rejects, in the EXACT shape the reader builds.
+
+        Gated on the provider hint rather than on the header existing: real OpenAI never
+        sends the header today, but the gate makes that a property of this code instead
+        of the provider's behaviour — a proxy injecting the header at an OpenAI base_url
+        must not change that call's transaction_id shape. The key must name the
+        subscription `emit()` will bill, so it is resolved NOW, at call time, and the
+        resolved value is passed through — leaving it to `emit()` would let a context
+        change between the call and a stream's exhaustion put one subscription in the
+        key and bill another. No header (or no headers at all) → opts unchanged →
+        `emit()` keeps its per-event UUID fallback; an extra guard here would be
+        redundant with that, and a constant fallback would collide every call in the
+        window onto one id.
+        """
+        if provider_hint != "snowflake":
+            return opts
+        request_id = _snowflake_request_id(header_owner)
+        if not request_id:
+            return opts
+        sub = sdk._resolve_subscription(opts.get("subscription"))
+        return {
+            **opts,
+            "subscription": sub,
+            "event_id": snowflake_event_id(SNOWFLAKE_EVENT_ID_PREFIX, "rest", sub, request_id),
+        }
+
     def _emit_from(payload: Any, model_id: str, opts: dict[str, Any]) -> None:
         try:
             usage = extract_openai_native(payload, model_id=model_id, provider_hint=provider_hint)
@@ -252,7 +311,7 @@ def wrap_openai_client(
                 raw = raw_create(*args, **kwargs)
                 response = raw.parse()
                 if _is_response_like(response) and not _is_cache_hit(raw):
-                    _emit_from(response, model_id, opts)
+                    _emit_from(response, model_id, _with_rest_event_id(opts, raw))
                 return response
 
             # Streaming, or `.with_raw_response` unavailable (older/custom client)
@@ -262,6 +321,12 @@ def wrap_openai_client(
             if _is_response_like(response):
                 _emit_from(response, model_id, opts)
                 return response
+
+            # Streaming reaches the dedup header too: `openai.Stream` carries the
+            # httpx response as `.response`, whose headers arrived before the body —
+            # reading them consumes nothing (verified live on a streamed Cortex call).
+            # Computed HERE, at call time, not in the generator's finally.
+            stream_opts = _with_rest_event_id(opts, getattr(response, "response", None))
 
             def _wrap_stream(src: Iterator[Any]) -> Iterator[Any]:
                 last_usage: dict[str, Any] | None = None
@@ -274,7 +339,7 @@ def wrap_openai_client(
                         yield event
                 finally:
                     if last_usage is not None:
-                        _emit_from(last_usage, model_id, opts)
+                        _emit_from(last_usage, model_id, stream_opts)
 
             return _wrap_stream(response)
 
@@ -292,7 +357,7 @@ def wrap_openai_client(
                 raw = await raw_create(*args, **kwargs)
                 response = raw.parse()
                 if _is_response_like(response) and not _is_cache_hit(raw):
-                    _emit_from(response, model_id, opts)
+                    _emit_from(response, model_id, _with_rest_event_id(opts, raw))
                 return response
 
             response = await original(*args, **kwargs)
@@ -300,6 +365,9 @@ def wrap_openai_client(
             if _is_response_like(response):
                 _emit_from(response, model_id, opts)
                 return response
+
+            # Same call-time header read as the sync stream path; see there.
+            stream_opts = _with_rest_event_id(opts, getattr(response, "response", None))
 
             async def _wrap_async_stream(src: AsyncIterator[Any]) -> AsyncIterator[Any]:
                 last_usage: dict[str, Any] | None = None
@@ -312,7 +380,7 @@ def wrap_openai_client(
                         yield event
                 finally:
                     if last_usage is not None:
-                        _emit_from(last_usage, model_id, opts)
+                        _emit_from(last_usage, model_id, stream_opts)
 
             return _wrap_async_stream(response)
 

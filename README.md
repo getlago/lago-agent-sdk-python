@@ -286,7 +286,7 @@ The `base_url` is what identifies these calls as Snowflake rather than OpenAI �
 
 **Cortex's `cached_tokens` is additive, the opposite of OpenAI's convention.** A cached call reports `prompt_tokens: 7`, `cached_tokens: 8745`, `completion_tokens: 6`, `total_tokens: 8758` — the cached block is *not* inside `prompt_tokens`. Caching also only happens when you send an explicit `cache_control: {"type": "ephemeral"}` content part; the same prompt twice without one reports zero cached both times.
 
-**The wire cannot tell a cache creation from a read; the view can.** A creation call reports the same `cached_tokens` with `cache_write_tokens: 0`, so the live `wrap()` path bills a creation as a cache read (`llm_cached_input_tokens`). The REST view records the same call as `cache_write_input`, so a backfilled row bills `llm_cache_creation_tokens` instead. Verified live on a matched pair (INT-230): identical wire usage, one `cache_write_input` row and three `cache_read_input` rows. If you price creation and read differently, know that live-path traffic reports everything at the read metric.
+**The wire cannot tell a cache creation from a read; the view can.** A creation call reports the same `cached_tokens` with `cache_write_tokens: 0`, so the live `wrap()` path bills a creation as a cache read (`llm_cached_input_tokens`). The REST view records the same call as `cache_write_input`, so a backfilled row bills `llm_cache_creation_tokens` instead. Verified live on a matched pair (INT-230): identical wire usage, one `cache_write_input` row and three `cache_read_input` rows. If you price creation and read differently, know that live-path traffic reports everything at the read metric. It also bounds the REST-view dedup: a backfilled creation row emits its cached block under a *different* transaction id than the live path did (`_tok_cache_write` vs `_tok_cache_read`), so that one component bills on both metrics if you backfill a live-billed window — the call's input and output stay deduplicated.
 
 ### Backfill — the SQL functions surface
 
@@ -301,7 +301,7 @@ sdk.flush()
 
 Two counts, and there cannot be more: `tokens` is what got billed, `skipped` is what did not. Both causes of a skip are also reported through `on_error` with `where="backfill"`, so an automated caller notices a gap without inspecting the return value.
 
-**It reads the functions view only.** The REST view reports the calls `wrap()` already billed above, and the two `transaction_id`s are unrelated — the live path's is a random UUID, the backfill's derives from `REQUEST_ID` — so Lago accepts both and every REST call bills twice. Pass `views=("rest",)` only for REST traffic `wrap()` never saw:
+**It reads the functions view only.** The REST view reports the calls `wrap()` already billed above. Both sides derive one idempotency key from the call's `REQUEST_ID` — the wrapper reads it off the `x-snowflake-request-id` response header — so Lago rejects a backfill's copies as duplicate `transaction_id`s instead of billing them twice. That protection holds only when the backfill uses the default `event_id_prefix` and resolves the same subscription the live path billed, and it does not cover a cache-creation call's cached block (see the cache note above) or calls billed without the header. So the rule stands: pass `views=("rest",)` only for REST traffic `wrap()` never saw:
 
 ```python
 sdk.backfill_snowflake(

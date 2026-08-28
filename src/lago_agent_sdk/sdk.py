@@ -14,6 +14,7 @@ from .canonical import CanonicalUsage
 from .config import LagoConfig
 from .detector import detect_client_kind
 from .exceptions import PricingUnavailableError, UnknownClientError
+from .gateway.adapters.snowflake_cortex import SNOWFLAKE_EVENT_ID_PREFIX
 from .lago_client import LagoClient
 from .pricing import (
     TOKEN_BILLED_PROVIDERS,
@@ -797,7 +798,7 @@ class LagoSDK:
         default_subscription: str | None = None,
         unified: bool = False,
         dimensions: dict[str, Any] | None = None,
-        event_id_prefix: str = "sfc",
+        event_id_prefix: str = SNOWFLAKE_EVENT_ID_PREFIX,
         views: Any = None,
         subscription_order: Any = None,
     ) -> dict[str, int]:
@@ -849,8 +850,23 @@ class LagoSDK:
 
         Idempotent: every event id derives from the source row's own id and is scoped
         by subscription, so re-running the same window has Lago reject the duplicates
-        rather than double-bill. Does not flush — call ``flush()`` when you want to
-        block on delivery.
+        rather than double-bill. The same key protects against the live path: the
+        OpenAI wrapper stamps a REST call's events with the id this backfill would
+        derive from that call's ``REQUEST_ID``, so a ``views=("rest",)`` read over a
+        live-billed window is rejected by Lago instead of billing twice. That
+        protection holds ONLY when this backfill runs with the default
+        ``event_id_prefix`` AND resolves the same subscription the live path billed —
+        a custom prefix, or a different ``default_subscription`` than the wrapper's
+        resolution, silently makes the two keys unrelated again and nothing reports
+        it. Nor does it cover a cache-creation call's cached block: the wire reports
+        creations as reads, so the live path billed ``cache_read`` while this backfill
+        bills the row's ``cache_write`` under a different id — input and output dedup,
+        that one component double-counts. Know also what a fully-duplicate window costs: ``/events/batch`` rejects a
+        batch containing any duplicate wholesale, so the queue re-sends it one event
+        at a time — N rows become N individual POSTs. Correct billing, through the
+        mechanism built for emergencies; acceptable because reading this view at all
+        is opt-in. Does not flush — call ``flush()`` when you want to block on
+        delivery.
 
         ``source`` is normally a :class:`SnowflakeSource`, and ``since`` the window. It
         also accepts an already-read iterable of ``SnowflakeUsageRow`` — pass one when

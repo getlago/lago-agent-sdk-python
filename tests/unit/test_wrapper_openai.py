@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 from lago_agent_sdk import LagoSDK
@@ -998,3 +1002,145 @@ def test_a_fully_qualified_cortex_model_keeps_the_customers_spelling() -> None:
     sdk.shutdown(timeout=1.0)
     assert all(e["properties"]["model"] == "LAGO_DB.CORTEX.my_tuned_mistral7b" for e in received)
     assert all(e["properties"]["provider"] == "snowflake" for e in received)
+
+
+# ----------------------------------------------------------------------
+# Snowflake Cortex: REST-view dedup key (INT-246)
+#
+# The live path stamps a Cortex call's events with the id a `views=("rest",)`
+# backfill derives from that call's REQUEST_ID, so Lago rejects the backfill's
+# copy as a duplicate transaction_id instead of billing the call twice. The
+# response header `x-snowflake-request-id` IS the view's REQUEST_ID, measured
+# byte-identical live 2026-08-26.
+# ----------------------------------------------------------------------
+_REST_FIXTURE_PATH = (
+    Path(__file__).parent / "gateway" / "adapters" / "fixtures" / "snowflake_cortex" / "rest_plain.json"
+)
+_REST_FIXTURE: dict[str, Any] = json.loads(_REST_FIXTURE_PATH.read_text())
+_REST_REQUEST_ID = str(_REST_FIXTURE["REQUEST_ID"])
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+class _FakeCortexStream:
+    """Mimics `openai.Stream`: an iterator that also carries the httpx response."""
+
+    def __init__(self, chunks: list[Any], headers: dict[str, str]) -> None:
+        self._it = iter(chunks)
+        self.response = type("R", (), {"headers": headers})()
+
+    def __iter__(self) -> Iterator[Any]:
+        return self
+
+    def __next__(self) -> Any:
+        return next(self._it)
+
+
+def _headered_cortex_client(headers: dict[str, str], base_url: str = _SNOW_CORTEX) -> _CortexClient:
+    """A Cortex client whose raw responses and streams carry the given headers.
+
+    Non-streaming usage matches `rest_plain.json`'s FIELD SET (input + output, no
+    cache), because the dedup assertion compares transaction ids and those embed the
+    canonical field names.
+    """
+    client = _CortexClient(base_url=base_url)
+    client.completions.raw_response_headers = headers
+    original_create = client.completions.create
+
+    def create(**kwargs: Any) -> Any:
+        if kwargs.get("stream"):
+            model = kwargs.get("model") or _CortexCompletions.MODEL
+            return _FakeCortexStream(
+                [
+                    FakeStreamChunk({"model": model, "choices": [{"delta": {"content": "hi"}}]}),
+                    FakeStreamChunk({"model": model, "choices": [], "usage": dict(_CortexCompletions.USAGE)}),
+                ],
+                headers,
+            )
+        return original_create(**kwargs)
+
+    client.completions.create = create  # type: ignore[method-assign]
+    return client
+
+
+def test_a_live_call_and_a_backfill_of_the_same_row_produce_the_same_transaction_ids() -> None:
+    """End to end on both sides, not two helpers pinned in isolation: the wrapper path
+    goes wrap() -> header -> emit, the backfill path goes view row -> read_usage ->
+    backfill_snowflake -> emit, and the assertion is on the events' transaction_ids."""
+    from lago_agent_sdk.gateway.snowflake import SnowflakeSource
+
+    sdk, received = _new_sdk()
+    client = sdk.wrap(_headered_cortex_client({"x-snowflake-request-id": _REST_REQUEST_ID}))
+    client.chat.completions.create(model="claude-sonnet-4-5", messages=[])
+    assert sdk.flush(timeout=2.0)
+    live_ids = sorted(e["transaction_id"] for e in received)
+    assert len(live_ids) == 2  # input + output
+    for tx in live_ids:
+        assert tx.startswith(f"sfc_rest_sub_test_{_REST_REQUEST_ID}_tok_")
+
+    src = SnowflakeSource("ORG-ACCT", "tok", warehouse="COMPUTE_WH")
+    src.query = lambda sql: [_REST_FIXTURE]  # type: ignore[method-assign]
+    received.clear()
+    sdk.backfill_snowflake(src, "3 hours", views=("rest",), default_subscription="sub_test")
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    backfill_ids = sorted(e["transaction_id"] for e in received)
+    # The whole ticket in one line: Lago sees the SAME ids and rejects the copies.
+    assert backfill_ids == live_ids
+
+
+def test_a_streamed_call_reaches_the_header_and_carries_the_same_key() -> None:
+    """The header is reachable on the stream path: `openai.Stream` exposes the httpx
+    response whose headers arrived before the body. Verified live on a streamed
+    Cortex call."""
+    sdk, received = _new_sdk()
+    client = sdk.wrap(_headered_cortex_client({"x-snowflake-request-id": _REST_REQUEST_ID}))
+    list(client.chat.completions.create(model="claude-sonnet-4-5", messages=[], stream=True))
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert len(received) == 2
+    for e in received:
+        assert e["transaction_id"].startswith(f"sfc_rest_sub_test_{_REST_REQUEST_ID}_tok_")
+
+
+def test_a_real_openai_call_keeps_its_uuid_even_if_a_proxy_injects_the_header() -> None:
+    """The gate, not the header, decides. Remove the provider-hint check and this
+    fails: the id would come out sfc_rest_-prefixed for a call Snowflake never
+    served."""
+    sdk, received = _new_sdk()
+    client = sdk.wrap(
+        _headered_cortex_client(
+            {"x-snowflake-request-id": _REST_REQUEST_ID}, base_url="https://api.openai.com/v1"
+        )
+    )
+    client.chat.completions.create(model="gpt-4o-mini", messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert len(received) == 2
+    for e in received:
+        assert _UUID_RE.match(e["transaction_id"])
+
+
+def test_a_cortex_response_without_the_header_falls_back_to_the_uuid() -> None:
+    sdk, received = _new_sdk()
+    client = sdk.wrap(_headered_cortex_client({}))
+    client.chat.completions.create(model="claude-sonnet-4-5", messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert len(received) == 2
+    for e in received:
+        assert _UUID_RE.match(e["transaction_id"])
+
+
+def test_a_client_without_with_raw_response_bills_normally_on_a_uuid_no_throw() -> None:
+    """The plain-`create()` path has no headers to read — the exact simplified-client
+    shape the defensiveness exists for."""
+    sdk, received = _new_sdk()
+    client = _CortexClient()
+    client.completions.with_raw_response = None  # force the plain .create() path
+    client = sdk.wrap(client)
+    client.chat.completions.create(model="claude-sonnet-4-5", messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert len(received) == 2
+    for e in received:
+        assert _UUID_RE.match(e["transaction_id"])

@@ -49,25 +49,25 @@ backfill at all:
     NEVER see this traffic. It exists only in this view, and a backfill is the only way to
     bill it.
   * `CORTEX_REST_API_USAGE_HISTORY` reports the `/api/v2/cortex/v1` calls that the live
-    `wrap()` path already bills. Backfilling a window the live path covered bills every
-    one of those calls TWICE: the live path's `transaction_id` is a random UUID and this
-    reader's is derived from `REQUEST_ID`, so Lago has no way to tell they are the same
-    call and accepts both.
+    `wrap()` path already bills. Backfilling a window the live path covered re-reports
+    every one of those calls.
 
 Which is why `read_usage` reads the functions view by DEFAULT and the REST view only when
 asked (`views=("rest",)`). The Databricks reader's rule — "pick one path per traffic
 stream" — cannot be followed here, because a customer using both surfaces has to backfill
 one view and must not backfill the other. The default is the safe half of that.
 
-The double-bill is CLOSEABLE, and measured rather than assumed: driven live 2026-08-26,
-one Cortex call whose response header read
+The re-report is caught by Lago itself, because both paths now derive ONE key. Measured
+rather than assumed, 2026-08-26: one Cortex call whose response header read
 `x-snowflake-request-id: 21763baf-8a80-4e42-969e-1383dd5968d6` landed in the REST view
-~2 minutes later as exactly that `REQUEST_ID`. So the live path could adopt that header as
-its `event_id`, both paths would compute one `transaction_id`, and Lago would reject the
-backfill's copy by itself. (The response BODY is not the way in: Cortex returns
-`"id": ""`.) That belongs to the wrapper, not this reader, and is its own ticket — the
-opt-in above is what keeps the default safe until it lands, and stays worth having
-afterwards as the thing that means a live-path customer never reads this view at all.
+~2 minutes later as exactly that `REQUEST_ID`. (The response BODY is not the way in:
+Cortex returns `"id": ""`.) The OpenAI wrapper therefore adopts that header as its
+`event_id`, this reader derives the same key from `REQUEST_ID` via `snowflake_event_id`,
+and Lago rejects the backfill's copy as a duplicate `transaction_id`. The dedup holds
+ONLY while both sides compute the identical string — same `event_id_prefix` ("sfc") and
+same resolved subscription; see `backfill_snowflake` for the two ways a caller can break
+that. The opt-in default stays worth having anyway: a live-path customer never reads
+this view at all, and headerless calls still fall back to a UUID.
 
 Uses `requests`, already a core dependency, so this adds nothing to the install.
 """
@@ -86,10 +86,12 @@ from typing import Any
 
 from ..canonical import CanonicalUsage
 from .adapters.snowflake_cortex import (
+    SNOWFLAKE_EVENT_ID_PREFIX,
     _column,
     extract_snowflake_functions_log,
     extract_snowflake_rest_log,
     resolve_snowflake_subscription,
+    snowflake_event_id,
 )
 
 logger = logging.getLogger("lago_agent_sdk.gateway.snowflake")
@@ -186,7 +188,7 @@ class SnowflakeUsageRow:
     subscription: str | None
     row_id: str
     kind: str
-    prefix: str = "sfc"
+    prefix: str = SNOWFLAKE_EVENT_ID_PREFIX
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -256,7 +258,7 @@ class SnowflakeUsageRow:
         unattributed row falls back to the caller's default — so the key is built from the
         RESOLVED value, not from `self.subscription`.
         """
-        return f"{self.prefix}_{self.kind}_{subscription or 'none'}_{self.row_id}"
+        return snowflake_event_id(self.prefix, self.kind, subscription, self.row_id)
 
 
 def _as_utc(moment: datetime) -> datetime:
@@ -566,7 +568,7 @@ class SnowflakeSource:
         self,
         since: str | datetime = "1 day",
         *,
-        event_id_prefix: str = "sfc",
+        event_id_prefix: str = SNOWFLAKE_EVENT_ID_PREFIX,
         views: Sequence[str] = ("functions",),
         subscription_order: Sequence[str] | None = None,
     ) -> Iterator[SnowflakeUsageRow]:
@@ -750,9 +752,10 @@ class SnowflakeSource:
         # telling.
         logger.warning(
             "lago: reading %d row(s) from %s. If these calls were made through a wrapped "
-            "client, the live path ALREADY billed them and this read will bill them a "
-            "second time — the two transaction_ids are unrelated, so Lago cannot reject "
-            "the duplicate. Only backfill this view for traffic wrap() never saw.",
+            "client, the live path ALREADY billed them and this read re-reports them. "
+            "Lago rejects the copies as duplicate transaction_ids ONLY when this backfill "
+            "uses the default event_id_prefix and resolves the same subscription the live "
+            "path billed. Only backfill this view for traffic wrap() never saw.",
             len(rows),
             _REST_VIEW,
         )
