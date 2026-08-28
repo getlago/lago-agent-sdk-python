@@ -584,3 +584,31 @@ def resolve_snowflake_subscription(
                 if text:
                     return text
     return None
+
+
+# The default namespace for Snowflake-derived idempotency keys — "sfc" for Snowflake
+# Cortex. One exported constant rather than a string literal per call site: the OpenAI
+# wrapper and the reader must agree on it byte-for-byte (see `snowflake_event_id`), and
+# two literals would be free to drift apart with no error anywhere — the dedup would
+# just quietly stop matching.
+SNOWFLAKE_EVENT_ID_PREFIX = "sfc"
+
+
+def snowflake_event_id(prefix: str, kind: str, subscription: str | None, row_id: str) -> str:
+    """The idempotency key for one unit of Snowflake usage, billed to one subscription.
+
+    This string is the ONLY thing that lets Lago recognize that a backfill of
+    `CORTEX_REST_API_USAGE_HISTORY` is re-reporting a call the live `wrap()` path
+    already billed: the wrapper builds it from the response's `x-snowflake-request-id`
+    header, the reader builds it from the view row's `REQUEST_ID` (measured
+    byte-identical, 2026-08-26), and `/events/batch` rejects the second copy as a
+    duplicate `transaction_id`. One implementation shared by both paths, for the same
+    reason `_column` lives here rather than in the reader: two copies of a string
+    format are free to drift, and this drift would not error — every REST call in an
+    overlapping window would just bill twice, silently.
+
+    Scoped by the RESOLVED subscription, never the row's own tag: `transaction_id` is
+    unique org-wide, so an unscoped key would permanently block the same row from ever
+    reaching a second subscription.
+    """
+    return f"{prefix}_{kind}_{subscription or 'none'}_{row_id}"
