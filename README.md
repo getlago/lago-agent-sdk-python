@@ -1,16 +1,27 @@
-# lago-agent-sdk
+<p align="center">
+  <a href="https://www.getlago.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/images/lago-logo-white.svg">
+      <img src="docs/images/lago-logo.svg" alt="Lago" width="200">
+    </picture>
+  </a>
+</p>
 
-Instrument LLM clients and emit usage events to [Lago](https://www.getlago.com) for billing.
+<h1 align="center">lago-agent-sdk</h1>
+
+<p align="center">
+  Instrument LLM clients and emit usage events to <a href="https://www.getlago.com">Lago</a> for billing.
+</p>
 
 ```text
-                  ┌──────────────┐
-your code ──────► │ wrapped client│ ──► provider (Bedrock / Mistral / …)
-                  └──────┬───────┘
-                         │ (extract usage)
-                         ▼
-                  ┌──────────────┐
-                  │  Lago events │ ──► api.getlago.com
-                  └──────────────┘
+                    ┌────────────────┐
+your code ────────► │ wrapped client │ ───► provider (Bedrock / Mistral / …)
+                    └───────┬────────┘
+                            │ (extract usage)
+                            ▼
+                    ┌────────────────┐
+                    │  Lago events   │ ───► api.getlago.com
+                    └────────────────┘
 ```
 
 ## What it does
