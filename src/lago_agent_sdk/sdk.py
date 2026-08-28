@@ -833,11 +833,13 @@ class LagoSDK:
         ``unified=True`` bills everything to ``default_subscription``, ignoring each
         row's own attribution — right when one account serves one customer. Left
         False, each row goes to the subscription its ``QUERY_TAG`` names, falling back
-        to ``default_subscription``. Be deliberate about ``subscription_order``: the
-        default order ends at ``USER_ID``, a numeric Snowflake identity that matches a
-        Lago subscription only if you maintain that mapping yourself. Pass
-        ``("query_tag",)`` to let an unattributed row go unbilled, which is
-        recoverable — billing the wrong subscription is not.
+        to ``default_subscription``. By default that tag is the ONLY source consulted:
+        every live row carries a populated ``ROLE_NAMES``/``USER_ID``, so an order
+        including them never falls through to the default — it bills untagged rows to
+        a Snowflake role or user id instead, which Lago accepts for the nonexistent
+        subscription without an error anywhere (measured, 2026-08-28). Opt into
+        ``subscription_order=("query_tag", "role_names")`` (or ``"user_id"``) only
+        when your account really maps that identity to a Lago subscription.
 
         Every event also carries the Snowflake-side grouping key for its row —
         ``FUNCTION_NAME`` + ``MODEL_NAME`` for functions rows, ``INFERENCE_REGION``

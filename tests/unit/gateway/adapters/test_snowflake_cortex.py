@@ -250,9 +250,19 @@ def test_non_json_query_tag_is_ignored() -> None:
     assert resolve_snowflake_subscription({"QUERY_TAG": "nightly-etl"}, order=("query_tag",)) is None
 
 
-def test_role_names_then_user_id() -> None:
+def test_an_untagged_row_resolves_to_nothing_by_default() -> None:
+    """The correction INT-230 measured live: every row either view produces carries a
+    populated ROLE_NAMES/USER_ID, so a default including them never returns None —
+    `default_subscription` was dead code and every untagged row billed to a Snowflake
+    role name, which Lago ACCEPTED for the nonexistent subscription with a 200 (30
+    events, zero errors on any hook). Reverting the default re-breaks this test."""
     row = {"ROLE_NAMES": '["TENANT_ACME", "PUBLIC"]', "USER_ID": "1"}
-    assert resolve_snowflake_subscription(row) == "TENANT_ACME"
+    assert resolve_snowflake_subscription(row) is None
+
+
+def test_role_names_and_user_id_resolve_only_when_opted_into() -> None:
+    row = {"ROLE_NAMES": '["TENANT_ACME", "PUBLIC"]', "USER_ID": "1"}
+    assert resolve_snowflake_subscription(row, order=("role_names", "user_id")) == "TENANT_ACME"
     assert resolve_snowflake_subscription(row, order=("user_id",)) == "1"
 
 
@@ -274,26 +284,28 @@ def test_order_is_honoured_and_first_hit_wins() -> None:
     assert resolve_snowflake_subscription(row, order=()) is None
 
 
-def test_a_real_rest_row_resolves_to_the_snowflake_user_only() -> None:
+def test_a_real_rest_row_is_unattributed_by_default_the_snowflake_user_on_opt_in() -> None:
     """The honest state of this view: no QUERY_TAG value has ever been observed on it
-    and it has no ROLE_NAMES at all, so the default order reaches `USER_ID` — a
-    Snowflake identity, not a Lago subscription. A caller without that mapping should
-    pass `order=("query_tag",)` and let the row go unattributed."""
+    and it has no ROLE_NAMES at all — `USER_ID` is a Snowflake identity, not a Lago
+    subscription, so by default a real REST row goes unattributed and falls to the
+    backfill's default."""
     row = _load("rest_plain.json")
-    assert resolve_snowflake_subscription(row) == "1"
-    assert resolve_snowflake_subscription(row, order=("query_tag",)) is None
+    assert resolve_snowflake_subscription(row) is None
+    assert resolve_snowflake_subscription(row, order=("user_id",)) == "1"
 
 
 def test_role_names_accepted_as_a_list_not_only_a_json_string() -> None:
     """ARRAY columns arrive as TEXT over the SQL API and as a real list from a typed
     connector — the same row must attribute the same way through either."""
-    assert resolve_snowflake_subscription({"ROLE_NAMES": ["TENANT_ACME"]}) == "TENANT_ACME"
+    assert resolve_snowflake_subscription({"ROLE_NAMES": ["TENANT_ACME"]}, order=("role_names",)) == (
+        "TENANT_ACME"
+    )
 
 
 def test_malformed_role_names_resolves_nothing_rather_than_throwing() -> None:
     row = {"ROLE_NAMES": "[not json", "USER_ID": "1"}
     assert resolve_snowflake_subscription(row, order=("role_names",)) is None
-    assert resolve_snowflake_subscription(row) == "1"
+    assert resolve_snowflake_subscription(row, order=("role_names", "user_id")) == "1"
 
 
 def test_non_numeric_tokens_column_does_not_throw() -> None:
@@ -414,13 +426,17 @@ def test_row_identity_and_grouping_keys_are_read() -> None:
     assert u.extras["end_time"] == "1787166000"
 
 
-def test_a_real_functions_row_resolves_through_role_names() -> None:
+def test_a_real_functions_row_is_unattributed_by_default_resolves_through_role_names_on_opt_in() -> None:
     """Unlike the REST view, this one carries `ROLE_NAMES` — and a Snowflake-written
-    `QUERY_TAG` (`{"app": "cortex_code_sandbox"}`) that must not be read as an id."""
-    assert resolve_snowflake_subscription(_load("functions_large_prompt.json")) == "LAGO_CORTEX_ROLE"
+    `QUERY_TAG` (`{"app": "cortex_code_sandbox"}`) that must not be read as an id. By
+    default neither is: a real untagged row resolves to nothing, and the role only on
+    opt-in."""
+    row = _load("functions_large_prompt.json")
+    assert resolve_snowflake_subscription(row) is None
+    assert resolve_snowflake_subscription(row, order=("role_names",)) == "LAGO_CORTEX_ROLE"
     tagged = _load("functions_query_tag.json")
-    assert resolve_snowflake_subscription(tagged, order=("query_tag",)) is None
-    assert resolve_snowflake_subscription(tagged) == "ACCOUNTADMIN"
+    assert resolve_snowflake_subscription(tagged) is None
+    assert resolve_snowflake_subscription(tagged, order=("query_tag", "role_names")) == "ACCOUNTADMIN"
 
 
 def test_metrics_accepted_as_a_list_not_only_a_json_string() -> None:
