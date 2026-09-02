@@ -88,9 +88,12 @@ _WORKERS_AI_MODEL_PREFIX = "@cf/"
 #: EMPTY input rate, so token counts stay the honest default.
 RAMP_ROUTER_PROVIDER = "ramp_router"
 
-# Router's documented service tiers, appearing as the third segment of a candidate id
-# (`openai:gpt-5.4-mini:flex`). OpenAI sells `auto`/`default`/`flex`/`priority`,
-# Fireworks `default`/`priority`.
+# Router's documented service tiers, appearing as the third segment of a REQUESTED
+# candidate id (`openai:gpt-5.4-mini:flex`). OpenAI sells `auto`/`default`/`flex`/
+# `priority`, Fireworks `default`/`priority`.
+#
+# Only used to disambiguate that candidate suffix. The tier a response actually reports
+# arrives in its own top-level `service_tier` field and is recorded verbatim.
 #
 # Matched against this set rather than read as "whatever follows the last colon": a model
 # segment may contain a colon of its own, and mistaking one for a tier would silently
@@ -108,8 +111,16 @@ def _parse_router_model(model_id: str) -> tuple[str, str, str]:
 
     Router names a model two ways, and only one of them is parseable. A plain `model` is
     an account-specific id that reveals nothing; a `models` candidate is
-    `provider:provider-model[:service-tier]`. Both arrive in the same response field, so
-    this decides which one it is looking at rather than assuming.
+    `provider:provider-model[:service-tier]`.
+
+    This is a FALLBACK, not the live path. Router resolves whatever was requested to a
+    bare vendor snapshot before answering — every captured response reports
+    `gpt-5.4-nano-2026-03-17` or `claude-haiku-4-5-20251001`, never a compound candidate
+    — and `resolve_model` prefers the response's model over the requested one. So this
+    fires only when the response carries no model at all and the caller's requested id
+    falls through. It is kept because that fallthrough would otherwise publish
+    `openai:gpt-5.4-mini:flex` as a Lago model name; it is not where the served tier
+    comes from. See the `service_tier` read in `extract_openai_native`.
 
     Split on the FIRST colon, never on all of them: Fireworks candidates carry a path as
     their model segment (`fireworks:accounts/fireworks/models/kimi-k2p7-code`), so a
@@ -351,7 +362,24 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
         # different rates" than the base ones it publishes, so a pinned non-default tier
         # is the difference between a correct price and an over-bill at the standard
         # rate.
-        if tier:
+        #
+        # It is read from the response's OWN top-level `service_tier`, which is where
+        # every captured Router response actually reports it (02/04 `flex`, 03/05b/06b/07
+        # `default`). The candidate suffix above is only a fallback: Router resolves
+        # `model` to a bare vendor snapshot on the way back — `openai:gpt-5.4-nano` in,
+        # `gpt-5.4-nano-2026-03-17` out — so on live traffic the suffix parse never fires
+        # and reading only it dropped the tier on every real call. Sourcing it from the
+        # candidate alone also answers the wrong question: the candidate says what was
+        # ASKED for, `service_tier` says what SERVED, and a `models` fallback list can
+        # make those differ.
+        #
+        # NOT filtered through _ROUTER_SERVICE_TIERS. That set disambiguates a colon
+        # segment that might instead be part of a model name; a dedicated field has no
+        # such ambiguity, so a tier Router adds later is recorded rather than dropped.
+        served_tier = resp.get("service_tier")
+        if isinstance(served_tier, str) and served_tier:
+            extras["service_tier"] = served_tier
+        elif tier:
             extras["service_tier"] = tier
         # Which of Router's two OpenAI-shaped surfaces answered. Router documents only
         # `/v1/responses` (`/v1/chat/completions` 404s), so a `chat_completions` value

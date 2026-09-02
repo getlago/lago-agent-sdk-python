@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import pathlib
 import threading
 from typing import Any
 
@@ -632,3 +634,55 @@ def test_a_router_remainder_smaller_than_its_subsets_still_folds_rather_than_van
     u = extract_openai_native(_misreporting_router_response(200), provider_hint=RAMP_ROUTER_PROVIDER)
     assert u.extras["unaccounted_output_tokens"] == 50
     assert u.output == 100
+
+
+# ----------------------------------------------------------------------
+# The captured responses, run through the adapter. The tests above pin the
+# SDK's decisions against a hand-built shape; these pin them against what
+# Router actually sent. Skips cleanly when the captures are absent, so a
+# missing capture reads as "not covered" rather than as a pass.
+# ----------------------------------------------------------------------
+_CAPTURES = pathlib.Path(__file__).parents[1] / "adapters" / "fixtures" / "ramp_router"
+
+
+def _captured_bodies() -> list[tuple[str, dict[str, Any]]]:
+    """Every captured 200 that carries usage, buffered or streamed."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    for path in sorted(_CAPTURES.glob("*.json")):
+        blob = json.loads(path.read_text())
+        body = blob.get("_body")
+        if not (isinstance(body, dict) and body.get("usage")):
+            # The streamed capture keeps its payload under `.response` per event; the
+            # terminal one is the only one carrying usage, and is what the wrapper bills.
+            body = None
+            for event in blob.get("_events") or []:
+                candidate = (event or {}).get("response")
+                if isinstance(candidate, dict) and candidate.get("usage"):
+                    body = candidate
+        if isinstance(body, dict) and body.get("usage"):
+            out.append((path.name, body))
+    return out
+
+
+@pytest.mark.skipif(not _captured_bodies(), reason="Router fixtures not captured")
+@pytest.mark.parametrize("name,body", _captured_bodies(), ids=lambda v: v if isinstance(v, str) else "")
+def test_every_captured_response_reports_its_served_tier(name: str, body: dict[str, Any]) -> None:
+    """The regression this file previously had no way to catch. The tier was read only
+    from a `provider:model:tier` candidate suffix, a shape Router resolves away before
+    answering, so `service_tier` was dropped on 100% of live traffic while the hand-built
+    tests stayed green."""
+    u = extract_openai_native(body, provider_hint=RAMP_ROUTER_PROVIDER)
+    assert u.extras["service_tier"] == body["service_tier"]
+
+
+@pytest.mark.skipif(not _captured_bodies(), reason="Router fixtures not captured")
+@pytest.mark.parametrize("name,body", _captured_bodies(), ids=lambda v: v if isinstance(v, str) else "")
+def test_every_captured_response_bills_the_bare_served_snapshot(name: str, body: dict[str, Any]) -> None:
+    """Router answers with a resolved vendor snapshot, never a compound candidate — the
+    reason the suffix parse is a fallback rather than the live path. Billing the model
+    verbatim is what rolls a Router-served call up against the same Lago row a direct
+    call to that model reports."""
+    u = extract_openai_native(body, provider_hint=RAMP_ROUTER_PROVIDER)
+    assert u.model == body["model"]
+    assert ":" not in u.model
+    assert u.provider == RAMP_ROUTER_PROVIDER
