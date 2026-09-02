@@ -33,10 +33,12 @@ kwargs before forwarding so OpenAI's strict validation doesn't reject it.
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 from ..adapters import extract_openai_native
+from ..adapters.openai_native import RAMP_ROUTER_PROVIDER
 
 # The one import a wrapper takes from gateway code, and it is load-bearing: the REST-view
 # dedup only works if this wrapper and `gateway/snowflake.py` compute the IDENTICAL
@@ -166,6 +168,18 @@ _PROVIDER_BY_BASE_URL_PATH: tuple[tuple[str, str], ...] = (
 )
 
 
+# Ramp Router cannot be a row in the path table above: it serves every provider it
+# fronts through one dedicated host with no distinguishing path, so the HOST is the
+# signal — and it must be the PARSED host, never a substring test. A substring row
+# ("api.router.com") also matches `https://evil.example.com/api.router.com/v1`, which
+# would stamp an unrelated endpoint's traffic as Router-served. The `.router.com`
+# suffix arm covers a regional or staging host without widening to arbitrary domains —
+# `evilrouter.com` does not end in `.router.com`. The path table keeps first say: its
+# rows are more specific, and no Snowflake or Databricks URL lives under router.com.
+_RAMP_ROUTER_HOST = "api.router.com"
+_RAMP_ROUTER_DOMAIN = ".router.com"
+
+
 def _provider_hint_for(client: Any) -> str:
     """Return a provider override implied by the client's base_url, or "".
 
@@ -191,6 +205,13 @@ def _provider_hint_for(client: Any) -> str:
     for path, provider in _PROVIDER_BY_BASE_URL_PATH:
         if path in base_url:
             return provider
+    try:
+        host = urllib.parse.urlsplit(base_url).hostname or ""
+    except ValueError:
+        # A relative or malformed base_url is not a gateway. Never throw out of wrap().
+        return ""
+    if host == _RAMP_ROUTER_HOST or host.endswith(_RAMP_ROUTER_DOMAIN):
+        return RAMP_ROUTER_PROVIDER
     return ""
 
 

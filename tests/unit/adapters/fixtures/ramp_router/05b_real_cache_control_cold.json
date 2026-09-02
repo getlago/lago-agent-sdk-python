@@ -1,0 +1,87 @@
+{
+  "_captured": "real capture against a live Ramp Router account",
+  "_probe": "P5b",
+  "_question": "does Router forward an explicit cache_control part, and how is the write reported?",
+  "_scrubbed": "credentials, emails, IPs, dashboard URLs; prompt and completion text blanked to \"\"",
+  "_requested_models": [
+    "claude-haiku-4-5"
+  ],
+  "_status": 200,
+  "_headers": {
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "cf-cache-status": "DYNAMIC",
+    "cf-ray": "a323863a7d4bdb6d-EWR",
+    "connection": "keep-alive",
+    "content-encoding": "br",
+    "content-type": "application/json",
+    "date": "Fri, 28 Aug 2026 13:04:53 GMT",
+    "server": "cloudflare",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "transfer-encoding": "chunked",
+    "vary": "Origin",
+    "x-content-type-options": "nosniff",
+    "x-request-id": "4c8b735c-74c9-4df9-92aa-e4b5828dd7cd",
+    "x-trace-id": "4c8b735c-74c9-4df9-92aa-e4b5828dd7cd"
+  },
+  "_body_was_json": true,
+  "_body": {
+    "id": "resp_msg_011CeVCERxpn9sEf4T2XQZHR",
+    "created_at": 1787922293.7136817,
+    "error": null,
+    "incomplete_details": null,
+    "instructions": null,
+    "metadata": null,
+    "model": "claude-haiku-4-5-20251001",
+    "object": "response",
+    "output": [
+      {
+        "id": "msg_011CeVCERxpn9sEf4T2XQZHR",
+        "content": [
+          {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": null
+          }
+        ],
+        "role": "assistant",
+        "status": "completed",
+        "type": "message",
+        "phase": null
+      }
+    ],
+    "parallel_tool_calls": false,
+    "temperature": null,
+    "tool_choice": "auto",
+    "tools": [],
+    "top_p": null,
+    "background": null,
+    "completed_at": null,
+    "conversation": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "previous_response_id": null,
+    "prompt": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": null,
+    "reasoning": null,
+    "safety_identifier": null,
+    "service_tier": "default",
+    "status": "completed",
+    "text": null,
+    "top_logprobs": null,
+    "truncation": null,
+    "usage": {
+      "input_tokens": 18825,
+      "input_tokens_details": {
+        "cached_tokens": 0
+      },
+      "output_tokens": 5,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 18830
+    },
+    "user": null
+  }
+}
