@@ -585,3 +585,50 @@ def test_ramp_routers_token_convention_is_a_recorded_measurement_openai_shaped_o
     adapter stamps api="ramp_router" and the surface wins over the vendor."""
     assert RAMP_ROUTER_PROVIDER in KNOWN_PROVIDERS
     assert token_semantics(RAMP_ROUTER_PROVIDER, RAMP_ROUTER_PROVIDER) == (True, True, True)
+
+
+# ----------------------------------------------------------------------
+# Ordering of the api stamp against the total_tokens guard. Router is the
+# only surface in this tree that REASSIGNS `api` mid-extract, so the stamp
+# has to land before the guard reads it.
+# ----------------------------------------------------------------------
+def _misreporting_router_response(total: int) -> dict[str, Any]:
+    """A Router payload whose declared total does NOT equal input + output, with both
+    subsets non-zero. No captured fixture has this shape — all ten report
+    total == input + output, streamed included — so this is the only cover the guard's
+    Router branch has."""
+    return router_response(
+        "gpt-5.4-nano",
+        {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": total,
+            "input_tokens_details": {"cached_tokens": 80},
+            "output_tokens_details": {"reasoning_tokens": 30},
+        },
+    )
+
+
+def test_the_totals_guard_reads_the_stamped_router_api_not_the_pre_stamp_surface() -> None:
+    """The guard, compute_cost and deoverlapped_token_total must answer the overlap
+    question identically — the whole reason token_semantics.py exists. Read before the
+    stamp, the guard sees ("ramp_router", "responses"), which is in no subset set, and so
+    adds cache_read + reasoning to an accounted sum that already contains them.
+    """
+    u = extract_openai_native(_misreporting_router_response(1000), provider_hint=RAMP_ROUTER_PROVIDER)
+    # 1000 - (100 + 50). The cached block sits INSIDE input and reasoning INSIDE output,
+    # so neither is accounted twice; folding 740 would lose exactly cache_read + reasoning.
+    assert u.extras["unaccounted_output_tokens"] == 850
+    assert u.output == 50 + 850
+    # Read from before the stamp — moving the block above the guard must not cost this.
+    assert u.extras["router_surface"] == "responses"
+
+
+def test_a_router_remainder_smaller_than_its_subsets_still_folds_rather_than_vanishing() -> None:
+    """The suppression case, and the one that loses money silently rather than merely
+    under-counting: with the wrong semantics the accounted sum (260) EXCEEDS the declared
+    total, `unaccounted` goes negative, the guard never fires, and 50 generated tokens are
+    dropped with no extras key and no on_error report."""
+    u = extract_openai_native(_misreporting_router_response(200), provider_hint=RAMP_ROUTER_PROVIDER)
+    assert u.extras["unaccounted_output_tokens"] == 50
+    assert u.output == 100

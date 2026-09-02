@@ -325,6 +325,40 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
     resolved_model = resolve_model(resp.get("model"), model_id)
     provider = provider_hint or _infer_provider(resolved_model)
 
+    # MUST stay ABOVE the total_tokens guard below. The guard asks
+    # `token_semantics(provider, api)` the same convention question `compute_cost` and
+    # `deoverlapped_token_total` ask, and Router is the one surface here that REASSIGNS
+    # `api` mid-function. Read before the reassignment, the guard sees
+    # ("ramp_router", "responses") — all-additive — while the money paths see the
+    # stamped api="ramp_router" and de-overlap as subset. That divergence is exactly
+    # what token_semantics.py exists to make impossible, and it under-folds a genuine
+    # remainder by cache_read + reasoning, or suppresses the fold entirely when the
+    # over-count exceeds the declared total — silently, with no on_error.
+    #
+    # `resolve_model` prefers the response's own model over the requested one, which is
+    # what makes a Router fallback bill correctly with no extra work: a `models` request
+    # sends no `model` at all, and Switchyard routing can serve a different model than
+    # the one asked for, so the response is the only place the SERVED model appears.
+    model = resolved_model
+    if provider_hint == RAMP_ROUTER_PROVIDER:
+        router_provider, parsed_model, tier = _parse_router_model(resolved_model)
+        if router_provider:
+            model = parsed_model
+            # Recorded, not promoted to `provider` — see RAMP_ROUTER_PROVIDER for why
+            # the served vendor cannot drive the de-overlap convention.
+            extras["router_provider"] = router_provider
+        # The tier is billing-relevant on its own: Router's catalog says tiers "may use
+        # different rates" than the base ones it publishes, so a pinned non-default tier
+        # is the difference between a correct price and an over-bill at the standard
+        # rate.
+        if tier:
+            extras["service_tier"] = tier
+        # Which of Router's two OpenAI-shaped surfaces answered. Router documents only
+        # `/v1/responses` (`/v1/chat/completions` 404s), so a `chat_completions` value
+        # here is drift worth seeing rather than a case to handle.
+        extras["router_surface"] = api
+        api = RAMP_ROUTER_PROVIDER
+
     # Consistency guard: for genuine OpenAI, total_tokens always equals
     # prompt + completion (reasoning is a SUBSET of completion, never additive).
     # Verified across every fixture under openai_native/ — zero deltas. So a
@@ -399,30 +433,6 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
         if unaccounted > 0:
             output_tokens += unaccounted
             extras["unaccounted_output_tokens"] = unaccounted
-
-    # `resolve_model` prefers the response's own model over the requested one, which is
-    # what makes a Router fallback bill correctly with no extra work: a `models` request
-    # sends no `model` at all, and Switchyard routing can serve a different model than
-    # the one asked for, so the response is the only place the SERVED model appears.
-    model = resolved_model
-    if provider_hint == RAMP_ROUTER_PROVIDER:
-        router_provider, parsed_model, tier = _parse_router_model(resolved_model)
-        if router_provider:
-            model = parsed_model
-            # Recorded, not promoted to `provider` — see RAMP_ROUTER_PROVIDER for why
-            # the served vendor cannot drive the de-overlap convention.
-            extras["router_provider"] = router_provider
-        # The tier is billing-relevant on its own: Router's catalog says tiers "may use
-        # different rates" than the base ones it publishes, so a pinned non-default tier
-        # is the difference between a correct price and an over-bill at the standard
-        # rate.
-        if tier:
-            extras["service_tier"] = tier
-        # Which of Router's two OpenAI-shaped surfaces answered. Router documents only
-        # `/v1/responses` (`/v1/chat/completions` 404s), so a `chat_completions` value
-        # here is drift worth seeing rather than a case to handle.
-        extras["router_surface"] = api
-        api = RAMP_ROUTER_PROVIDER
 
     return CanonicalUsage(
         input=input_tokens,
