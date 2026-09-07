@@ -56,8 +56,12 @@ class FakeOpenAIClient:
 
     __module__ = "openai.client"
 
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, api_key: str | None = None):
         self.base_url = base_url
+        # `openai.OpenAI(api_key=...)` exposes the key as `.api_key` (verified on 2.38);
+        # None here means "a client variant without it", and the attribute is absent.
+        if api_key is not None:
+            self.api_key = api_key
 
 
 _MISTRAL_ALIASES = parse_mistral_aliases(
@@ -187,3 +191,100 @@ def test_auto_prime_is_a_noop_in_token_mode():
     provider.maybe_refresh()
 
     assert fetcher.mistral_calls == 0
+
+
+class _RouterCallCountingFetcher(HttpPricingFetcher):
+    def __init__(self):
+        super().__init__()
+        self.router_keys: list[str | None] = []
+
+    def fetch_ramp_router(self, api_key=None):
+        self.router_keys.append(api_key)
+        return {}
+
+
+def test_wrap_openai_pointed_at_router_learns_the_key_and_primes_the_catalog():
+    """Router's catalog is account-scoped, so the key the client already carries is the
+    one that unlocks it — no LagoConfig.ramp_router_api_key required."""
+    fetcher = _RouterCallCountingFetcher()
+    provider = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    sdk = _sdk_with_provider(provider)
+
+    sdk.wrap(FakeOpenAIClient(base_url="https://api.router.com/v1", api_key="sk-router-abc"))
+
+    assert _wait_until(lambda: fetcher.router_keys == ["sk-router-abc"])
+
+
+def test_wrap_openai_pointed_at_router_without_a_readable_key_still_primes():
+    """A client variant with no `.api_key` degrades to "no key learned": the fetch runs
+    with None (then LagoConfig.ramp_router_api_key, then an empty table and a reported
+    miss) rather than raising out of wrap()."""
+    fetcher = _RouterCallCountingFetcher()
+    provider = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    sdk = _sdk_with_provider(provider)
+
+    sdk.wrap(FakeOpenAIClient(base_url="https://api.router.com/v1"))
+
+    assert _wait_until(lambda: fetcher.router_keys == [None])
+
+
+def test_wrap_openai_pointed_at_real_openai_does_not_prime_router():
+    fetcher = _RouterCallCountingFetcher()
+    provider = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    sdk = _sdk_with_provider(provider)
+
+    sdk.wrap(FakeOpenAIClient(base_url="https://api.openai.com/v1", api_key="sk-openai"))
+    provider.maybe_refresh()
+
+    assert fetcher.router_keys == []
+
+
+def test_an_explicit_config_router_key_reaches_the_default_fetcher():
+    cfg = LagoConfig(
+        api_key="dummy", default_subscription_id="sub_test", ramp_router_api_key="cfg-router-key"
+    )
+    sdk = LagoSDK(api_key="dummy", config=cfg)
+    try:
+        assert sdk._pricing._fetcher._ramp_router_api_key == "cfg-router-key"  # type: ignore[attr-defined]
+    finally:
+        sdk.shutdown(timeout=1.0)
+
+
+class _Messages:
+    def create(self, **kwargs):
+        return {"usage": {"input_tokens": 1, "output_tokens": 1}}
+
+
+class FakeAnthropicClient:
+    """Mimics anthropic.Anthropic: `.base_url`, `.api_key`, `.messages` (verified 0.103.1)."""
+
+    __module__ = "anthropic.client"
+
+    def __init__(self, base_url: str, api_key: str | None = None):
+        self.base_url = base_url
+        self.messages = _Messages()
+        if api_key is not None:
+            self.api_key = api_key
+
+
+def test_wrap_anthropic_pointed_at_router_learns_the_key_and_primes_the_catalog():
+    """Router's second surface. The Anthropic client carries the same Router key, read the
+    same way — one helper, so the two wrappers cannot learn it differently."""
+    fetcher = _RouterCallCountingFetcher()
+    provider = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    sdk = _sdk_with_provider(provider)
+
+    sdk.wrap(FakeAnthropicClient(base_url="https://api.router.com", api_key="sk-router-via-anthropic"))
+
+    assert _wait_until(lambda: fetcher.router_keys == ["sk-router-via-anthropic"])
+
+
+def test_wrap_anthropic_pointed_at_anthropic_does_not_prime_router():
+    fetcher = _RouterCallCountingFetcher()
+    provider = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    sdk = _sdk_with_provider(provider)
+
+    sdk.wrap(FakeAnthropicClient(base_url="https://api.anthropic.com", api_key="sk-ant"))
+    provider.maybe_refresh()
+
+    assert fetcher.router_keys == []

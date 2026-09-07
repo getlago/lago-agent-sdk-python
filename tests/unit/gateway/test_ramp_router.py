@@ -5,19 +5,26 @@ from __future__ import annotations
 import json
 import pathlib
 import threading
+from decimal import Decimal
 from typing import Any
 
 import pytest
 
 from lago_agent_sdk import LagoSDK
+from lago_agent_sdk.adapters.anthropic_native import RAMP_ROUTER_MESSAGES_API, extract_anthropic_native
 from lago_agent_sdk.adapters.openai_native import RAMP_ROUTER_PROVIDER, extract_openai_native
+from lago_agent_sdk.exceptions import PricingUnavailableError
 from lago_agent_sdk.pricing import (
     TOKEN_BILLED_PROVIDERS,
     PricingProvider,
+    lookup_ramp_router,
     parse_openrouter,
+    parse_ramp_router,
 )
-from lago_agent_sdk.token_semantics import KNOWN_PROVIDERS, token_semantics
+from lago_agent_sdk.token_semantics import KNOWN_PROVIDERS, OPENAI_SHAPED_APIS, token_semantics
+from lago_agent_sdk.wrappers.anthropic import _merge_stream_usage
 from lago_agent_sdk.wrappers.openai import _provider_hint_for
+from lago_agent_sdk.wrappers.ramp_router import client_points_at_ramp_router, is_ramp_router_base_url
 
 ROUTER_BASE_URL = "https://api.router.com/v1"
 
@@ -428,29 +435,38 @@ def test_degrades_to_zero_rather_than_throwing_on_malformed_payloads(payload: An
 
 
 # ----------------------------------------------------------------------
-# Price mode. Every Router call currently takes a clean pricing MISS and falls
-# back to token events, because no vendor can be assigned to it safely yet.
+# Price mode. A Router call prices against Router's OWN catalog — the rate the
+# gateway bills, reconciled exact against a live account's dashboard export —
+# never against OpenRouter's listing for the "same" model.
 #
-# A real price table is loaded for these tests, and the same model is billed
-# both directly and through Router. Without that contrast the tests would pass
-# on an empty table, proving nothing: everything misses when nothing is priced.
+# The Router table is built through the real parser from the REAL captured
+# catalog, and an OpenRouter table listing the same model at a DIFFERENT rate
+# is loaded beside it. Without that contrast a test could pass by pricing from
+# the wrong table, and a table that silently failed to load would make every
+# assertion below vacuous — so the control test prices the same model directly.
 # ----------------------------------------------------------------------
-PRICED_MODEL = "gpt-5.4-mini"
-# Built through the real parser from a real-shaped OpenRouter payload, not from a
-# hand-written key: `norm()` rewrites "." to "-", and a test whose table silently fails
-# to load proves nothing about a miss.
-#
-# $0.75/M input and $4.50/M output are Router's own published base rates for this model.
+_CATALOG_FIXTURE = (
+    pathlib.Path(__file__).parents[1]
+    / "adapters"
+    / "fixtures"
+    / "ramp_router"
+    / "01_real_models_catalog.json"
+)
+_ROUTER_TABLE = parse_ramp_router(json.loads(_CATALOG_FIXTURE.read_text())["_body"])
+PRICED_MODEL = "gpt-5.4-nano"  # Router's catalog: $0.20/M input, $1.25/M output, $0.02/M cached
+SERVED_MODEL = f"{PRICED_MODEL}-2026-03-17"  # what Router actually answers with (fixture 02)
+# OpenRouter deliberately lists it at a rate that is NOT Router's, so a cost event priced
+# from the wrong table shows up in the numbers, not only in `price_source`.
 _OPENROUTER_TABLE = parse_openrouter(
-    {
-        "data": [
-            {"id": f"openai/{PRICED_MODEL}", "pricing": {"prompt": "0.00000075", "completion": "0.0000045"}}
-        ]
-    }
+    {"data": [{"id": f"openai/{PRICED_MODEL}", "pricing": {"prompt": "0.000001", "completion": "0.000001"}}]}
 )
 
 
 class _StubFetcher:
+    def __init__(self, router_table: dict[str, Any] | None = None) -> None:
+        self._router = _ROUTER_TABLE if router_table is None else router_table
+        self.ramp_router_keys: list[str | None] = []
+
     def fetch_openrouter(self) -> dict[str, Any]:
         return _OPENROUTER_TABLE
 
@@ -463,19 +479,40 @@ class _StubFetcher:
     def fetch_mistral_aliases(self, api_key: str | None = None) -> dict[str, str]:
         return {}
 
+    def fetch_ramp_router(self, api_key: str | None = None) -> dict[str, Any]:
+        self.ramp_router_keys.append(api_key)
+        return self._router
 
-def _priced_sdk() -> tuple[LagoSDK, list[dict], PricingProvider]:
-    provider = PricingProvider(fetcher=_StubFetcher(), ttl_seconds=3600.0)
-    sdk, received = _new_sdk(pricing_mode="price", pricing_provider=provider)
-    # The table has to be warm before the call, or the miss under test is just a cold
+
+def _priced_sdk(
+    router_table: dict[str, Any] | None = None, on_error: Any = None
+) -> tuple[LagoSDK, list[dict], PricingProvider]:
+    provider = PricingProvider(fetcher=_StubFetcher(router_table), ttl_seconds=3600.0)
+    config: dict[str, Any] = {"pricing_mode": "price", "pricing_provider": provider}
+    if on_error is not None:
+        config["on_error"] = on_error
+    sdk, received = _new_sdk(**config)
+    # Both tables have to be warm before the call, or a miss under test is just a cold
     # cache. `maybe_refresh` is the queue worker's own warm-up, called synchronously.
-    provider.prime(["openrouter"])
+    provider.prime(["ramp_router"])
     provider.maybe_refresh()
     return sdk, received, provider
 
 
-def test_the_same_model_does_price_when_called_directly_the_table_is_real() -> None:
-    """The control. If this fails, every "misses" assertion below is vacuous."""
+def _tiered(model: str, tier: str | None = "default", usage: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A Router response carrying its top-level `service_tier`, as every captured one does."""
+    body = router_response(model, usage)
+    if tier is not None:
+        body["service_tier"] = tier
+    return body
+
+
+def _cost_by_type(received: list[dict]) -> dict[str, dict]:
+    return {e["properties"]["token_type"]: e for e in received if e["code"] == "llm_cost"}
+
+
+def test_the_same_model_priced_directly_comes_from_openrouter_the_control() -> None:
+    """If this fails, every Router assertion below proves nothing about which table won."""
     sdk, received, provider = _priced_sdk()
     assert provider.lookup("openai", PRICED_MODEL, "responses") is not None
     client = sdk.wrap(FakeRouterClient("https://api.openai.com/v1", lambda kw: router_response(PRICED_MODEL)))
@@ -483,19 +520,44 @@ def test_the_same_model_does_price_when_called_directly_the_table_is_real() -> N
     assert sdk.flush(timeout=2.0)
     sdk.shutdown(timeout=1.0)
 
-    codes = [e["code"] for e in received]
-    assert "llm_cost" in codes
-    assert "llm_input_tokens" not in codes
+    costs = _cost_by_type(received)
+    assert costs and all(e["properties"]["price_source"] == "openrouter" for e in costs.values())
+    assert costs["input"]["properties"]["unit_price"] == "0.000001"
+    assert "llm_input_tokens" not in [e["code"] for e in received]
 
 
-def test_the_identical_model_through_router_misses_and_falls_back_to_token_events() -> None:
-    """Same table, same model, same usage — only the base URL differs. The miss is
-    caused by the Router provider vocabulary, which is the decision under test: Router
-    bills $0 for a BYOK-served request and a non-default tier at a rate its catalog says
-    "may differ", so a list-price lookup can be flatly wrong."""
+def test_the_identical_model_through_router_prices_from_routers_own_catalog() -> None:
+    """Same usage, same model family — only the base URL differs — and the money comes
+    from Router's table: $0.20/M input, not OpenRouter's $1/M."""
     sdk, received, _ = _priced_sdk()
-    client = sdk.wrap(FakeRouterClient(ROUTER_BASE_URL, lambda kw: router_response(f"openai:{PRICED_MODEL}")))
+    client = sdk.wrap(FakeRouterClient(ROUTER_BASE_URL, lambda kw: _tiered(SERVED_MODEL)))
     client.responses.create(model=PRICED_MODEL, input="ping")
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+
+    costs = _cost_by_type(received)
+    assert set(costs) == {"input", "output"}
+    for e in costs.values():
+        assert e["properties"]["price_source"] == "ramp_router"
+        assert e["properties"]["provider"] == RAMP_ROUTER_PROVIDER
+        # Billed under the served snapshot, the same row a direct call to it reports.
+        assert e["properties"]["model"] == SERVED_MODEL
+    assert costs["input"]["properties"]["unit_price"] == "0.0000002"
+    assert costs["input"]["properties"]["value"] == "0.0000022"  # 11 tokens
+    assert costs["output"]["properties"]["value"] == "0.00000375"  # 3 tokens x $1.25/M
+    assert "llm_input_tokens" not in [e["code"] for e in received]
+
+
+@pytest.mark.parametrize("tier", ["flex", "priority", "turbo"])
+def test_a_non_default_tier_is_a_named_miss_never_a_multiplied_rate(tier: str) -> None:
+    """flex measured 0.5x, priority 2.0x, and a tier Router adds later is unknown. None
+    of them bill at the catalog rate, and the SDK applies no factor of its own: token
+    events, plus an on_error that says WHICH tier, since the same model priced fine a
+    moment ago. Decided 2026-09-07."""
+    errors: list[tuple[Exception, str]] = []
+    sdk, received, _ = _priced_sdk(on_error=lambda exc, where: errors.append((exc, where)))
+    client = sdk.wrap(FakeRouterClient(ROUTER_BASE_URL, lambda kw: _tiered(SERVED_MODEL, tier)))
+    client.responses.create(model="x", input="ping")
     assert sdk.flush(timeout=2.0)
     sdk.shutdown(timeout=1.0)
 
@@ -504,26 +566,140 @@ def test_the_identical_model_through_router_misses_and_falls_back_to_token_event
     # Not a silent drop. The usage is billed, exactly, as tokens.
     assert by_code["llm_input_tokens"] == 11
     assert by_code["llm_output_tokens"] == 3
+    misses = [(exc, where) for exc, where in errors if isinstance(exc, PricingUnavailableError)]
+    assert len(misses) == 1
+    exc, where = misses[0]
+    assert where == "pricing"
+    assert exc.detail is not None and tier in exc.detail
+    assert tier in str(exc)
 
 
-def test_a_flex_tier_call_is_never_billed_at_the_base_rate() -> None:
-    """supported-models: "Service tiers, long contexts, caching, and other features may
-    use different rates." Billing flex at the standard rate over-bills."""
+def test_a_router_response_reporting_no_tier_bills_at_the_base_rate() -> None:
+    """Sweep 2026-09-07: Router omitted `service_tier` on six `incomplete` zero-output
+    responses (both surfaces) and billed every one at standard, while flex and priority
+    were always reported explicitly. Absence means standard; only a reported non-base tier
+    is a miss."""
+    errors: list[Exception] = []
+    sdk, received, _ = _priced_sdk(on_error=lambda exc, where: errors.append(exc))
+    client = sdk.wrap(FakeRouterClient(ROUTER_BASE_URL, lambda kw: _tiered(SERVED_MODEL, tier=None)))
+    client.responses.create(model="x", input="ping")
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert "llm_cost" in [e["code"] for e in received]
+    assert not any(isinstance(e, PricingUnavailableError) for e in errors)
+
+
+_LUNA_COLD_WRITE = {
+    "input_tokens": 4493,
+    "output_tokens": 5,
+    "total_tokens": 4498,
+    "input_tokens_details": {"cache_write_tokens": 4490, "cached_tokens": 0},
+}
+_LUNA_WARM_READ = {
+    "input_tokens": 4493,
+    "output_tokens": 5,
+    "total_tokens": 4498,
+    "input_tokens_details": {"cache_write_tokens": 0, "cached_tokens": 4490},
+}
+
+
+def test_an_openai_served_cache_write_bills_at_the_catalog_write_rate() -> None:
+    """Reconciled against the dashboard on 2026-09-07 (gpt-5.6-luna, default tier): at the
+    published rates 3 x $0.20/M + 4490 x $0.25/M + 5 x $1.20/M = $0.0011291; Router charged
+    exactly 1.1x that, a documented per-model mismatch the SDK does not correct. What this
+    pins is the write arithmetic: the count sits INSIDE input_tokens, so it is moved out
+    before pricing — never billed at the input rate AND the write rate."""
     sdk, received, _ = _priced_sdk()
     client = sdk.wrap(
-        FakeRouterClient(ROUTER_BASE_URL, lambda kw: router_response(f"openai:{PRICED_MODEL}:flex"))
+        FakeRouterClient(ROUTER_BASE_URL, lambda kw: _tiered("gpt-5.6-luna", usage=_LUNA_COLD_WRITE))
     )
     client.responses.create(model="x", input="ping")
     assert sdk.flush(timeout=2.0)
     sdk.shutdown(timeout=1.0)
-    assert "llm_cost" not in [e["code"] for e in received]
+
+    costs = _cost_by_type(received)
+    assert set(costs) == {"input", "cache_write", "output"}
+    assert costs["input"]["properties"]["unit"] == "3"
+    assert costs["cache_write"]["properties"]["unit"] == "4490"
+    assert costs["cache_write"]["properties"]["unit_price"] == "0.00000025"
+    assert sum(Decimal(e["properties"]["value"]) for e in costs.values()) == Decimal("0.0011291")
+
+
+def test_the_warm_repeat_bills_the_cached_block_at_the_cache_read_rate() -> None:
+    """Same prompt a second later: 4490 cached at $0.02/M: $0.0000964 at the published rates
+    (Router charged 1.1x that — the documented luna mismatch)."""
+    sdk, received, _ = _priced_sdk()
+    client = sdk.wrap(
+        FakeRouterClient(ROUTER_BASE_URL, lambda kw: _tiered("gpt-5.6-luna", usage=_LUNA_WARM_READ))
+    )
+    client.responses.create(model="x", input="ping")
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+
+    costs = _cost_by_type(received)
+    assert set(costs) == {"input", "cache_read", "output"}
+    assert costs["cache_read"]["properties"]["unit"] == "4490"
+    assert sum(Decimal(e["properties"]["value"]) for e in costs.values()) == Decimal("0.0000964")
+
+
+def test_the_cache_write_count_is_mapped_for_router_and_stays_in_extras_for_openai() -> None:
+    """Same wire shape, two measured billing conventions: Router bills the write at its
+    catalog rate (mapped, not drift); OpenAI-native was metered at the plain input rate
+    (unmapped, surfaced in extras — see _MAPPED_DETAIL_FIELDS)."""
+    body = _tiered("gpt-5.6-luna", usage=_LUNA_COLD_WRITE)
+    via_router = extract_openai_native(body, provider_hint=RAMP_ROUTER_PROVIDER)
+    assert via_router.cache_write == 4490
+    assert "input_tokens_details.cache_write_tokens" not in via_router.extras
+    direct = extract_openai_native(body)
+    assert direct.cache_write == 0
+    assert direct.extras["input_tokens_details.cache_write_tokens"] == 4490
+
+
+def test_a_streamed_router_call_carries_the_served_tier_and_prices() -> None:
+    """The terminal `response.completed` event carries `service_tier` (fixture 04). The
+    stream wrapper used to forward usage and model only, so every streamed Router call
+    reached price mode tier-less — and a missing tier is a miss."""
+    events = [
+        _FakeStreamChunk(
+            {"type": "response.created", "response": {"model": SERVED_MODEL, "service_tier": "default"}}
+        ),
+        _FakeStreamChunk({"type": "response.output_text.delta", "delta": "po"}),
+        _FakeStreamChunk({"type": "response.completed", "response": _tiered(SERVED_MODEL)}),
+    ]
+    sdk, received, _ = _priced_sdk()
+    client = sdk.wrap(FakeRouterClient(ROUTER_BASE_URL, lambda kw: iter(events)))
+    for _ in client.responses.create(model="x", input="ping", stream=True):
+        pass
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+
+    costs = _cost_by_type(received)
+    assert set(costs) == {"input", "output"}
+    assert costs["input"]["properties"]["price_source"] == "ramp_router"
 
 
 def test_a_pricing_miss_never_reaches_the_caller_as_an_exception() -> None:
     sdk, _, _ = _priced_sdk()
-    client = sdk.wrap(FakeRouterClient(ROUTER_BASE_URL, lambda kw: router_response(f"openai:{PRICED_MODEL}")))
+    client = sdk.wrap(FakeRouterClient(ROUTER_BASE_URL, lambda kw: _tiered(SERVED_MODEL, "flex")))
     assert client.responses.create(model="x", input="ping") is not None
     sdk.shutdown(timeout=1.0)
+
+
+def test_a_cold_or_empty_router_table_is_a_reported_miss_not_a_silent_token_fallback() -> None:
+    """Router used to sit in TOKEN_BILLED_PROVIDERS, which swallowed the miss on purpose
+    because nothing could fix it. Now a miss is actionable — no Router key learned, table
+    still cold, catalog missing the model — so it must reach on_error like any other."""
+    assert RAMP_ROUTER_PROVIDER not in TOKEN_BILLED_PROVIDERS
+
+    errors: list[Exception] = []
+    sdk, received, _ = _priced_sdk(router_table={}, on_error=lambda exc, where: errors.append(exc))
+    client = sdk.wrap(FakeRouterClient(ROUTER_BASE_URL, lambda kw: _tiered(SERVED_MODEL)))
+    client.responses.create(model="x", input="ping")
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert sorted(e["code"] for e in received) == ["llm_input_tokens", "llm_output_tokens"]
+    misses = [e for e in errors if isinstance(e, PricingUnavailableError)]
+    assert len(misses) == 1 and misses[0].detail is None
 
 
 # ----------------------------------------------------------------------
@@ -551,31 +727,10 @@ def test_200_concurrent_calls_bill_exactly_200_input_events() -> None:
 
 
 # ----------------------------------------------------------------------
-# The two recorded decisions behind "ramp_router", pinned so neither can be
-# reverted silently. The generic roster tests cannot see them: the hint comes
-# from the wrapper's HOST arm, not from _PROVIDER_BY_BASE_URL_PATH, so nothing
-# else in the suite fails if either set entry disappears.
+# The recorded token-convention decision behind "ramp_router", pinned so it
+# cannot be reverted silently. The generic roster tests cannot see it: the hint
+# comes from the wrapper's HOST arm, not from _PROVIDER_BY_BASE_URL_PATH.
 # ----------------------------------------------------------------------
-def test_ramp_router_is_token_billed_a_price_mode_call_emits_token_events_with_no_error_report() -> None:
-    """Router is structurally unpriceable today (BYOK requests bill $0, tiers have
-    unpublished rates, every observed catalog input rate is empty), so a price miss is
-    permanent — and a permanent miss must not cry wolf on the error hook per call. Same
-    decision as Databricks and Snowflake."""
-    assert RAMP_ROUTER_PROVIDER in TOKEN_BILLED_PROVIDERS
-
-    errors: list[Any] = []
-    provider = PricingProvider(fetcher=_StubFetcher(), ttl_seconds=3600.0)
-    sdk, received = _new_sdk(
-        pricing_mode="price", pricing_provider=provider, on_error=lambda exc, where: errors.append(exc)
-    )
-    provider.prime(["openrouter"])
-    provider.maybe_refresh()
-    client = sdk.wrap(FakeRouterClient(ROUTER_BASE_URL, lambda kw: router_response("openai:gpt-5.4-mini")))
-    client.responses.create(model="x", input="ping")
-    assert sdk.flush(timeout=2.0)
-    sdk.shutdown(timeout=1.0)
-    assert sorted(e["code"] for e in received) == ["llm_input_tokens", "llm_output_tokens"]
-    assert errors == []
 
 
 def test_ramp_routers_token_convention_is_a_recorded_measurement_openai_shaped_on_every_axis() -> None:
@@ -645,10 +800,17 @@ def test_a_router_remainder_smaller_than_its_subsets_still_folds_rather_than_van
 _CAPTURES = pathlib.Path(__file__).parents[1] / "adapters" / "fixtures" / "ramp_router"
 
 
-def _captured_bodies() -> list[tuple[str, dict[str, Any]]]:
-    """Every captured 200 that carries usage, buffered or streamed."""
+def _captured_bodies(surface: str = "responses") -> list[tuple[str, dict[str, Any]]]:
+    """Every captured 200 that carries usage, buffered or streamed, on ONE surface.
+
+    Router has two: `/v1/responses` (OpenAI-shaped, fixtures 01-10) and `/v1/messages`
+    (Anthropic-shaped, fixtures 11-15, named `_messages_`). They report `service_tier` in
+    different places and go through different adapters, so a test must say which it means.
+    """
     out: list[tuple[str, dict[str, Any]]] = []
     for path in sorted(_CAPTURES.glob("*.json")):
+        if ("_messages_" in path.name) != (surface == "messages"):
+            continue
         blob = json.loads(path.read_text())
         body = blob.get("_body")
         if not (isinstance(body, dict) and body.get("usage")):
@@ -686,3 +848,280 @@ def test_every_captured_response_bills_the_bare_served_snapshot(name: str, body:
     assert u.model == body["model"]
     assert ":" not in u.model
     assert u.provider == RAMP_ROUTER_PROVIDER
+
+
+@pytest.mark.skipif(not _captured_bodies(), reason="Router fixtures not captured")
+@pytest.mark.parametrize("name,body", _captured_bodies(), ids=lambda v: v if isinstance(v, str) else "")
+def test_every_captured_served_model_resolves_in_the_real_catalog(name: str, body: dict[str, Any]) -> None:
+    """The served name is what price mode looks up, and it is never the catalog id: a
+    dated snapshot for OpenAI and Anthropic, the vendor's own path for Fireworks. Every
+    response Router has actually sent must land on exactly one catalog entry."""
+    u = extract_openai_native(body, provider_hint=RAMP_ROUTER_PROVIDER)
+    assert lookup_ramp_router(_ROUTER_TABLE, u.model) is not None
+
+
+# ----------------------------------------------------------------------
+# Router's SECOND surface: `POST /v1/messages`, reached with an Anthropic client.
+# Same host, same catalog, same key — but Anthropic's schema and Anthropic's
+# ADDITIVE convention for every vendor, and the one place an Anthropic-served
+# cache WRITE is reported. Detection is the shared host helper; the wrapper
+# threads a provider hint into the Anthropic adapter, which stamps a distinct
+# `api` so the token semantics cannot be confused with the Responses surface.
+# ----------------------------------------------------------------------
+def messages_response(model: str, usage: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A Router `/v1/messages` response, in the shape fixture 11 actually carries:
+    Anthropic's schema, `service_tier` INSIDE usage."""
+    return {
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{"type": "text", "text": "pong"}],
+        "usage": {
+            "input_tokens": 16,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
+            "service_tier": "standard",
+            **(usage or {}),
+        },
+    }
+
+
+class FakeRouterAnthropicMessages:
+    def __init__(self, reply: Any) -> None:
+        self._reply = reply
+
+    def create(self, **kwargs: Any) -> Any:
+        assert "extra_lago" not in kwargs
+        return self._reply(kwargs)
+
+
+class FakeRouterAnthropicClient:
+    def __init__(self, base_url: str, reply: Any, api_key: str = "sk-router-from-client") -> None:
+        self.base_url = base_url
+        self.api_key = api_key
+        self.messages = FakeRouterAnthropicMessages(reply)
+
+
+# The detector keys on the module; Router's Messages surface is reached with an Anthropic client.
+FakeRouterAnthropicClient.__module__ = "anthropic.fake"
+
+ANTHROPIC_ROUTER_BASE_URL = "https://api.router.com"
+HAIKU_SERVED = "claude-haiku-4-5-20251001"  # what Router answers with (fixture 11)
+
+
+@pytest.mark.parametrize(
+    "base_url,expected",
+    [
+        ("https://api.router.com", True),
+        ("https://api.router.com/v1", True),
+        ("https://api-eu.router.com", True),
+        ("https://api.anthropic.com", False),
+        ("https://evil.example.com/api.router.com", False),
+        ("https://evilrouter.com", False),
+        ("/v1", False),
+        (None, False),
+        (42, False),
+    ],
+)
+def test_the_shared_host_helper_is_the_one_answer_both_wrappers_read(base_url: Any, expected: bool) -> None:
+    assert is_ramp_router_base_url(base_url) is expected
+    assert client_points_at_ramp_router(_Base(base_url)) is expected
+
+
+def test_the_openai_wrapper_and_the_shared_helper_cannot_disagree() -> None:
+    for url in ("https://api.router.com/v1", "https://api-eu.router.com/v1", "https://api.openai.com/v1"):
+        assert (_provider_hint_for(_Base(url)) == RAMP_ROUTER_PROVIDER) is is_ramp_router_base_url(url)
+
+
+def test_an_anthropic_client_pointed_at_router_bills_as_router_on_the_messages_surface() -> None:
+    sdk, received = _new_sdk()
+    client = sdk.wrap(
+        FakeRouterAnthropicClient(ANTHROPIC_ROUTER_BASE_URL, lambda kw: messages_response(HAIKU_SERVED))
+    )
+    client.messages.create(
+        model="claude-haiku-4-5", max_tokens=16, messages=[{"role": "user", "content": "ping"}]
+    )
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+
+    assert _by_code(received) == {"llm_input_tokens": 16, "llm_output_tokens": 5}
+    for e in received:
+        assert e["properties"]["provider"] == RAMP_ROUTER_PROVIDER
+        assert e["properties"]["api"] == RAMP_ROUTER_MESSAGES_API
+        assert e["properties"]["model"] == HAIKU_SERVED
+
+
+def test_an_anthropic_client_pointed_at_anthropic_is_untouched() -> None:
+    sdk, received = _new_sdk()
+    client = sdk.wrap(
+        FakeRouterAnthropicClient("https://api.anthropic.com", lambda kw: messages_response(HAIKU_SERVED))
+    )
+    client.messages.create(model="claude-haiku-4-5", max_tokens=16, messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert {(e["properties"]["provider"], e["properties"]["api"]) for e in received} == {
+        ("anthropic", "native")
+    }
+
+
+def test_the_messages_surface_keeps_anthropics_additive_convention_for_every_vendor() -> None:
+    """Measured: haiku `input_tokens: 16` beside `cache_read_input_tokens: 20113` (2026-09-04,
+    reconciled exactly); an xAI model `input_tokens: 65` beside `cache_read_input_tokens:
+    128` with thinking inside output (2026-09-07). The Responses stamp is in
+    OPENAI_SHAPED_APIS; this one must never be."""
+    assert RAMP_ROUTER_MESSAGES_API not in OPENAI_SHAPED_APIS
+    assert token_semantics(RAMP_ROUTER_PROVIDER, RAMP_ROUTER_MESSAGES_API) == (False, False, False)
+    assert token_semantics(RAMP_ROUTER_PROVIDER, RAMP_ROUTER_PROVIDER) == (True, True, True)
+
+
+def test_the_adapter_stamps_router_only_when_the_wrapper_says_so() -> None:
+    body = messages_response(HAIKU_SERVED)
+    assert (extract_anthropic_native(body).provider, extract_anthropic_native(body).api) == (
+        "anthropic",
+        "native",
+    )
+    hinted = extract_anthropic_native(body, provider_hint=RAMP_ROUTER_PROVIDER)
+    assert (hinted.provider, hinted.api) == (RAMP_ROUTER_PROVIDER, RAMP_ROUTER_MESSAGES_API)
+    # The tier rides inside usage on this surface and lands in extras with no special code.
+    assert hinted.extras["service_tier"] == "standard"
+
+
+# Fixture 12 / 13, verbatim: a 7,481-token cache_control prefix on claude-haiku-4-5.
+_MESSAGES_COLD_WRITE = {
+    "input_tokens": 15,
+    "output_tokens": 5,
+    "cache_creation_input_tokens": 7481,
+    "cache_creation": {"ephemeral_5m_input_tokens": 7481, "ephemeral_1h_input_tokens": 0},
+}
+_MESSAGES_WARM_READ = {"input_tokens": 15, "output_tokens": 6, "cache_read_input_tokens": 7481}
+
+
+def test_an_anthropic_cache_write_on_the_messages_surface_bills_at_the_ttl_write_rate() -> None:
+    """The gap the Responses surface cannot close. Router publishes cache_write_input_5m
+    ($1.25/M on haiku) and the Messages surface reports the written count with its TTL, so
+    the write bills at its own rate: 15 x $1/M + 7481 x $1.25/M + 5 x $5/M = $0.00939125.
+    The lump `cache_write` line is consumed entirely by the split — never billed twice."""
+    sdk, received, _ = _priced_sdk()
+    client = sdk.wrap(
+        FakeRouterAnthropicClient(
+            ANTHROPIC_ROUTER_BASE_URL, lambda kw: messages_response(HAIKU_SERVED, _MESSAGES_COLD_WRITE)
+        )
+    )
+    client.messages.create(model="x", max_tokens=16, messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+
+    costs = _cost_by_type(received)
+    assert set(costs) == {"input", "cache_write_5m", "output"}
+    assert costs["input"]["properties"]["unit"] == "15"  # additive: NOT reduced by the write
+    assert costs["cache_write_5m"]["properties"]["unit"] == "7481"
+    assert costs["cache_write_5m"]["properties"]["unit_price"] == "0.00000125"
+    assert all(e["properties"]["api"] == RAMP_ROUTER_MESSAGES_API for e in costs.values())
+    assert sum(Decimal(e["properties"]["value"]) for e in costs.values()) == Decimal("0.00939125")
+
+
+def test_the_warm_repeat_on_the_messages_surface_bills_the_read_beside_input() -> None:
+    """Additive: 15 input tokens stay 15; the 7,481 cached bill at $0.10/M. $0.0007931."""
+    sdk, received, _ = _priced_sdk()
+    client = sdk.wrap(
+        FakeRouterAnthropicClient(
+            ANTHROPIC_ROUTER_BASE_URL, lambda kw: messages_response(HAIKU_SERVED, _MESSAGES_WARM_READ)
+        )
+    )
+    client.messages.create(model="x", max_tokens=16, messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+
+    costs = _cost_by_type(received)
+    assert set(costs) == {"input", "cache_read", "output"}
+    assert costs["input"]["properties"]["unit"] == "15"
+    assert costs["cache_read"]["properties"]["unit"] == "7481"
+    assert sum(Decimal(e["properties"]["value"]) for e in costs.values()) == Decimal("0.0007931")
+
+
+@pytest.mark.parametrize("tier,priced", [("standard", True), ("default", True), ("priority", False)])
+def test_the_tier_gate_reads_the_messages_surfaces_in_usage_tier(tier: str, priced: bool) -> None:
+    errors: list[Exception] = []
+    sdk, received, _ = _priced_sdk(on_error=lambda exc, where: errors.append(exc))
+    client = sdk.wrap(
+        FakeRouterAnthropicClient(
+            ANTHROPIC_ROUTER_BASE_URL, lambda kw: messages_response(HAIKU_SERVED, {"service_tier": tier})
+        )
+    )
+    client.messages.create(model="x", max_tokens=16, messages=[])
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+    assert ("llm_cost" in [e["code"] for e in received]) is priced
+    assert any(isinstance(e, PricingUnavailableError) and tier in str(e) for e in errors) is not priced
+
+
+def test_a_streamed_messages_call_carries_the_tier_through_the_merge_and_prices() -> None:
+    """Fixture 14: `service_tier` sits inside `message_start.message.usage` AND
+    `message_delta.usage`; the wrapper's merge keeps it, so the adapter's drift sweep
+    lands it in extras and the tier gate passes."""
+    start = {
+        "type": "message_start",
+        "message": {
+            "model": HAIKU_SERVED,
+            "usage": {
+                "input_tokens": 16,
+                "output_tokens": 4,
+                "cache_read_input_tokens": 0,
+                "service_tier": "standard",
+            },
+        },
+    }
+    delta = {"type": "message_delta", "usage": {"output_tokens": 5, "service_tier": "standard"}}
+    events = [
+        _FakeStreamChunk(start),
+        _FakeStreamChunk({"type": "content_block_delta"}),
+        _FakeStreamChunk(delta),
+    ]
+    sdk, received, _ = _priced_sdk()
+    client = sdk.wrap(FakeRouterAnthropicClient(ANTHROPIC_ROUTER_BASE_URL, lambda kw: iter(events)))
+    for _ in client.messages.create(model="x", max_tokens=16, messages=[], stream=True):
+        pass
+    assert sdk.flush(timeout=2.0)
+    sdk.shutdown(timeout=1.0)
+
+    costs = _cost_by_type(received)
+    assert set(costs) == {"input", "output"}
+    assert costs["input"]["properties"]["unit"] == "16"
+    assert costs["output"]["properties"]["unit"] == "5"
+    assert costs["input"]["properties"]["api"] == RAMP_ROUTER_MESSAGES_API
+
+
+@pytest.mark.skipif(not _captured_bodies("messages"), reason="Router /v1/messages fixtures not captured")
+@pytest.mark.parametrize(
+    "name,body", _captured_bodies("messages"), ids=lambda v: v if isinstance(v, str) else ""
+)
+def test_every_captured_messages_response_stamps_router_and_resolves_in_the_catalog(
+    name: str, body: dict[str, Any]
+) -> None:
+    u = extract_anthropic_native(body, provider_hint=RAMP_ROUTER_PROVIDER)
+    assert (u.provider, u.api) == (RAMP_ROUTER_PROVIDER, RAMP_ROUTER_MESSAGES_API)
+    assert u.model == body["model"]
+    # The tier is INSIDE usage on this surface — the OpenAI-served model included.
+    assert u.extras["service_tier"] == body["usage"]["service_tier"]
+    assert lookup_ramp_router(_ROUTER_TABLE, u.model) is not None
+    # Additive: the lump write equals the TTL split (Anthropic's contract, every capture).
+    assert u.cache_write == u.cache_write_5m + u.cache_write_1h
+
+
+@pytest.mark.skipif(
+    not (_CAPTURES / "14_real_messages_streamed.json").exists(), reason="fixture not captured"
+)
+def test_the_captured_messages_stream_merges_to_a_priced_tier() -> None:
+    blob = json.loads((_CAPTURES / "14_real_messages_streamed.json").read_text())
+    accumulated: dict[str, Any] = {}
+    model: str | None = None
+    for event in blob["_events"]:
+        model = _merge_stream_usage(accumulated, event) or model
+    u = extract_anthropic_native({"usage": accumulated, "model": model}, provider_hint=RAMP_ROUTER_PROVIDER)
+    assert u.model == HAIKU_SERVED
+    assert u.input == 16 and u.output == 5
+    assert u.extras["service_tier"] == "standard"
+    assert lookup_ramp_router(_ROUTER_TABLE, u.model) is not None

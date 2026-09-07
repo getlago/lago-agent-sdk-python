@@ -64,12 +64,14 @@ _WORKERS_AI_MODEL_PREFIX = "@cf/"
 #: `provider:provider-model` candidate, nothing in the response says who served it, and
 #: the model-string rule `_infer_provider` uses cannot see it.
 #:
-#: "ramp_router" is in `TOKEN_BILLED_PROVIDERS` and deliberately absent from
-#: `_VENDOR_MAP`. Two distinct things would otherwise go wrong at once:
+#: "ramp_router" is deliberately absent from `_VENDOR_MAP`; it prices against Router's
+#: OWN catalog instead (see the Ramp Router section of pricing.py). Two distinct things
+#: would otherwise go wrong at once:
 #:
-#:   * A price lookup under a guessed vendor can be flatly wrong. Router bills at list
-#:     price on its shared key but $0 for a BYOK-served request, and a non-default
-#:     service tier bills at a rate its own catalog says "may differ" from the base one.
+#:   * A price lookup under a guessed vendor can be flatly wrong. Router's catalog rate
+#:     is the billed rate (measured exact against the dashboard across five vendors);
+#:     OpenRouter's listing for the "same" model is a different company's price, and
+#:     Router serves models literally named `claude-haiku-4-5` and `o4-mini`.
 #:   * The overlap semantics belong to ROUTER, not to the served vendor. Measured
 #:     2026-08-28 on an Anthropic-served model — the case that would diverge if anything
 #:     did: Router normalizes the NUMBERS to OpenAI's convention, not just the schema
@@ -79,13 +81,13 @@ _WORKERS_AI_MODEL_PREFIX = "@cf/"
 #:     one differs — "ramp_router" carries its own OPENAI_SHAPED_APIS entry instead.
 #:
 #: Token mode is unaffected and exact either way: it emits the counts Router reported.
-#: Price mode routes to those same token events via `TOKEN_BILLED_PROVIDERS`, with no
-#: per-call price-miss report — a structural, permanent miss must not cry wolf on the
-#: error hook (the same decision Databricks and Snowflake got). The catalog DOES publish
-#: per-model rates (`router.pricing`, 01_real_models_catalog.json), so a Router price
-#: mode is buildable — but the response still cannot say whether a BYOK key served the
-#: call ($0) or which tier rate applied, and every observed catalog entry carries an
-#: EMPTY input rate, so token counts stay the honest default.
+#: Price mode bills the catalog rate for a call served at the default tier; any other
+#: served tier is a reported miss (see `ramp_router_unpriced_tier`). Two things the
+#: response cannot say are decided, not guessed: a BYOK-served call ($0 through Router)
+#: is billed at the catalog rate regardless — the response is byte-identical either way
+#: and the rate equals what the vendor bills directly — and no factor is ever applied on top
+#: of the published rate, even for the models measured to bill off it (documented, with
+#: a `markup` recommendation, in docs/ramp-router.md).
 RAMP_ROUTER_PROVIDER = "ramp_router"
 
 # Router's documented service tiers, appearing as the third segment of a REQUESTED
@@ -351,7 +353,24 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
     # sends no `model` at all, and Switchyard routing can serve a different model than
     # the one asked for, so the response is the only place the SERVED model appears.
     model = resolved_model
+    # The cache-write count that reaches CanonicalUsage. Zero for every surface but
+    # Router — see _MAPPED_DETAIL_FIELDS for why OpenAI-native keeps it out.
+    mapped_cache_write = 0
     if provider_hint == RAMP_ROUTER_PROVIDER:
+        # Router bills an OpenAI-served cache WRITE at its catalog's `cache_write_input`
+        # rate — measured 2026-09-07 against the dashboard: gpt-5.6-luna, input_tokens
+        # 4493 with input_tokens_details.cache_write_tokens 4490, charged as 3 x input +
+        # 4490 x cache_write + out, exactly, at both served tiers. So on THIS surface the
+        # count is mapped, where for OpenAI-native it deliberately is not (Databricks
+        # metered the same field at the plain input rate — see _MAPPED_DETAIL_FIELDS).
+        # Same wire shape, two measured billing conventions; the hint is what tells
+        # them apart. The count stays INSIDE `input` (OPENAI_SHAPED_APIS), so
+        # compute_cost moves it out before pricing and the total_tokens guard leaves it
+        # alone. Anthropic-served Router calls never report the key — their cold write
+        # is invisible here and bills at the input rate, a documented limitation.
+        mapped_cache_write = cache_write
+        extras.pop("input_tokens_details.cache_write_tokens", None)
+        extras.pop("prompt_tokens_details.cache_write_tokens", None)
         router_provider, parsed_model, tier = _parse_router_model(resolved_model)
         if router_provider:
             model = parsed_model
@@ -466,6 +485,7 @@ def extract_openai_native(response: Any, model_id: str = "", provider_hint: str 
         input=input_tokens,
         output=output_tokens,
         cache_read=cache_read,
+        cache_write=mapped_cache_write,
         reasoning=reasoning,
         audio_input=audio_input,
         audio_output=audio_output,

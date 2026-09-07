@@ -16,8 +16,11 @@ from lago_agent_sdk import CanonicalUsage, LagoConfig, LagoSDK, ModelPrice
 from lago_agent_sdk.adapters.openai_native import extract_openai_native
 from lago_agent_sdk.canonical import WORKERS_AI_COMPAT_PREFIX
 from lago_agent_sdk.pricing import (
+    RAMP_ROUTER_MODELS_URL,
+    TOKEN_BILLED_PROVIDERS,
     HttpPricingFetcher,
     PricingProvider,
+    _is_foreign_backend_alias,
     _parse_price,
     _pick_mistral_canonical,
     _strip_version,
@@ -30,11 +33,14 @@ from lago_agent_sdk.pricing import (
     lookup_bedrock,
     lookup_cloudflare_workers_ai,
     lookup_openrouter,
+    lookup_ramp_router,
     parse_bedrock_offer,
     parse_bedrock_region,
     parse_cloudflare_workers_ai,
     parse_mistral_aliases,
     parse_openrouter,
+    parse_ramp_router,
+    ramp_router_unpriced_tier,
 )
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "pricing"
@@ -50,16 +56,20 @@ class StubFetcher:
         bedrock: dict | None = None,
         cloudflare_workers_ai: dict[str, ModelPrice] | None = None,
         mistral_aliases: dict[str, str] | None = None,
+        ramp_router: dict[str, ModelPrice] | None = None,
     ) -> None:
         self._openrouter = openrouter or {"exact": {}, "norm": {}}
         self._bedrock = bedrock or {}
         self._cloudflare_workers_ai = cloudflare_workers_ai or {}
         self._mistral_aliases = mistral_aliases or {}
+        self._ramp_router = ramp_router or {}
         self.openrouter_calls = 0
         self.bedrock_calls: list[str] = []
         self.cloudflare_workers_ai_calls = 0
         self.mistral_aliases_calls = 0
         self.last_mistral_api_key: str | None = None
+        self.ramp_router_calls = 0
+        self.last_ramp_router_api_key: str | None = None
 
     def fetch_openrouter(self) -> dict[str, Any]:
         self.openrouter_calls += 1
@@ -77,6 +87,11 @@ class StubFetcher:
         self.mistral_aliases_calls += 1
         self.last_mistral_api_key = api_key
         return self._mistral_aliases
+
+    def fetch_ramp_router(self, api_key: str | None = None) -> dict[str, ModelPrice]:
+        self.ramp_router_calls += 1
+        self.last_ramp_router_api_key = api_key
+        return self._ramp_router
 
 
 _OPENROUTER_RAW = {
@@ -2213,3 +2228,472 @@ def test_pricing_backoff_growth_matches_the_queues_and_is_capped() -> None:
         p._note_failure("openrouter")
         seq.append(p._failure_backoff_seconds["openrouter"])
     assert seq == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
+
+
+# ----------------------------------------------------------------------
+# Ramp Router — its own catalog is the price source
+#
+# Built through the real parser from the REAL captured catalog. The numbers
+# asserted below are the ones that reconciled against Router's dashboard.
+# ----------------------------------------------------------------------
+_ROUTER_CATALOG = json.loads(
+    (
+        pathlib.Path(__file__).parent
+        / "adapters"
+        / "fixtures"
+        / "ramp_router"
+        / "01_real_models_catalog.json"
+    ).read_text()
+)["_body"]
+_ROUTER_TABLE = parse_ramp_router(_ROUTER_CATALOG)
+
+
+def test_ramp_router_is_no_longer_token_billed() -> None:
+    """A Router miss is actionable now — no key, cold table, non-default tier — so it
+    must report like any other provider's instead of being swallowed as structural."""
+    assert "ramp_router" not in TOKEN_BILLED_PROVIDERS
+
+
+def test_ramp_router_parses_the_real_catalog_per_token() -> None:
+    """68 entries, six rate keys each, strings in USD per 1M tokens (measured 2026-09-07).
+    claude-haiku-4-5 publishes $1/M in, $5/M out, $0.10/M cached."""
+    ids = {m["id"] for m in _ROUTER_CATALOG["data"]}
+    assert len(ids) == 68
+    assert all(i in _ROUTER_TABLE for i in ids)
+    mp = _ROUTER_TABLE["claude-haiku-4-5"]
+    assert mp.source == "ramp_router"
+    assert mp.input == Decimal("0.000001")
+    assert mp.output == Decimal("0.000005")
+    assert mp.cache_read == Decimal("0.0000001")
+    assert mp.reasoning is None
+
+
+def test_ramp_router_zero_cache_rate_means_no_separate_rate_not_free() -> None:
+    """Anthropic entries publish cache_write_input "0" because their write price lives
+    in the _5m/_1h keys; the pro and legacy OpenAI entries publish cache_read_input "0"
+    because they do not cache. Neither is a $0 rate: stored as None so compute_cost
+    leaves those tokens inside `input` at the input rate."""
+    assert _ROUTER_TABLE["claude-haiku-4-5"].cache_write is None
+    assert _ROUTER_TABLE["gpt-5-pro"].cache_read is None
+    # ...while a genuinely published write rate is kept: gpt-5.6-luna, $0.25/M.
+    assert _ROUTER_TABLE["gpt-5.6-luna"].cache_write == Decimal("0.00000025")
+
+
+def test_ramp_router_no_catalog_rate_is_lossy_at_twelve_places() -> None:
+    """Per-million -> per-token is a division by 1e6 floored to 12 dp. If Router ever
+    publishes a rate with more than six significant decimals this fails, which is the
+    moment to widen _SCALE in BOTH repos rather than silently floor a price to 0."""
+    for m in _ROUTER_CATALOG["data"]:
+        for key, value in m["router"]["pricing"].items():
+            d = Decimal(value)
+            per_token = (d / Decimal(1_000_000)).quantize(Decimal("1e-12"))
+            assert per_token * Decimal(1_000_000) == d, (m["id"], key, value)
+
+
+def test_ramp_router_bills_the_published_rate_even_where_router_measurably_does_not() -> None:
+    """Dashboard-measured 2026-09-07: Router bills gpt-5.6-luna at 1.1x its own catalog and
+    gpt-5.6-sol at 0.55x. The SDK deliberately stores the PUBLISHED rate anyway — a factor
+    in the SDK would be the thing out of sync the day Router corrects its catalog — and
+    the docs hand the customer the measured factor as a `markup` they can drop that day."""
+    assert _ROUTER_TABLE["gpt-5.6-luna"].input == Decimal("0.0000002")
+    assert _ROUTER_TABLE["gpt-5.6-sol"].input == Decimal("0.000004")
+    gpt54 = next(m for m in _ROUTER_CATALOG["data"] if m["id"] == "gpt-5.4")
+    assert _ROUTER_TABLE["gpt-5.4"].input == Decimal(gpt54["router"]["pricing"]["input"]) / Decimal(1_000_000)
+
+
+def test_ramp_router_foreign_backend_aliases_are_not_indexed() -> None:
+    """A Fireworks-owned entry served through Baseten bills Baseten's rate, which the
+    catalog does not publish. The Baseten spelling is the entry's alias under another
+    path prefix, and it must MISS rather than price at the Fireworks rate (measured 1.11x
+    to 2.4x off, 2026-09-07). The entry's own id and Fireworks path still price."""
+    assert "deepseek-ai/DeepSeek-V4-Flash-0731" not in _ROUTER_TABLE
+    assert "zai-org/GLM-5.2" not in _ROUTER_TABLE
+    assert "moonshotai/Kimi-K2.7-Code" not in _ROUTER_TABLE
+    assert "deepseek-v4-flash-0731" in _ROUTER_TABLE
+    assert "accounts/fireworks/models/deepseek-v4-flash-0731" in _ROUTER_TABLE
+    # A Baseten-OWNED entry's own path is its provider_model, not a foreign alias.
+    assert "thinkingmachines/inkling-small" in _ROUTER_TABLE
+    assert lookup_ramp_router(_ROUTER_TABLE, "deepseek-ai/DeepSeek-V4-Flash-0731") is None
+
+
+@pytest.mark.parametrize(
+    "alias,provider_model,foreign",
+    [
+        ("deepseek-ai/DeepSeek-V4-Flash-0731", "accounts/fireworks/models/deepseek-v4-flash-0731", True),
+        ("accounts/fireworks/models/glm-5p3", "accounts/fireworks/models/glm-5p3", False),
+        ("gpt-5-chat-latest", "gpt-5-chat", False),  # no path on the alias: a plain synonym
+        ("vendor/x", "bare-provider-model", False),  # no path on the entry: nothing to compare
+    ],
+)
+def test_is_foreign_backend_alias(alias: str, provider_model: str, foreign: bool) -> None:
+    assert _is_foreign_backend_alias(alias, provider_model) is foreign
+
+
+def test_ramp_router_a_synthetic_entry_keeps_a_same_backend_alias_and_drops_a_foreign_one() -> None:
+    t = parse_ramp_router(
+        {
+            "data": [
+                _router_entry(
+                    "m",
+                    {},
+                    provider_model="accounts/fireworks/models/m",
+                    aliases=["accounts/fireworks/models/m-alias", "other-host/M", "plain-synonym"],
+                )
+            ]
+        }
+    )
+    assert sorted(t) == [
+        "accounts/fireworks/models/m",
+        "accounts/fireworks/models/m-alias",
+        "m",
+        "plain-synonym",
+    ]
+
+
+def test_ramp_router_keys_every_name_a_response_can_report() -> None:
+    """Fireworks- and Baseten-served responses report the vendor's own path, which is the
+    entry's provider_model or an alias, never its id (fixtures 03, a2_baseten)."""
+    lightning = _ROUTER_TABLE["nemotron-lightning-3p5-30b-a3b"]
+    assert _ROUTER_TABLE["accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b"] is lightning
+    assert _ROUTER_TABLE["thinkingmachines/inkling-small"] is _ROUTER_TABLE["inkling-small"]
+
+
+@pytest.mark.parametrize(
+    "served,catalog_id",
+    [
+        ("gpt-5.4-nano-2026-03-17", "gpt-5.4-nano"),
+        ("claude-haiku-4-5-20251001", "claude-haiku-4-5"),
+        ("o3-2025-04-16", "o3"),
+        ("grok-build-0.1", "grok-build-0.1"),
+        ("accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b", "nemotron-lightning-3p5-30b-a3b"),
+    ],
+)
+def test_ramp_router_lookup_resolves_every_served_name_shape(served: str, catalog_id: str) -> None:
+    """The five shapes Router has actually answered with: OpenAI and Anthropic dated
+    snapshots (version-strip), an xAI bare id, and a Fireworks vendor path."""
+    assert lookup_ramp_router(_ROUTER_TABLE, served) is _ROUTER_TABLE[catalog_id]
+
+
+def test_ramp_router_lookup_miss_returns_none() -> None:
+    assert lookup_ramp_router(_ROUTER_TABLE, "definitely-not-a-model") is None
+    assert lookup_ramp_router({}, "gpt-5.4-nano") is None
+
+
+def _router_entry(mid: str, rates: dict[str, str], **router: Any) -> dict[str, Any]:
+    pricing = {
+        "input": "1",
+        "output": "2",
+        "cache_read_input": "0",
+        "cache_write_input": "0",
+        "cache_write_input_5m": "0",
+        "cache_write_input_1h": "0",
+        **rates,
+    }
+    return {
+        "id": mid,
+        "router": {**{"request_name": mid, "provider_model": mid}, "pricing": pricing, **router},
+    }
+
+
+def test_ramp_router_shared_name_with_identical_rates_prices() -> None:
+    """The live catalog's one shared name (`…/nemotron-3-ultra-nvfp4`, provider_model of
+    two entries) carries identical rates on both, so it stays priced."""
+    t = parse_ramp_router(
+        {"data": [_router_entry("a", {}, aliases=["shared"]), _router_entry("b", {}, aliases=["shared"])]}
+    )
+    assert t["shared"].input == Decimal("0.000001")
+
+
+def test_ramp_router_shared_name_with_different_rates_is_unpriced_whatever_the_order() -> None:
+    """Guessing between two rates is a mispricing, not a miss. The name is removed AND
+    pinned, so a third entry cannot re-add it; the entries' own ids still price."""
+    entries = [
+        _router_entry("a", {}, aliases=["shared"]),
+        _router_entry("b", {"input": "3"}, aliases=["shared"]),
+        _router_entry("c", {}, aliases=["shared"]),
+    ]
+    t = parse_ramp_router({"data": entries})
+    assert "shared" not in t
+    assert t["a"].input == Decimal("0.000001")
+    assert t["b"].input == Decimal("0.000003")
+    assert t["c"].input == Decimal("0.000001")
+    assert "shared" not in parse_ramp_router({"data": list(reversed(entries))})
+
+
+def test_ramp_router_empty_string_rate_is_a_missing_field_not_a_zero() -> None:
+    """The shape the committed fixture carried until the capture scrub was fixed: every
+    input rate read "". It must neither crash nor price input at $0."""
+    t = parse_ramp_router({"data": [_router_entry("a", {"input": ""})]})
+    assert t["a"].input is None
+    assert t["a"].output == Decimal("0.000002")
+
+
+def test_ramp_router_malformed_entries_are_skipped_not_fatal() -> None:
+    t = parse_ramp_router(
+        {
+            "data": [
+                {"id": "no-router-block"},
+                {"id": "empty-router", "router": {}},
+                {"id": "unparseable", "router": {"pricing": {"input": "abc", "output": None}}},
+                "junk",
+                None,
+                _router_entry("ok", {}),
+            ]
+        }
+    )
+    assert list(t) == ["ok"]
+    assert parse_ramp_router(None) == {}
+    assert parse_ramp_router({"data": "nope"}) == {}
+
+
+@pytest.mark.parametrize("tier", ["default", "standard", "Default"])
+def test_ramp_router_base_rate_tiers_price(tier: str) -> None:
+    u = CanonicalUsage(model="m", provider="ramp_router", api="ramp_router", extras={"service_tier": tier})
+    assert ramp_router_unpriced_tier(u) is None
+
+
+@pytest.mark.parametrize(
+    "tier,expected",
+    [
+        ("flex", "flex"),  # measured 0.5x — a discount, so the base rate would OVER-bill
+        ("priority", "priority"),  # measured 2.0x on two vendors
+        ("turbo", "turbo"),  # a tier Router adds later must not silently bill at 1.0x
+        (7, "7"),  # a non-string is drift, reported as-is
+    ],
+)
+def test_ramp_router_every_other_tier_is_a_named_miss(tier: Any, expected: str) -> None:
+    extras: dict[str, Any] = {} if tier is None else {"service_tier": tier}
+    u = CanonicalUsage(model="m", provider="ramp_router", api="ramp_router", extras=extras)
+    assert ramp_router_unpriced_tier(u) == expected
+
+
+@pytest.mark.parametrize("extras", [{}, {"service_tier": None}, {"service_tier": ""}])
+def test_ramp_router_a_missing_tier_bills_at_the_base_rate(extras: dict[str, Any]) -> None:
+    """Sweep 2026-09-07: Router omitted the tier on six `incomplete` zero-output responses
+    and billed all six at standard; flex/priority were always explicit. Absence is standard."""
+    u = CanonicalUsage(model="m", provider="ramp_router", api="ramp_router", extras=extras)
+    assert ramp_router_unpriced_tier(u) is None
+
+
+def test_ramp_router_tier_gate_ignores_every_other_provider() -> None:
+    """OpenAI reports its own `service_tier`; only Router's tiers are unpriced."""
+    u = CanonicalUsage(model="m", provider="openai", api="responses", extras={"service_tier": "flex"})
+    assert ramp_router_unpriced_tier(u) is None
+
+
+def test_ramp_router_cache_write_bills_at_the_catalog_write_rate_luna_reconciled() -> None:
+    """The 2026-09-07 dashboard row, default tier: gpt-5.6-luna, 4493 in / 4490 written /
+    5 out. At the PUBLISHED rates: 3 x $0.20/M + 4490 x $0.25/M + 5 x $1.20/M = $0.0011291.
+    Router charged $0.00124201 — exactly 1.1x — a documented mismatch the SDK does not
+    correct (see the docs' markup recommendation); the write-rate arithmetic is what this
+    test pins."""
+    usage = CanonicalUsage(
+        model="gpt-5.6-luna",
+        provider="ramp_router",
+        api="ramp_router",
+        input=4493,
+        cache_write=4490,
+        output=5,
+    )
+    b = compute_cost(usage, _ROUTER_TABLE["gpt-5.6-luna"], Decimal(1))
+    assert b.base == "0.0011291"
+    assert b.fields["input"]["tokens"] == "3"
+    assert b.fields["cache_write"]["tokens"] == "4490"
+    assert deoverlapped_token_total(usage) == 4498
+
+
+def test_ramp_router_cache_read_bills_at_the_catalog_read_rate_grok_reconciled() -> None:
+    """The 2026-09-04 dashboard row: grok-build-0.1, 194 in / 192 cached / 134 out.
+    Router charged 2 x $1/M + 192 x $0.20/M + 134 x $2/M = $0.0003084, exactly."""
+    usage = CanonicalUsage(
+        model="grok-build-0.1",
+        provider="ramp_router",
+        api="ramp_router",
+        input=194,
+        cache_read=192,
+        output=134,
+    )
+    b = compute_cost(usage, _ROUTER_TABLE["grok-build-0.1"], Decimal(1))
+    assert b.base == "0.0003084"
+
+
+def test_provider_ramp_router_cold_then_warm() -> None:
+    fetcher = StubFetcher(ramp_router=_ROUTER_TABLE)
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    # cold: no table yet -> None, and flags it for refresh
+    assert p.lookup("ramp_router", "gpt-5.4-nano-2026-03-17", "ramp_router") is None
+    assert fetcher.ramp_router_calls == 0
+    p.maybe_refresh()
+    assert fetcher.ramp_router_calls == 1
+    mp = p.lookup("ramp_router", "gpt-5.4-nano-2026-03-17", "ramp_router")
+    assert mp is not None and mp.input == Decimal("0.0000002")
+    # warm: within the TTL nothing is refetched
+    p.maybe_refresh()
+    assert fetcher.ramp_router_calls == 1
+
+
+def test_provider_ramp_router_only_fetched_for_the_ramp_router_provider() -> None:
+    fetcher = StubFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW), ramp_router=_ROUTER_TABLE)
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p.lookup("anthropic", "claude-opus-4-8", "native")
+    p.maybe_refresh()
+    assert fetcher.ramp_router_calls == 0
+
+
+def test_provider_ramp_router_lookup_never_consults_openrouter() -> None:
+    """Router serves models literally named `o4-mini` and `claude-haiku-4-5`; a fall-through
+    to OpenRouter would price them at another company's rate."""
+    fetcher = StubFetcher(openrouter=parse_openrouter(_OPENROUTER_RAW), ramp_router={})
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p.lookup("ramp_router", "claude-opus-4-8", "ramp_router")
+    p.maybe_refresh()
+    assert fetcher.openrouter_calls == 0
+    assert p.lookup("ramp_router", "claude-opus-4-8", "ramp_router") is None
+
+
+def test_provider_prime_ramp_router_warms_the_source() -> None:
+    fetcher = StubFetcher(ramp_router=_ROUTER_TABLE)
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p.prime(["ramp_router"])
+    p.maybe_refresh()
+    assert fetcher.ramp_router_calls == 1
+
+
+def test_learn_ramp_router_api_key_is_used_on_next_fetch() -> None:
+    fetcher = StubFetcher(ramp_router=_ROUTER_TABLE)
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p.learn_ramp_router_api_key("sk-router-learned")
+    p.lookup("ramp_router", "o3", "ramp_router")
+    p.maybe_refresh()
+    assert fetcher.last_ramp_router_api_key == "sk-router-learned"
+
+
+def test_learn_ramp_router_api_key_keeps_the_first_and_ignores_empty() -> None:
+    p = PricingProvider(fetcher=StubFetcher(), ttl_seconds=3600)
+    p.learn_ramp_router_api_key("")
+    assert p._ramp_router_api_key_override is None
+    p.learn_ramp_router_api_key("first")
+    p.learn_ramp_router_api_key("second")
+    assert p._ramp_router_api_key_override == "first"
+
+
+def test_ramp_router_fetcher_returns_empty_without_credentials() -> None:
+    assert HttpPricingFetcher().fetch_ramp_router() == {}
+
+
+def _capture_requests_get(fn):  # type: ignore[no-untyped-def]
+    calls: list[tuple[str, dict[str, str] | None]] = []
+
+    class _FakeResp:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, Any]:
+            return _ROUTER_CATALOG
+
+    def _fake_get(url: str, headers: dict[str, str] | None = None, timeout: float | None = None) -> _FakeResp:
+        calls.append((url, headers))
+        return _FakeResp()
+
+    import requests as _requests
+
+    orig = _requests.get
+    _requests.get = _fake_get  # type: ignore[assignment]
+    try:
+        result = fn()
+    finally:
+        _requests.get = orig  # type: ignore[assignment]
+    return calls, result
+
+
+def test_ramp_router_fetcher_accepts_a_learned_key_and_parses_the_catalog() -> None:
+    fetcher = HttpPricingFetcher()
+    calls, table = _capture_requests_get(lambda: fetcher.fetch_ramp_router(api_key="sk-router-learned"))
+    assert calls == [(RAMP_ROUTER_MODELS_URL, {"Authorization": "Bearer sk-router-learned"})]
+    assert table["gpt-5.4-nano"].input == Decimal("0.0000002")
+
+
+def test_ramp_router_fetcher_explicit_config_key_wins_over_learned_key() -> None:
+    fetcher = HttpPricingFetcher(ramp_router_api_key="configured-key")
+    calls, _ = _capture_requests_get(lambda: fetcher.fetch_ramp_router(api_key="sk-router-learned"))
+    assert calls == [(RAMP_ROUTER_MODELS_URL, {"Authorization": "Bearer configured-key"})]
+
+
+def test_ramp_router_catalog_carries_the_ttl_split_write_rates() -> None:
+    """haiku publishes cache_write_input_5m $1.25/M and _1h $2/M — 1.25x and 2x its input
+    rate — while its lump cache_write_input is "0" (None). OpenAI's luna is the mirror
+    image: a lump rate and no split."""
+    haiku = _ROUTER_TABLE["claude-haiku-4-5"]
+    assert haiku.cache_write is None
+    assert haiku.cache_write_5m == Decimal("0.00000125")
+    assert haiku.cache_write_1h == Decimal("0.000002")
+    luna = _ROUTER_TABLE["gpt-5.6-luna"]
+    assert luna.cache_write == Decimal("0.00000025")
+    assert luna.cache_write_5m is None and luna.cache_write_1h is None
+
+
+def _messages_usage(**counts: int) -> CanonicalUsage:
+    return CanonicalUsage(
+        model="claude-haiku-4-5", provider="ramp_router", api="ramp_router_messages", **counts
+    )
+
+
+def test_ttl_split_write_bills_each_part_at_its_own_rate_dashboard_reconciled() -> None:
+    """Router's dashboard, 2026-09-04, `/v1/messages`, haiku: 16 in + 20,113 written (5m) +
+    5 out charged $0.02518225 — exactly 16 x $1/M + 20113 x $1.25/M + 5 x $5/M."""
+    usage = _messages_usage(input=16, output=5, cache_write=20113, cache_write_5m=20113)
+    b = compute_cost(usage, _ROUTER_TABLE["claude-haiku-4-5"], Decimal(1))
+    assert b.base == "0.02518225"
+    assert set(b.fields) == {"input", "cache_write_5m", "output"}
+    assert b.fields["cache_write_5m"]["tokens"] == "20113"
+    # The lump was consumed by the split — no second line for the same tokens.
+    assert "cache_write" not in b.fields
+    # And the token total counts the write ONCE (the split is a breakdown, not an addition).
+    assert deoverlapped_token_total(usage) == 16 + 5 + 20113
+
+
+def test_ttl_split_with_both_ttls_and_a_lump_remainder() -> None:
+    """1h at 2x, 5m at 1.25x, and 100 unattributed write tokens fall back to the lump rate
+    when one exists."""
+    price = ModelPrice(
+        source="ramp_router",
+        input=Decimal("0.000001"),
+        cache_write=Decimal("0.0000011"),
+        cache_write_5m=Decimal("0.00000125"),
+        cache_write_1h=Decimal("0.000002"),
+    )
+    usage = _messages_usage(input=10, cache_write=1100, cache_write_5m=600, cache_write_1h=400)
+    b = compute_cost(usage, price, Decimal(1))
+    assert b.fields["cache_write_5m"]["tokens"] == "600"
+    assert b.fields["cache_write_1h"]["tokens"] == "400"
+    assert b.fields["cache_write"]["tokens"] == "100"
+    # 10 x 1e-6 + 600 x 1.25e-6 + 400 x 2e-6 + 100 x 1.1e-6
+    assert b.base == "0.00167"
+
+
+def test_ttl_split_never_bills_more_than_the_lump_reports() -> None:
+    """A surface whose split exceeds its lump is misreporting; the lump is authoritative."""
+    usage = _messages_usage(input=10, cache_write=100, cache_write_5m=150, cache_write_1h=80)
+    b = compute_cost(usage, _ROUTER_TABLE["claude-haiku-4-5"], Decimal(1))
+    assert b.fields["cache_write_5m"]["tokens"] == "100"
+    assert "cache_write_1h" not in b.fields
+    assert "cache_write" not in b.fields
+
+
+def test_ttl_split_is_inert_without_split_rates_openrouter_anthropic_unchanged() -> None:
+    """OpenRouter publishes one `input_cache_write` for Anthropic. The split counts are
+    reported by native Anthropic too, and must change nothing there: the lump bills at the
+    lump rate exactly as before this code existed."""
+    price = ModelPrice(source="openrouter", input=Decimal("0.000001"), cache_write=Decimal("0.00000125"))
+    usage = CanonicalUsage(
+        model="claude-haiku-4-5",
+        provider="anthropic",
+        api="native",
+        input=16,
+        cache_write=20113,
+        cache_write_5m=20113,
+    )
+    b = compute_cost(usage, price, Decimal(1))
+    assert set(b.fields) == {"input", "cache_write"}
+    assert b.fields["cache_write"]["tokens"] == "20113"
+    assert b.base == "0.02515725"

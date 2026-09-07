@@ -28,8 +28,15 @@ class PricingUnavailableError(LagoSDKError):
     """Price mode could not resolve a price (table not warm yet, or model not
     matched). Surfaced via on_error; the SDK falls back to emitting token events."""
 
-    def __init__(self, provider: str, model: str, api: str) -> None:
-        super().__init__(f"no price for provider={provider!r} model={model!r} api={api!r}")
+    def __init__(self, provider: str, model: str, api: str, detail: str | None = None) -> None:
+        # `detail` is for the miss that is NOT "table cold / model unknown" — a Ramp
+        # Router call served at a non-default tier is unpriced by decision, and the
+        # customer needs to read that off the error rather than chase a model name.
+        message = f"no price for provider={provider!r} model={model!r} api={api!r}"
+        if detail:
+            message = f"{message}: {detail}"
+        super().__init__(message)
         self.provider = provider
         self.model = model
         self.api = api
+        self.detail = detail

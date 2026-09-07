@@ -25,6 +25,12 @@ Sources:
     *does* list the resolved id (e.g. ``mistralai/mistral-small-2603``) with
     real pricing. ``/v1/models`` exposes the resolution directly via each
     model's ``aliases`` array; needs the customer's own Mistral API key.
+  - Ramp Router's own ``GET /v1/models`` for ``ramp_router`` — like Cloudflare's
+    catalog, the rate the gateway actually bills at (measured exact against a live
+    account's dashboard export across five served vendors), and like Cloudflare's
+    it is account-scoped and needs the customer's Router key. The key is learned
+    from the wrapped client at ``wrap()`` time, or set via
+    ``LagoConfig.ramp_router_api_key``; without either the source is simply empty.
 
 Design constraints (mirror the queue's non-blocking guarantee):
   - ``lookup()`` is pure in-memory and O(1); it NEVER does network I/O, so the
@@ -66,6 +72,7 @@ AWS_PRICING_HOST = "https://pricing.us-east-1.amazonaws.com"
 AWS_BEDROCK_REGION_INDEX = f"{AWS_PRICING_HOST}/offers/v1.0/aws/AmazonBedrock/current/region_index.json"
 CLOUDFLARE_MODELS_URL_TEMPLATE = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search"
 MISTRAL_MODELS_URL = "https://api.mistral.ai/v1/models"
+RAMP_ROUTER_MODELS_URL = "https://api.router.com/v1/models"
 
 # Canonical usage fields we know how to price.
 PRICED_FIELDS = ("input", "output", "cache_read", "cache_write", "reasoning")
@@ -107,7 +114,12 @@ PRICED_FIELDS = ("input", "output", "cache_read", "cache_write", "reasoning")
 # a real vendor prefix would let a near-miss model string match Anthropic's or
 # OpenAI's own OpenRouter rate — a silent mispricing of a call Snowflake charged in
 # credits. The absence is the guard; do not "fix" it.
-TOKEN_BILLED_PROVIDERS = frozenset({"databricks", "snowflake", "ramp_router"})
+#
+# "ramp_router" was here until its catalog became a price source (see the Ramp Router
+# section below). Its miss is no longer structural: a Router call that cannot be priced
+# now reports through on_error like any other provider's, because the customer CAN act
+# on it — a missing Router key, a cold table, or a non-default service tier.
+TOKEN_BILLED_PROVIDERS = frozenset({"databricks", "snowflake"})
 
 # Canonical field -> OpenRouter pricing key.
 _OPENROUTER_FIELD_MAP = {
@@ -139,6 +151,36 @@ _CLOUDFLARE_UNIT_FIELD_MAP = {
     "per M output tokens": "output",
     "per M cached input tokens": "cache_read",
 }
+
+# Ramp Router's `router.pricing` key -> canonical field. Every one of the live catalog's
+# entries carries all six keys as STRINGS in USD per 1M tokens (measured 2026-09-07, 68
+# of 68). `cache_write_input_5m` / `_1h` are Anthropic's TTL-split write rates; the
+# count they price is reported only on Router's `/v1/messages` surface (the Anthropic
+# wrapper), never on `/v1/responses` — see adapters/anthropic_native.py.
+_RAMP_ROUTER_FIELD_MAP = {
+    "input": "input",
+    "output": "output",
+    "cache_read": "cache_read_input",
+    "cache_write": "cache_write_input",
+    "cache_write_5m": "cache_write_input_5m",
+    "cache_write_1h": "cache_write_input_1h",
+}
+
+# Served service tiers that bill at the catalog's published rate. Any OTHER reported
+# tier — `flex` (measured 0.5x), `priority` (measured 2.0x on two vendors), or a tier
+# Router adds later — is a price MISS: token events plus an on_error report, never a
+# multiplied rate. The tier multipliers are Router's policy, published nowhere
+# machine-readable. `standard` is the dashboard's spelling of the tier the API reports
+# as `default`; accepted so a vocabulary change on the wire stays a base-rate call.
+#
+# A response with NO tier at all is priced at the base rate (decided 2026-09-07 on
+# data): in a 237-call sweep Router omitted `service_tier` on exactly the responses
+# that stopped with zero output (`incomplete`, both surfaces, six calls) and billed
+# every one of them at the standard rate; flex and priority were reported explicitly
+# whenever they applied. So absence has only ever meant standard, and treating it as
+# a miss turned $0.50 of real usage into token events for no gain.
+RAMP_ROUTER_BASE_RATE_TIERS = frozenset({"default", "standard"})
+
 
 # Cloudflare's catalog page size, and a hard bound on the paging loop. The loop runs
 # on the queue's flush tick ahead of the drain, so it must terminate even if the
@@ -311,6 +353,14 @@ class ModelPrice:
     cache_read: Decimal | None = None
     cache_write: Decimal | None = None
     reasoning: Decimal | None = None
+    # Anthropic prices a cache write by its TTL: 1.25x input for the 5-minute cache, 2x
+    # for the 1-hour one. Only a source that publishes both can fill these (Ramp Router's
+    # catalog does; OpenRouter publishes one `input_cache_write`, the 5m rate, so native
+    # Anthropic bills every write at it). When they are set AND the usage carries the
+    # matching `cache_write_5m`/`cache_write_1h` split, `compute_cost` bills each part at
+    # its own rate instead of the lump `cache_write` rate — see `_split_cache_write`.
+    cache_write_5m: Decimal | None = None
+    cache_write_1h: Decimal | None = None
 
     def get(self, field_name: str) -> Decimal | None:
         return getattr(self, field_name, None)
@@ -365,15 +415,12 @@ def compute_cost(usage: CanonicalUsage, price: ModelPrice, markup: Decimal) -> C
         counts["input"] = max(0, counts["input"] - counts["cache_read"])
     if inc_cache_write and price.get("cache_write") is not None:
         counts["input"] = max(0, counts["input"] - counts["cache_write"])
+    split = _split_cache_write(usage, price, counts)
 
     base = Decimal(0)
     fields: dict[str, dict[str, str]] = {}
-    for f in PRICED_FIELDS:
-        count = counts[f]
-        if not count:
-            continue
-        unit = price.get(f)
-        if unit is None:
+    for f, count, unit in [(f, counts[f], price.get(f)) for f in PRICED_FIELDS] + split:
+        if not count or unit is None:
             continue
         cost = unit * count
         base += cost
@@ -383,6 +430,46 @@ def compute_cost(usage: CanonicalUsage, price: ModelPrice, markup: Decimal) -> C
             "cost": _fmt_money(cost),
         }
     return _finalize_breakdown(base, markup, price.source, fields)
+
+
+_CACHE_WRITE_TTL_FIELDS = ("cache_write_5m", "cache_write_1h")
+
+
+def _split_cache_write(
+    usage: Any, price: ModelPrice, counts: dict[str, int]
+) -> list[tuple[str, int, Decimal | None]]:
+    """Move the TTL-split part of `cache_write` onto its own rates, when both sides carry
+    the split.
+
+    `cache_write_5m` / `cache_write_1h` are a breakdown OF `cache_write`, not additions to
+    it (Anthropic: `cache_creation_input_tokens == ephemeral_5m + ephemeral_1h`, measured
+    on every capture). So each part priced here is REMOVED from the lump count, and only
+    a remainder — a surface reporting a lump with no split — still bills at the lump
+    rate. Engages only when the price publishes a rate for that TTL: on OpenRouter's
+    single-rate Anthropic listing nothing moves and the lump path is unchanged.
+
+    The 1h rate is 2x input where the 5m rate is 1.25x; billing a 1h write at the 5m
+    rate under-bills it by 37.5%, which is what this exists to prevent on the one
+    source (Ramp Router) that publishes both and the one surface (`/v1/messages`) that
+    reports the split. Reconciled exactly against Router's dashboard on 2026-09-04:
+    20,113 tokens at the 5m rate + 16 input + 5 output = $0.02518225.
+
+    Mutates `counts["cache_write"]`; returns (field, count, unit) triples to price.
+    """
+    split: list[tuple[str, int, Decimal | None]] = []
+    for f in _CACHE_WRITE_TTL_FIELDS:
+        unit = price.get(f)
+        n = int(getattr(usage, f, 0) or 0)
+        if unit is None or n <= 0:
+            continue
+        # Never bill more split tokens than the lump reports: a surface whose split
+        # exceeds its total is misreporting, and the lump is the authoritative count.
+        n = min(n, counts["cache_write"])
+        if n <= 0:
+            continue
+        counts["cache_write"] -= n
+        split.append((f, n, unit))
+    return split
 
 
 def _finalize_breakdown(
@@ -760,6 +847,189 @@ def lookup_cloudflare_workers_ai(table: dict[str, ModelPrice], model: str) -> Mo
 
 
 # ----------------------------------------------------------------------
+# Ramp Router parsing + matching
+#
+# Router's own `GET /v1/models` is the price source for the same reason Cloudflare's
+# catalog is Workers AI's: it is the rate the gateway actually bills, not a third
+# party's listing for the same model hosted elsewhere. Measured against a live
+# account's dashboard export: every default-tier row whose counts the response fully
+# reports reconciled at exactly 1.000000x the catalog rate — 28 rows across five
+# served vendors on 2026-09-04, including the cache split (grok, 194 in / 192 cached:
+# 2 x input + 192 x cache_read + out, to the last digit), and an OpenAI cache WRITE
+# billed at `cache_write_input` on 2026-09-07 (gpt-5.6-luna, 4493 in / 4490 written).
+# The five default-tier rows that did NOT reconcile were Anthropic cold cache writes,
+# whose write count this surface never reports — see the adapter.
+#
+# Where Router bills OFF its own catalog (measured 2026-09-07: eight OpenAI models at a
+# constant 1.1x or 0.55x of their published rate), the SDK still bills the PUBLISHED rate
+# and documents the mismatch with its date, recommending `markup` on those models. A
+# factor baked into the SDK would be the thing out of sync the day Router corrects its
+# catalog — a customer's markup can be dropped the same day, an SDK release cannot.
+# Where Router serves an entry through a backend other than the one the rate belongs
+# to, the served name is refused rather than mispriced — see `_is_foreign_backend_alias`.
+# ----------------------------------------------------------------------
+def _is_foreign_backend_alias(alias: str, provider_model: Any) -> bool:
+    """True when an alias names the SAME model on a DIFFERENT backend than the entry's own.
+
+    Router serves some catalog entries through more than one hosting provider and bills
+    the rate of whichever served — but publishes ONE rate per entry, the entry's own
+    provider's. Measured 2026-09-07: ten Fireworks-owned entries carry a Baseten alias
+    (`deepseek-ai/DeepSeek-V4-Flash-0731`, `zai-org/GLM-5.2`, `moonshotai/Kimi-K2.7-Code`,
+    …); when Baseten served, Router billed Baseten's rate, 1.11x to 2.4x away from the
+    catalog's. The served model name is that alias, so it is the one signal that the
+    published rate does not apply — and a name the SDK refuses to index is an honest
+    miss (token events + on_error) instead of a wrong price. Decided by the user,
+    2026-09-07, knowing it also turns the Baseten-served rows that happened to match
+    (kimi-k3, glm-5p3-flash, deepseek-v4-pro) into misses.
+
+    "Different backend" is read off the path prefix: `provider_model` says where the
+    entry's rate comes from (`accounts/fireworks/models/…`), and an alias whose leading
+    path segment differs (`deepseek-ai/…`) is another host's spelling. A bare alias with
+    no path (`zai-org/GLM-5.3-Flash` has one; `gpt-5-chat-latest` would not) is a plain
+    synonym and stays indexed.
+    """
+    if "/" not in alias or not isinstance(provider_model, str) or "/" not in provider_model:
+        return False
+    return alias.split("/", 1)[0] != provider_model.split("/", 1)[0]
+
+
+def parse_ramp_router(data: Any) -> dict[str, ModelPrice]:
+    """Parse Router's `/v1/models` into {name: ModelPrice}, keyed on every name a
+    served response can report for the entry.
+
+    Router answers with a RESOLVED vendor snapshot, not the catalog id: `gpt-5.4-nano`
+    in the catalog, `gpt-5.4-nano-2026-03-17` in the response — `lookup_ramp_router`
+    strips that. But Fireworks- and Baseten-served responses report the vendor's own
+    path (`accounts/fireworks/models/…`, `thinkingmachines/inkling-small`), which is the
+    entry's `router.provider_model` or one of its `router.aliases`, never its `id`. So
+    every one of `id`, `router.request_name`, `router.provider_model` and
+    `router.aliases[]` is indexed (measured: all 9 distinct served names across every
+    capture resolve, 5 by version-strip and 4 by exact name).
+
+    Two rules keep that widening honest:
+
+      * A name claimed by two entries with DIFFERENT rates is unpriced — removed and
+        pinned so no later entry can re-add it. Guessing between two rates is a
+        mispricing, not a miss. The live catalog has exactly one shared name today
+        (`…/nemotron-3-ultra-nvfp4`, the provider_model of two entries) and both
+        carry identical rates, so it prices; the rule is for the day they diverge.
+      * A ZERO cache rate means "no separate rate", not "free": `cache_write_input`
+        is "0" on every Anthropic entry because their write price lives in the
+        `_5m`/`_1h` keys, and `cache_read_input` is "0" on the pro and legacy OpenAI
+        models that do not cache at all. Stored as None so `compute_cost` leaves those
+        tokens inside `input` at the input rate — the floor — rather than billing a
+        cached block at $0. Zero `input`/`output` is kept as a genuine published zero.
+
+    One more rule, measured against the dashboard on 2026-09-07: an alias that names the
+    entry on a DIFFERENT backend is NOT indexed — see `_is_foreign_backend_alias`. A call
+    served there misses rather than misprices. The published rate is otherwise stored
+    as-is, even for the models measured to bill off it (see the section comment).
+
+    An entry with no token rate at all is simply absent, the same safe miss as
+    everywhere else.
+    """
+    table: dict[str, ModelPrice] = {}
+    conflicts: set[str] = set()
+    models = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(models, list):
+        return table
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        mid = m.get("id")
+        router = m.get("router")
+        pricing = router.get("pricing") if isinstance(router, dict) else None
+        if (
+            not isinstance(mid, str)
+            or not mid
+            or not isinstance(router, dict)
+            or not isinstance(pricing, dict)
+        ):
+            continue
+        fields: dict[str, Decimal] = {}
+        for field, key in _RAMP_ROUTER_FIELD_MAP.items():
+            per_million = _parse_price(pricing.get(key))
+            if per_million is None:
+                continue
+            if per_million == 0 and field.startswith("cache_"):
+                continue
+            fields[field] = (per_million / Decimal(1_000_000)).quantize(_Q, rounding=ROUND_DOWN)
+        if not fields:
+            continue
+        mp = ModelPrice(source="ramp_router", **fields)
+        provider_model = router.get("provider_model")
+        names = {mid}
+        for key in ("request_name", "provider_model"):
+            v = router.get(key)
+            if isinstance(v, str) and v:
+                names.add(v)
+        aliases = router.get("aliases")
+        if isinstance(aliases, list):
+            names.update(
+                a
+                for a in aliases
+                if isinstance(a, str) and a and not _is_foreign_backend_alias(a, provider_model)
+            )
+        for name in names:
+            if name in conflicts:
+                continue
+            prior = table.get(name)
+            if prior is None:
+                table[name] = mp
+            elif prior != mp:
+                del table[name]
+                conflicts.add(name)
+    if conflicts:
+        # Once per fetch, not per call: a customer can act on it (the name is unpriced
+        # until Router's catalog stops disagreeing with itself), so it must be visible.
+        logger.warning(
+            "lago: ramp router catalog lists %d name(s) under more than one rate; left unpriced: %s",
+            len(conflicts),
+            sorted(conflicts),
+        )
+    return table
+
+
+def lookup_ramp_router(table: dict[str, ModelPrice], model: str) -> ModelPrice | None:
+    """Exact served name first, then the version-stripped form.
+
+    The strip is the same `_strip_version` the OpenRouter path uses, because Router
+    reports the vendor's own dated snapshot for OpenAI- and Anthropic-served calls
+    (`o3-2025-04-16`, `claude-haiku-4-5-20251001`) while its catalog lists the bare id.
+    Verified collision-free against the live catalog: no stripped served name lands on
+    a different entry than the exact one would.
+    """
+    hit = table.get(model)
+    if hit is not None:
+        return hit
+    return table.get(_strip_version(model))
+
+
+def ramp_router_unpriced_tier(usage: Any) -> str | None:
+    """The served tier that keeps a Router call OUT of price mode, or None.
+
+    None means "bill the catalog rate": either this is not a Router call at all, or
+    Router served it at a base-rate tier (see RAMP_ROUTER_BASE_RATE_TIERS). Otherwise
+    the offending tier is returned so the miss report can say WHY — a customer seeing
+    "no price" for a model that priced a second ago needs to know it was the tier.
+    The tier is read from `extras["service_tier"]`, where the adapter records the
+    response's own field (top level on `/v1/responses`, inside `usage` on
+    `/v1/messages`). A Router call with NO tier bills at the base rate — see
+    RAMP_ROUTER_BASE_RATE_TIERS for the measurement behind that. Only an explicitly
+    reported non-base tier is a miss.
+    """
+    if (getattr(usage, "provider", "") or "").lower() != "ramp_router":
+        return None
+    extras = getattr(usage, "extras", None) or {}
+    tier = extras.get("service_tier")
+    if tier is None or tier == "":
+        return None
+    if isinstance(tier, str) and tier.lower() in RAMP_ROUTER_BASE_RATE_TIERS:
+        return None
+    return tier if isinstance(tier, str) else repr(tier)
+
+
+# ----------------------------------------------------------------------
 # Bedrock parsing + matching
 #
 # The AWS Price List offer schema is large and its attribute keys vary by
@@ -899,6 +1169,7 @@ class PricingFetcher(Protocol):
     def fetch_bedrock(self, region: str) -> dict[str, ModelPrice]: ...
     def fetch_cloudflare_workers_ai(self) -> dict[str, ModelPrice]: ...
     def fetch_mistral_aliases(self, api_key: str | None = None) -> dict[str, str]: ...
+    def fetch_ramp_router(self, api_key: str | None = None) -> dict[str, ModelPrice]: ...
 
 
 class HttpPricingFetcher:
@@ -915,6 +1186,12 @@ class HttpPricingFetcher:
     customer's own key. Without it, ``fetch_mistral_aliases`` returns an
     empty map, so alias resolution is simply skipped and lookups fall back to
     whatever the request already spelled out (safe miss, not a break).
+
+    ``ramp_router_api_key``: Router's catalog is account-scoped too. Without it (and
+    without one learned from a wrapped client), ``fetch_ramp_router`` returns an
+    empty table, so Router pricing is unavailable and every Router call in price
+    mode reports a miss and bills token events — loudly, because unlike the two
+    above this is a source the customer almost always has the key for.
     """
 
     def __init__(
@@ -923,11 +1200,13 @@ class HttpPricingFetcher:
         cloudflare_account_id: str | None = None,
         cloudflare_api_token: str | None = None,
         mistral_api_key: str | None = None,
+        ramp_router_api_key: str | None = None,
     ) -> None:
         self._timeout = timeout
         self._cf_account_id = cloudflare_account_id
         self._cf_api_token = cloudflare_api_token
         self._mistral_api_key = mistral_api_key
+        self._ramp_router_api_key = ramp_router_api_key
 
     def fetch_openrouter(self) -> dict[str, Any]:
         import requests
@@ -1006,6 +1285,23 @@ class HttpPricingFetcher:
         resp.raise_for_status()
         return parse_mistral_aliases(resp.json())
 
+    def fetch_ramp_router(self, api_key: str | None = None) -> dict[str, ModelPrice]:
+        import requests
+
+        # Same precedence as Mistral: an explicitly configured key always wins over
+        # one learned from a wrapped client.
+        key = self._ramp_router_api_key or api_key
+        if not key:
+            return {}
+        # `api.router.com` sits behind Cloudflare bot management, which rejects
+        # urllib's default User-Agent outright (403). `requests`' own default passes
+        # (measured 2026-09-07), so nothing is overridden here — noted so nobody
+        # "simplifies" this onto urllib.
+        headers = {"Authorization": f"Bearer {key}"}
+        resp = requests.get(RAMP_ROUTER_MODELS_URL, headers=headers, timeout=self._timeout)
+        resp.raise_for_status()
+        return parse_ramp_router(resp.json())
+
 
 # ----------------------------------------------------------------------
 # PricingProvider — cache + background refresh + non-blocking lookup
@@ -1020,11 +1316,13 @@ class PricingProvider:
         cloudflare_account_id: str | None = None,
         cloudflare_api_token: str | None = None,
         mistral_api_key: str | None = None,
+        ramp_router_api_key: str | None = None,
     ) -> None:
         self._fetcher: PricingFetcher = fetcher or HttpPricingFetcher(
             cloudflare_account_id=cloudflare_account_id,
             cloudflare_api_token=cloudflare_api_token,
             mistral_api_key=mistral_api_key,
+            ramp_router_api_key=ramp_router_api_key,
         )
         self._ttl = ttl_seconds
         self._default_region = default_region
@@ -1050,6 +1348,12 @@ class PricingProvider:
         # for making real calls, so alias resolution can reuse it without
         # ever requiring a separate LagoConfig.mistral_api_key.
         self._mistral_api_key_override: str | None = None
+        self._ramp_router: dict[str, ModelPrice] | None = None
+        self._ramp_router_fetched = 0.0
+        self._ramp_router_stale = False
+        # Learned from a wrapped OpenAI client pointed at Router, same mechanism and
+        # same precedence as the Mistral key above.
+        self._ramp_router_api_key_override: str | None = None
         self._refreshing: set[str] = set()
         # Per-source post-failure backoff — see `_in_backoff`.
         self._failure_backoff_until: dict[str, float] = {}
@@ -1068,6 +1372,7 @@ class PricingProvider:
             self._bedrock_stale = set(self._bedrock.keys())
             self._cloudflare_stale = self._cloudflare_workers_ai is not None or self._cloudflare_stale
             self._mistral_stale = self._mistral_aliases is not None or self._mistral_stale
+            self._ramp_router_stale = self._ramp_router is not None or self._ramp_router_stale
             self._refreshing = set()
 
     def prime(self, providers: Iterable[str] = ()) -> None:
@@ -1088,7 +1393,7 @@ class PricingProvider:
         call for a given provider can race a cold cache; every provider that
         session never calls costs nothing.
 
-        Pass `providers=["mistral"]` and/or `["workers-ai"]` when you already
+        Pass `providers=["mistral"]`, `["workers-ai"]` and/or `["ramp_router"]` when you already
         know, in advance, which of these two you're about to call this
         session — this eagerly warms exactly that source too, so even ITS
         first call prices correctly instead of paying the one-time lazy
@@ -1116,6 +1421,9 @@ class PricingProvider:
                 elif key == "mistral":
                     if self._is_cold(self._mistral_aliases, self._mistral_fetched):
                         self._mistral_stale = True
+                elif key == "ramp_router":
+                    if self._is_cold(self._ramp_router, self._ramp_router_fetched):
+                        self._ramp_router_stale = True
 
     def _is_cold(self, table: Any, fetched_at: float) -> bool:
         """True when a table needs fetching: absent, or older than the TTL.
@@ -1165,6 +1473,17 @@ class PricingProvider:
             if not self._mistral_api_key_override:
                 self._mistral_api_key_override = api_key
 
+    def learn_ramp_router_api_key(self, api_key: str) -> None:
+        """Adopt the Router key a wrapped OpenAI client already carries, so the
+        catalog can be fetched without a separate `LagoConfig.ramp_router_api_key`.
+        Pure in-memory, no I/O. Same precedence as the Mistral key: an explicit
+        config value wins, and the first learned key is kept."""
+        if not api_key:
+            return
+        with self._lock:
+            if not self._ramp_router_api_key_override:
+                self._ramp_router_api_key_override = api_key
+
     # ---- non-blocking lookup (customer thread) ----
     def lookup(self, provider: str, model: str, api: str) -> ModelPrice | None:
         try:
@@ -1180,6 +1499,13 @@ class PricingProvider:
                     if not fresh:
                         self._bedrock_stale.add(region)
                 return lookup_bedrock(table, model) if table is not None else None
+            if (provider or "").lower() == "ramp_router":
+                with self._lock:
+                    table_rr = self._ramp_router
+                    fresh_rr = table_rr is not None and (time.time() - self._ramp_router_fetched) < self._ttl
+                    if not fresh_rr:
+                        self._ramp_router_stale = True
+                return lookup_ramp_router(table_rr, model) if table_rr is not None else None
             if (provider or "").lower() == "workers-ai":
                 with self._lock:
                     table_cf = self._cloudflare_workers_ai
@@ -1222,6 +1548,7 @@ class PricingProvider:
             and not self._bedrock_stale
             and not self._cloudflare_stale
             and not self._mistral_stale
+            and not self._ramp_router_stale
         ):
             return
         with self._lock:
@@ -1250,6 +1577,11 @@ class PricingProvider:
             )
             if do_mistral:
                 self._refreshing.add("mistral_aliases")
+            do_ramp_router = (
+                self._ramp_router_stale and "ramp_router" not in self._refreshing and _ready("ramp_router")
+            )
+            if do_ramp_router:
+                self._refreshing.add("ramp_router")
             regions = [
                 r
                 for r in self._bedrock_stale
@@ -1304,6 +1636,23 @@ class PricingProvider:
             finally:
                 with self._lock:
                     self._refreshing.discard("mistral_aliases")
+
+        if do_ramp_router:
+            try:
+                with self._lock:
+                    learned_rr_key = self._ramp_router_api_key_override
+                table_rr = self._fetcher.fetch_ramp_router(learned_rr_key)
+                with self._lock:
+                    self._ramp_router = table_rr
+                    self._ramp_router_fetched = time.time()
+                    self._ramp_router_stale = False
+                self._note_success("ramp_router")
+            except Exception as exc:  # noqa: BLE001
+                self._note_failure("ramp_router")
+                self._report(exc, "pricing.fetch_ramp_router")
+            finally:
+                with self._lock:
+                    self._refreshing.discard("ramp_router")
 
         for r in regions:
             try:

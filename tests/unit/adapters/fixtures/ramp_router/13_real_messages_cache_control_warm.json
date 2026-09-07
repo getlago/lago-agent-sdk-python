@@ -1,0 +1,52 @@
+{
+  "_probe": "P13",
+  "_question": "warm repeat of P12 \u2014 cache_read_input_tokens beside input_tokens (additive)?",
+  "_captured": "real capture against a live Ramp Router account",
+  "_scrubbed": "credentials, emails, IPs, dashboard URLs; prompt and completion text blanked to \"\"",
+  "_status": 200,
+  "_headers": {
+    "date": "Mon, 07 Sep 2026 10:46:52 GMT",
+    "content-type": "application/json",
+    "transfer-encoding": "chunked",
+    "connection": "close",
+    "request-id": "1462dd72-addb-437d-965b-189cdec82e02",
+    "vary": "Origin",
+    "x-request-id": "1462dd72-addb-437d-965b-189cdec82e02",
+    "x-trace-id": "1462dd72-addb-437d-965b-189cdec82e02",
+    "cf-cache-status": "DYNAMIC",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "x-content-type-options": "nosniff",
+    "server": "cloudflare",
+    "cf-ray": "a37521ccda51d230-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  },
+  "_body": {
+    "content": [
+      {
+        "text": "",
+        "type": "text"
+      }
+    ],
+    "id": "msg_011Ceowo9aLABKUwtMW3sryo",
+    "model": "claude-haiku-4-5-20251001",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 7481,
+      "input_tokens": 15,
+      "output_tokens": 6,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "service_tier": "standard"
+    }
+  },
+  "_body_was_json": true
+}

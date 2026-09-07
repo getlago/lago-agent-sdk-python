@@ -26,6 +26,7 @@ from .pricing import (
     compute_precomputed_cost,
     deoverlapped_token_total,
     money_str_to_cents,
+    ramp_router_unpriced_tier,
 )
 from .queue import EventQueue
 
@@ -153,6 +154,7 @@ class LagoSDK:
             cloudflare_account_id=self.config.cloudflare_account_id,
             cloudflare_api_token=self.config.cloudflare_api_token,
             mistral_api_key=self.config.mistral_api_key,
+            ramp_router_api_key=self.config.ramp_router_api_key,
         )
         if self.config.pricing_mode == "price":
             self._pricing.prime()  # eager warm when price mode is the global default
@@ -220,9 +222,46 @@ class LagoSDK:
                 base_url = ""
             if "gateway.ai.cloudflare.com" in base_url:
                 provider = "workers-ai"
+            else:
+                provider = self._learn_ramp_router_key_if_pointed_there(client)
+        elif kind == "anthropic":
+            # Router's second surface, `/v1/messages`, is reached with an Anthropic
+            # client. Same catalog, same key, same warm-up.
+            provider = self._learn_ramp_router_key_if_pointed_there(client)
         if provider:
             self._pricing.prime([provider])
             self._queue.wake()
+
+    def _learn_ramp_router_key_if_pointed_there(self, client: Any) -> str | None:
+        """Ramp Router's catalog needs the customer's Router key, and the client being
+        wrapped already carries it — both `openai.OpenAI` and `anthropic.Anthropic` expose
+        the constructor's key as `.api_key` (verified on openai 2.38 and anthropic 0.103,
+        sync and async). Same shape as the Mistral arm: learn it here, so the very first
+        Router call has a warm table instead of a cold miss. Detection reuses the
+        wrappers' own host match so the three cannot disagree about what counts as
+        Router. Returns the provider to prime, or None when the client is not Router's."""
+        from .adapters.openai_native import RAMP_ROUTER_PROVIDER
+        from .wrappers.ramp_router import client_points_at_ramp_router
+
+        if not client_points_at_ramp_router(client):
+            return None
+        key = self._extract_client_api_key(client)
+        if key:
+            self._pricing.learn_ramp_router_api_key(key)
+        return RAMP_ROUTER_PROVIDER
+
+    @staticmethod
+    def _extract_client_api_key(client: Any) -> str | None:
+        """The constructor's key at `client.api_key`, as the openai and anthropic SDKs
+        both expose it (verified against real instances). Defensive for the same reason
+        as the Mistral reader: a client variant without it degrades to "no key learned" —
+        then `LagoConfig.ramp_router_api_key`, then a reported miss — rather than
+        raising."""
+        try:
+            key = client.api_key
+        except Exception:  # noqa: BLE001
+            return None
+        return key if isinstance(key, str) and key else None
 
     @staticmethod
     def _extract_mistral_api_key(client: Any) -> str | None:
@@ -418,11 +457,23 @@ class LagoSDK:
                 self._emit_token_events(usage, sub, dimensions, event_id, at)
                 return
             else:
-                price = self._pricing.lookup(usage.provider, usage.model, usage.api)
+                # A Ramp Router call served at a non-default tier bills at a rate the
+                # catalog does not publish (flex measured 0.5x, priority 2.0x), so it is
+                # a miss BEFORE the table is consulted — and a miss that names the tier,
+                # because the same model priced fine a moment ago and a bare "no price"
+                # would send the customer looking at the wrong thing.
+                unpriced_tier = ramp_router_unpriced_tier(usage)
+                if unpriced_tier is None:
+                    price = self._pricing.lookup(usage.provider, usage.model, usage.api)
+                    detail = None
+                else:
+                    price = None
+                    detail = f"served service_tier {unpriced_tier!r} bills at a rate Router does not publish"
                 if price is None:
                     # Don't silently under-bill: fall back to token events + report.
                     self._report_error(
-                        PricingUnavailableError(usage.provider, usage.model, usage.api), "pricing"
+                        PricingUnavailableError(usage.provider, usage.model, usage.api, detail=detail),
+                        "pricing",
                     )
                     self._emit_token_events(usage, sub, dimensions, event_id, at)
                     return

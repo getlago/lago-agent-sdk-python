@@ -157,6 +157,14 @@ OPENAI_SHAPED_APIS = frozenset(
         # rather than measured — every observed write reported cache_write_tokens: 0
         # while the warm read proved the cache existed, and the arithmetic keeps the
         # write inside input — re-verify the day a nonzero write appears in a capture.
+        #
+        # Router's OTHER surface, `/v1/messages` (stamped "ramp_router_messages" by the
+        # Anthropic adapter), is deliberately ABSENT. It keeps Anthropic's additive
+        # convention for every vendor: measured 2026-09-04 (haiku, `input_tokens: 16`
+        # beside `cache_read_input_tokens: 20113`, reconciled exactly against the
+        # dashboard) and 2026-09-07 (an xAI model, `input_tokens: 65` beside
+        # `cache_read_input_tokens: 128`, thinking inside output). Same gateway, same
+        # model, two conventions — one per surface, which is why the stamp differs.
         "ramp_router",
     }
 )

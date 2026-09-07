@@ -1,0 +1,52 @@
+{
+  "_probe": "P12",
+  "_question": "does a cold cache_control write report cache_creation_input_tokens, with the 5m/1h split?",
+  "_captured": "real capture against a live Ramp Router account",
+  "_scrubbed": "credentials, emails, IPs, dashboard URLs; prompt and completion text blanked to \"\"",
+  "_status": 200,
+  "_headers": {
+    "date": "Mon, 07 Sep 2026 10:46:51 GMT",
+    "content-type": "application/json",
+    "transfer-encoding": "chunked",
+    "connection": "close",
+    "request-id": "ba8ede4c-7579-433f-9ce2-d5612d4a979a",
+    "vary": "Origin",
+    "x-request-id": "ba8ede4c-7579-433f-9ce2-d5612d4a979a",
+    "x-trace-id": "ba8ede4c-7579-433f-9ce2-d5612d4a979a",
+    "cf-cache-status": "DYNAMIC",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "x-content-type-options": "nosniff",
+    "server": "cloudflare",
+    "cf-ray": "a37521c45d8d2ccc-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  },
+  "_body": {
+    "content": [
+      {
+        "text": "",
+        "type": "text"
+      }
+    ],
+    "id": "msg_011Ceowo42DH8aK9Jnm6QQPp",
+    "model": "claude-haiku-4-5-20251001",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 7481
+      },
+      "cache_creation_input_tokens": 7481,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 15,
+      "output_tokens": 5,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "service_tier": "standard"
+    }
+  },
+  "_body_was_json": true
+}

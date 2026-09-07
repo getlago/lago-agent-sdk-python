@@ -181,7 +181,7 @@ Full guide, including cache semantics, dedup, attribution via `QUERY_TAG` and ac
 
 ### Ramp Router
 
-An OpenAI-Responses-compatible gateway in front of OpenAI, Anthropic, Google Vertex, Fireworks and xAI. The model that answered is the one billed — Router can serve a different model than the one requested.
+A gateway in front of OpenAI, Anthropic, Google Vertex, Fireworks and xAI, with an OpenAI-shaped surface and an Anthropic-shaped one. Point either client at it. The model that answered is the one billed — Router can serve a different model than the one requested.
 
 ```python
 client = sdk.wrap(
@@ -191,7 +191,7 @@ client = sdk.wrap(
 client.responses.create(model=os.environ["RAMP_ROUTER_MODEL"], input="Summarize this invoice.")
 ```
 
-Full guide, including why price mode falls back to token events for Router traffic: [docs/ramp-router.md](docs/ramp-router.md).
+Full guide, including how price mode bills Router's own catalog rate: [docs/ramp-router.md](docs/ramp-router.md).
 
 ## Multi-tenant — pick a subscription per call
 
@@ -226,7 +226,7 @@ sdk = LagoSDK(api_key="...", config=LagoConfig(
 ))
 ```
 
-Price mode emits one `llm_cost` event per priced field (input, output, cache, ...), each carrying `precise_total_amount_cents` for Lago's **dynamic charge model** plus a `token_type` property so a single billable metric can be grouped by both `model` and `token_type`. Prices come from public sources (OpenRouter for native providers, the AWS Bedrock price list for Bedrock), fetched and cached in the background — your LLM call is never blocked on pricing. If a price isn't available yet, the SDK falls back to token-count events and reports via `on_error` rather than under-billing. Per-call override: `extra_lago={"mode": "price", "markup": 1.5}`.
+Price mode emits one `llm_cost` event per priced field (input, output, cache, ...), each carrying `precise_total_amount_cents` for Lago's **dynamic charge model** plus a `token_type` property so a single billable metric can be grouped by both `model` and `token_type`. Prices come from public sources (OpenRouter for native providers, the AWS Bedrock price list for Bedrock) and from a gateway's own catalog where it publishes one (Cloudflare Workers AI, Ramp Router), fetched and cached in the background — your LLM call is never blocked on pricing. If a price isn't available yet, the SDK falls back to token-count events and reports via `on_error` rather than under-billing. Per-call override: `extra_lago={"mode": "price", "markup": 1.5}`.
 
 ## Error policy
 

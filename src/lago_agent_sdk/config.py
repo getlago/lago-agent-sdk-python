@@ -80,6 +80,12 @@ class LagoConfig:
     # pricing Mistral usage without ever calling wrap() (e.g. a log-backfill
     # path); an explicit value here always wins over an auto-detected one.
     mistral_api_key: str | None = field(default=None, repr=False)
+    # Usually NOT needed either — wrap()-ing an OpenAI client pointed at Ramp Router
+    # learns the key that client already carries, and Router's catalog (the price
+    # source for "ramp_router") is account-scoped, so no other key would do. Set it
+    # explicitly only when pricing Router usage without ever calling wrap(); an
+    # explicit value here always wins over a learned one.
+    ramp_router_api_key: str | None = field(default=None, repr=False)
     # Optional injected PricingProvider (or a stub) — primarily for tests/overrides.
     # Typed Any to avoid a config→pricing import cycle.
     pricing_provider: Any | None = field(default=None, repr=False)
