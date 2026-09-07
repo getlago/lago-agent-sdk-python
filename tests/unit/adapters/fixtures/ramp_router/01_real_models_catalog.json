@@ -5,26 +5,430 @@
   "_scrubbed": "credentials, emails, IPs, dashboard URLs; prompt and completion text blanked to \"\"",
   "_status": 200,
   "_headers": {
-    "alt-svc": "h3=\":443\"; ma=86400",
-    "cf-cache-status": "DYNAMIC",
-    "cf-ray": "a3238328fd280956-EWR",
-    "connection": "keep-alive",
-    "content-encoding": "br",
+    "date": "Mon, 07 Sep 2026 10:46:47 GMT",
     "content-type": "application/json",
-    "date": "Fri, 28 Aug 2026 13:02:47 GMT",
-    "server": "cloudflare",
-    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
     "transfer-encoding": "chunked",
+    "connection": "close",
     "vary": "Origin",
+    "x-request-id": "604917a0-b621-4541-a254-57bda6cb43c8",
+    "x-trace-id": "604917a0-b621-4541-a254-57bda6cb43c8",
+    "cf-cache-status": "DYNAMIC",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
     "x-content-type-options": "nosniff",
-    "x-request-id": "52ee6546-2898-4565-8832-8913ef8c4eb1",
-    "x-trace-id": "52ee6546-2898-4565-8832-8913ef8c4eb1"
+    "server": "cloudflare",
+    "cf-ray": "a37521b50dfc6ba3-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
   },
   "_body": {
     "object": "list",
     "data": [
       {
-        "id": "accounts/fireworks/models/deepseek-v4-pro-0813",
+        "id": "gpt-6-astra",
+        "object": "model",
+        "created": 1788480000,
+        "owned_by": "openai",
+        "display_name": "GPT-6 Astra",
+        "context_length": 1050000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "gpt-6-astra",
+          "catalog_id": "openai:gpt-6-astra",
+          "provider_model": "gpt-6-astra",
+          "display_name": "GPT-6 Astra",
+          "provider_display_name": "OpenAI",
+          "description": "GPT-6 Astra is our most capable model, built for the hardest end-to-end work. Use it for complex reasoning, coding, computer use, research, and document creation. reasoning.effort supports low , medium , high , xhigh , and max .",
+          "status": "active",
+          "listing": {
+            "order": 0,
+            "featured": true,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1050000,
+            "max_input_tokens": null,
+            "max_output_tokens": 128000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": false,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "low",
+                  "description": "Fast responses with lighter reasoning"
+                },
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                },
+                {
+                  "value": "max",
+                  "description": "Reasons as long as the model allows"
+                }
+              ],
+              "default_effort": "medium",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": true,
+                "values": [
+                  "auto",
+                  "concise",
+                  "detailed"
+                ],
+                "default": "auto"
+              },
+              "continuation": {
+                "request_include": [
+                  "reasoning.encrypted_content"
+                ],
+                "required": true
+              }
+            },
+            "verbosity": {
+              "supported": true,
+              "values": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "default": "medium"
+            }
+          },
+          "pricing": {
+            "input": "10",
+            "output": "50",
+            "cache_read_input": "1",
+            "cache_write_input": "12.5",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "claude-fable-5-1",
+        "object": "model",
+        "created": 1788048000,
+        "owned_by": "anthropic",
+        "display_name": "Claude Fable 5.1",
+        "context_length": 1000000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "claude-fable-5-1",
+          "catalog_id": "anthropic:claude-fable-5-1",
+          "provider_model": "claude-fable-5-1",
+          "display_name": "Claude Fable 5.1",
+          "provider_display_name": "Anthropic",
+          "description": "Frontier intelligence for long-running agents, agentic coding, and knowledge work",
+          "status": "active",
+          "listing": {
+            "order": 1,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1000000,
+            "max_input_tokens": 1000000,
+            "max_output_tokens": 128000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "minimal",
+                  "description": "Reasons briefly before answering"
+                },
+                {
+                  "value": "low",
+                  "description": "Fast responses with lighter reasoning"
+                },
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                },
+                {
+                  "value": "max",
+                  "description": "Reasons as long as the model allows"
+                }
+              ],
+              "default_effort": "high",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": false,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": false
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "10",
+            "output": "50",
+            "cache_read_input": "0.25",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "12.5",
+            "cache_write_input_1h": "20"
+          }
+        }
+      },
+      {
+        "id": "glm-5p3",
+        "object": "model",
+        "created": 1787875200,
+        "owned_by": "fireworks",
+        "display_name": "GLM 5.3",
+        "context_length": 1048576,
+        "router": {
+          "schema_version": 1,
+          "request_name": "glm-5p3",
+          "catalog_id": "fireworks:accounts/fireworks/models/glm-5p3",
+          "provider_model": "accounts/fireworks/models/glm-5p3",
+          "display_name": "GLM 5.3",
+          "provider_display_name": "Fireworks",
+          "aliases": [
+            "accounts/fireworks/models/glm-5p3"
+          ],
+          "description": "GLM-5.3 uses the same base model as GLM-5.2 \u2014 every gain comes from post-training. Compared with GLM-5.2, it is much better at complex coding and long-horizon tasks",
+          "status": "active",
+          "listing": {
+            "order": 2,
+            "featured": true,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1048576,
+            "max_input_tokens": null,
+            "max_output_tokens": 1048576
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "none",
+                  "description": "Answers without reasoning first"
+                },
+                {
+                  "value": "minimal",
+                  "description": "Reasons briefly before answering"
+                },
+                {
+                  "value": "low",
+                  "description": "Fast responses with lighter reasoning"
+                },
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                },
+                {
+                  "value": "max",
+                  "description": "Reasons as long as the model allows"
+                }
+              ],
+              "default_effort": "xhigh",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": false,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": false
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "1.4",
+            "output": "4.4",
+            "cache_read_input": "0.26",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "glm-5p3-flash",
+        "object": "model",
+        "created": 1787702400,
+        "owned_by": "fireworks",
+        "display_name": "GLM 5.3 Flash",
+        "context_length": 1048576,
+        "router": {
+          "schema_version": 1,
+          "request_name": "glm-5p3-flash",
+          "catalog_id": "fireworks:accounts/fireworks/models/glm-5p3-flash",
+          "provider_model": "accounts/fireworks/models/glm-5p3-flash",
+          "display_name": "GLM 5.3 Flash",
+          "provider_display_name": "Fireworks",
+          "aliases": [
+            "accounts/fireworks/models/glm-5p3-flash",
+            "zai-org/GLM-5.3-Flash"
+          ],
+          "status": "active",
+          "listing": {
+            "order": 3,
+            "featured": true,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1048576,
+            "max_input_tokens": null,
+            "max_output_tokens": 1048576
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "minimal",
+                  "description": "Reasons briefly before answering"
+                },
+                {
+                  "value": "low",
+                  "description": "Fast responses with lighter reasoning"
+                },
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                },
+                {
+                  "value": "max",
+                  "description": "Reasons as long as the model allows"
+                }
+              ],
+              "default_effort": "high",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": false,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": false
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "0.15",
+            "output": "0.5",
+            "cache_read_input": "0.03",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "deepseek-v4-pro-0813",
         "object": "model",
         "created": 1786579200,
         "owned_by": "fireworks",
@@ -32,15 +436,19 @@
         "context_length": 1048576,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/deepseek-v4-pro-0813",
+          "request_name": "deepseek-v4-pro-0813",
           "catalog_id": "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813",
           "provider_model": "accounts/fireworks/models/deepseek-v4-pro-0813",
           "display_name": "DeepSeek-V4-Pro-0813",
           "provider_display_name": "Fireworks",
+          "aliases": [
+            "accounts/fireworks/models/deepseek-v4-pro-0813",
+            "deepseek-ai/DeepSeek-V4-Pro-0813"
+          ],
           "description": "DeepSeek-V4-Pro-0813 is the official release of DeepSeek-V4-Pro, superseding the preview version, with greatly enhanced agentic capabilities and performance improvements that are especially pronounced in production environments. It is built on the DeepSeek-V4-Pro (Preview) model structure, with a DSpark speculative decoding module attached.",
           "status": "active",
           "listing": {
-            "order": 0,
+            "order": 5,
             "featured": false,
             "snapshot": false
           },
@@ -114,7 +522,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "1.32",
             "output": "3.96",
             "cache_read_input": "0.044",
             "cache_write_input": "0",
@@ -139,7 +547,7 @@
           "provider_display_name": "xAI",
           "status": "active",
           "listing": {
-            "order": 1,
+            "order": 7,
             "featured": false,
             "snapshot": false
           },
@@ -206,7 +614,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "2",
             "output": "6",
             "cache_read_input": "0.5",
             "cache_write_input": "0",
@@ -216,7 +624,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+        "id": "nemotron-lightning-3p5-30b-a3b",
         "object": "model",
         "created": 1786060800,
         "owned_by": "fireworks",
@@ -224,15 +632,18 @@
         "context_length": 262144,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+          "request_name": "nemotron-lightning-3p5-30b-a3b",
           "catalog_id": "fireworks:accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
           "provider_model": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
           "display_name": "Nemotron Lightning 3.5 30B A3B",
           "provider_display_name": "Fireworks",
+          "aliases": [
+            "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b"
+          ],
           "description": "Nemotron-Lightning-3.5-30B-A3B is a 30B-parameter Mixture-of-Experts language model (3B active) from NVIDIA's Nemotron-H family, built on a hybrid Mamba-Transformer architecture for efficient long-context inference. Like other models in the family, it responds to queries by first generating a reasoning trace and then concluding with a final response, with reasoning behavior configurable through a flag in the chat template. It includes a multi-token prediction (MTP) speculative decoding head for low-latency serving.",
           "status": "active",
           "listing": {
-            "order": 2,
+            "order": 8,
             "featured": false,
             "snapshot": false
           },
@@ -276,7 +687,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.05",
             "output": "0.2",
             "cache_read_input": "0.01",
             "cache_write_input": "0",
@@ -286,7 +697,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/models/qwen3p8-max",
+        "id": "qwen3p8-max",
         "object": "model",
         "created": 1785888000,
         "owned_by": "fireworks",
@@ -294,15 +705,18 @@
         "context_length": 1000000,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/qwen3p8-max",
+          "request_name": "qwen3p8-max",
           "catalog_id": "fireworks:accounts/fireworks/models/qwen3p8-max",
           "provider_model": "accounts/fireworks/models/qwen3p8-max",
           "display_name": "Qwen 3.8 Max",
           "provider_display_name": "Fireworks",
+          "aliases": [
+            "accounts/fireworks/models/qwen3p8-max"
+          ],
           "description": "Built on the architectural foundation of Qwen3.5, Qwen3.8 delivers substantial gains across coding, professional work, research, and long-horizon agentic tasks. Beyond answering harder questions, Qwen3.8 is designed to carry complex, multi-step tasks through to completion with greater reliability.",
           "status": "active",
           "listing": {
-            "order": 3,
+            "order": 9,
             "featured": false,
             "snapshot": false
           },
@@ -373,7 +787,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "2",
             "output": "6",
             "cache_read_input": "0.25",
             "cache_write_input": "0",
@@ -383,7 +797,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/models/deepseek-v4-flash-0731",
+        "id": "deepseek-v4-flash-0731",
         "object": "model",
         "created": 1785456000,
         "owned_by": "fireworks",
@@ -391,15 +805,19 @@
         "context_length": 1048576,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/deepseek-v4-flash-0731",
+          "request_name": "deepseek-v4-flash-0731",
           "catalog_id": "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731",
           "provider_model": "accounts/fireworks/models/deepseek-v4-flash-0731",
           "display_name": "DeepSeek-V4-Flash-0731",
           "provider_display_name": "Fireworks",
+          "aliases": [
+            "accounts/fireworks/models/deepseek-v4-flash-0731",
+            "deepseek-ai/DeepSeek-V4-Flash-0731"
+          ],
           "description": "DeepSeek-V4-Flash-0731 is the official release of DeepSeek-V4-Flash, superseding the preview version, with substantially enhanced agentic capabilities. It has the same model structure as DeepSeek-V4-Flash-DSpark, i.e. it comes with a speculative decoding module attached.",
           "status": "active",
           "listing": {
-            "order": 4,
+            "order": 10,
             "featured": false,
             "snapshot": false
           },
@@ -473,9 +891,88 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.22",
             "output": "0.66",
             "cache_read_input": "0.007",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "inkling-small",
+        "object": "model",
+        "created": 1785369600,
+        "owned_by": "baseten",
+        "display_name": "Inkling Small (Baseten)",
+        "context_length": 1048576,
+        "router": {
+          "schema_version": 1,
+          "request_name": "inkling-small",
+          "catalog_id": "baseten:thinkingmachines/inkling-small",
+          "provider_model": "thinkingmachines/inkling-small",
+          "display_name": "Inkling Small (Baseten)",
+          "provider_display_name": "Baseten",
+          "aliases": [
+            "thinkingmachines/inkling-small"
+          ],
+          "description": "Inkling Small served through Baseten Model APIs.",
+          "status": "active",
+          "listing": {
+            "order": 11,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1048576,
+            "max_input_tokens": null,
+            "max_output_tokens": 1048576
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                }
+              ],
+              "default_effort": "high",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": false,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": false
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "0.5",
+            "output": "1.2",
+            "cache_read_input": "0.1",
             "cache_write_input": "0",
             "cache_write_input_5m": "0",
             "cache_write_input_1h": "0"
@@ -499,7 +996,7 @@
           "description": "For complex agentic coding and enterprise work",
           "status": "active",
           "listing": {
-            "order": 5,
+            "order": 13,
             "featured": true,
             "snapshot": false
           },
@@ -574,7 +1071,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "5",
             "output": "25",
             "cache_read_input": "0.5",
             "cache_write_input": "0",
@@ -584,7 +1081,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/models/kimi-k3",
+        "id": "kimi-k3",
         "object": "model",
         "created": 1784419200,
         "owned_by": "fireworks",
@@ -592,15 +1089,19 @@
         "context_length": 1048576,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/kimi-k3",
+          "request_name": "kimi-k3",
           "catalog_id": "fireworks:accounts/fireworks/models/kimi-k3",
           "provider_model": "accounts/fireworks/models/kimi-k3",
           "display_name": "Kimi K3",
           "provider_display_name": "Fireworks",
-          "description": "Kimi K3 is Kimi’s most capable flagship model to date, with 2.8 trillion parameters. It is built on Kimi Delta Attention (KDA), a hybrid linear attention mechanism, and Attention Residuals, with native visual understanding and a 1M-token context window. It is the world’s first open-source model in the 3-trillion-parameter class, designed for frontier intelligence scenarios including long-horizon coding, knowledge work, and reasoning.",
+          "aliases": [
+            "moonshotai/Kimi-K3",
+            "accounts/fireworks/models/kimi-k3"
+          ],
+          "description": "Kimi K3 is Kimi\u2019s most capable flagship model to date, with 2.8 trillion parameters. It is built on Kimi Delta Attention (KDA), a hybrid linear attention mechanism, and Attention Residuals, with native visual understanding and a 1M-token context window. It is the world\u2019s first open-source model in the 3-trillion-parameter class, designed for frontier intelligence scenarios including long-horizon coding, knowledge work, and reasoning.",
           "status": "active",
           "listing": {
-            "order": 8,
+            "order": 17,
             "featured": true,
             "snapshot": false
           },
@@ -671,7 +1172,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "3",
             "output": "15",
             "cache_read_input": "0.3",
             "cache_write_input": "0",
@@ -681,7 +1182,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/routers/kimi-k3-fast",
+        "id": "kimi-k3-fast",
         "object": "model",
         "created": 1784419200,
         "owned_by": "fireworks",
@@ -689,15 +1190,18 @@
         "context_length": 1048576,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/routers/kimi-k3-fast",
+          "request_name": "kimi-k3-fast",
           "catalog_id": "fireworks:accounts/fireworks/routers/kimi-k3-fast",
           "provider_model": "accounts/fireworks/routers/kimi-k3-fast",
           "display_name": "Kimi K3 Fast",
           "provider_display_name": "Fireworks",
-          "description": "Kimi K3 is Kimi’s most capable flagship model to date, with 2.8 trillion parameters. It is built on Kimi Delta Attention (KDA), a hybrid linear attention mechanism, and Attention Residuals, with native visual understanding and a 1M-token context window. It is the world’s first open-source model in the 3-trillion-parameter class, designed for frontier intelligence scenarios including long-horizon coding, knowledge work, and reasoning.",
+          "aliases": [
+            "accounts/fireworks/routers/kimi-k3-fast"
+          ],
+          "description": "Kimi K3 is Kimi\u2019s most capable flagship model to date, with 2.8 trillion parameters. It is built on Kimi Delta Attention (KDA), a hybrid linear attention mechanism, and Attention Residuals, with native visual understanding and a 1M-token context window. It is the world\u2019s first open-source model in the 3-trillion-parameter class, designed for frontier intelligence scenarios including long-horizon coding, knowledge work, and reasoning.",
           "status": "active",
           "listing": {
-            "order": 9,
+            "order": 18,
             "featured": false,
             "snapshot": false
           },
@@ -768,9 +1272,88 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "4.5",
             "output": "22.5",
             "cache_read_input": "0.45",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "inkling",
+        "object": "model",
+        "created": 1784073600,
+        "owned_by": "baseten",
+        "display_name": "Inkling (Baseten)",
+        "context_length": 1048576,
+        "router": {
+          "schema_version": 1,
+          "request_name": "inkling",
+          "catalog_id": "baseten:thinkingmachines/inkling",
+          "provider_model": "thinkingmachines/inkling",
+          "display_name": "Inkling (Baseten)",
+          "provider_display_name": "Baseten",
+          "aliases": [
+            "thinkingmachines/inkling"
+          ],
+          "description": "Inkling served through Baseten Model APIs.",
+          "status": "active",
+          "listing": {
+            "order": 19,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1048576,
+            "max_input_tokens": null,
+            "max_output_tokens": 1048576
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                }
+              ],
+              "default_effort": "high",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": false,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": false
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "1",
+            "output": "4.05",
+            "cache_read_input": "0.17",
             "cache_write_input": "0",
             "cache_write_input_5m": "0",
             "cache_write_input_1h": "0"
@@ -794,7 +1377,7 @@
           "description": "The best combination of speed and intelligence",
           "status": "active",
           "listing": {
-            "order": 10,
+            "order": 21,
             "featured": false,
             "snapshot": false
           },
@@ -869,7 +1452,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "2",
             "output": "10",
             "cache_read_input": "0.2",
             "cache_write_input": "0",
@@ -895,7 +1478,7 @@
           "description": "SpaceXAI's intelligent coding model for agentic software, engineering, and workflow tasks. Trained in SpaceXAI's data centers in Memphis with new datasets spanning science, engineering, and math.",
           "status": "active",
           "listing": {
-            "order": 11,
+            "order": 22,
             "featured": false,
             "snapshot": false
           },
@@ -962,7 +1545,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "2",
             "output": "6",
             "cache_read_input": "0.3",
             "cache_write_input": "0",
@@ -985,10 +1568,10 @@
           "provider_model": "gpt-5.6-luna",
           "display_name": "GPT-5.6 Luna",
           "provider_display_name": "OpenAI",
-          "description": "GPT-5.6 Luna is designed for cost-sensitive, high-volume workloads. It roughly corresponds to the nano model tier used in earlier GPT-5 families.",
+          "description": "GPT-5.6 Luna is designed for cost-sensitive, high-volume workloads. It roughly corresponds to the nano model tier used in earlier GPT-5 families. Reasoning.effort supports: none, low, medium (default), high, xhigh, and max.",
           "status": "active",
           "listing": {
-            "order": 12,
+            "order": 23,
             "featured": true,
             "snapshot": false
           },
@@ -1071,7 +1654,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.2",
             "output": "1.2",
             "cache_read_input": "0.02",
             "cache_write_input": "0.25",
@@ -1094,10 +1677,10 @@
           "provider_model": "gpt-5.6-terra",
           "display_name": "GPT-5.6 Terra",
           "provider_display_name": "OpenAI",
-          "description": "GPT-5.6 Terra is designed for workloads that balance intelligence and cost. It roughly corresponds to the mini model tier used in earlier GPT-5 families.",
+          "description": "GPT-5.6 Terra is designed for workloads that balance intelligence and cost. It roughly corresponds to the mini model tier used in earlier GPT-5 families. Reasoning.effort supports: none, low, medium (default), high, xhigh, and max.",
           "status": "active",
           "listing": {
-            "order": 13,
+            "order": 24,
             "featured": false,
             "snapshot": false
           },
@@ -1180,7 +1763,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "2",
             "output": "12",
             "cache_read_input": "0.2",
             "cache_write_input": "2.5",
@@ -1203,10 +1786,10 @@
           "provider_model": "gpt-5.6-sol",
           "display_name": "GPT-5.6 Sol",
           "provider_display_name": "OpenAI",
-          "description": "GPT-5.6 Sol is the frontier model in the GPT-5.6 family. It roughly corresponds to the unsuffixed model tier used in earlier GPT-5 families. The gpt-5.6 alias routes requests to GPT-5.6 Sol.",
+          "description": "GPT-5.6 Sol is a flagship model in the GPT-5.6 family. It roughly corresponds to the unsuffixed model tier used in earlier GPT-5 families. The gpt-5.6 alias routes requests to GPT-5.6 Sol. Reasoning.effort supports: none, low, medium (default), high, xhigh, and max.",
           "status": "active",
           "listing": {
-            "order": 14,
+            "order": 25,
             "featured": true,
             "snapshot": false
           },
@@ -1289,7 +1872,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "4",
             "output": "20",
             "cache_read_input": "0.4",
             "cache_write_input": "5",
@@ -1299,7 +1882,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/models/glm-5p2",
+        "id": "glm-5p2",
         "object": "model",
         "created": 1781568000,
         "owned_by": "fireworks",
@@ -1307,18 +1890,19 @@
         "context_length": 1048576,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/glm-5p2",
+          "request_name": "glm-5p2",
           "catalog_id": "fireworks:accounts/fireworks/models/glm-5p2",
           "provider_model": "accounts/fireworks/models/glm-5p2",
           "display_name": "GLM 5.2",
           "provider_display_name": "Fireworks",
           "aliases": [
-            "glm-5p2"
+            "accounts/fireworks/models/glm-5p2",
+            "zai-org/GLM-5.2"
           ],
           "description": "GLM-5.2 introduces a robust 1M-token context and advanced, multi-effort coding capabilities to significantly enhance performance on long-horizon tasks. Its new IndexShare architecture and improved MTP layer simultaneously boost efficiency by reducing per-token FLOPs and increasing speculative decoding lengths.",
           "status": "active",
           "listing": {
-            "order": 15,
+            "order": 26,
             "featured": true,
             "snapshot": false
           },
@@ -1392,7 +1976,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "1.4",
             "output": "4.4",
             "cache_read_input": "0.14",
             "cache_write_input": "0",
@@ -1402,7 +1986,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/routers/glm-5p2-fast",
+        "id": "glm-5p2-fast",
         "object": "model",
         "created": 1781568000,
         "owned_by": "fireworks",
@@ -1410,15 +1994,19 @@
         "context_length": 1048576,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/routers/glm-5p2-fast",
+          "request_name": "glm-5p2-fast",
           "catalog_id": "fireworks:accounts/fireworks/routers/glm-5p2-fast",
           "provider_model": "accounts/fireworks/routers/glm-5p2-fast",
           "display_name": "GLM 5.2 Fast",
           "provider_display_name": "Fireworks",
+          "aliases": [
+            "zai-org/GLM-5.2-Fast",
+            "accounts/fireworks/routers/glm-5p2-fast"
+          ],
           "description": "GLM-5.2 introduces a robust 1M-token context and advanced, multi-effort coding capabilities to significantly enhance performance on long-horizon tasks. Its new IndexShare architecture and improved MTP layer simultaneously boost efficiency by reducing per-token FLOPs and increasing speculative decoding lengths.",
           "status": "active",
           "listing": {
-            "order": 17,
+            "order": 27,
             "featured": false,
             "snapshot": false
           },
@@ -1492,7 +2080,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "2.1",
             "output": "6.6",
             "cache_read_input": "0.21",
             "cache_write_input": "0",
@@ -1502,7 +2090,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/models/kimi-k2p7-code",
+        "id": "kimi-k2p7-code",
         "object": "model",
         "created": 1781222400,
         "owned_by": "fireworks",
@@ -1510,15 +2098,19 @@
         "context_length": 262144,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/kimi-k2p7-code",
+          "request_name": "kimi-k2p7-code",
           "catalog_id": "fireworks:accounts/fireworks/models/kimi-k2p7-code",
           "provider_model": "accounts/fireworks/models/kimi-k2p7-code",
           "display_name": "Kimi K2.7 Code",
           "provider_display_name": "Fireworks",
+          "aliases": [
+            "moonshotai/Kimi-K2.7-Code",
+            "accounts/fireworks/models/kimi-k2p7-code"
+          ],
           "description": "Kimi K2.7 Code is a coding-focused agentic model built upon Kimi K2.6. With substantial improvements on real-world long-horizon coding tasks, it strengthens end-to-end task completion across complex software engineering workflows while improving token efficiency, reducing thinking-token usage by approximately 30% compared with Kimi K2.6.",
           "status": "active",
           "listing": {
-            "order": 18,
+            "order": 30,
             "featured": false,
             "snapshot": false
           },
@@ -1589,7 +2181,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.95",
             "output": "4",
             "cache_read_input": "0.19",
             "cache_write_input": "0",
@@ -1599,7 +2191,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/models/minimax-m3",
+        "id": "minimax-m3",
         "object": "model",
         "created": 1781136000,
         "owned_by": "fireworks",
@@ -1607,15 +2199,18 @@
         "context_length": 512000,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/minimax-m3",
+          "request_name": "minimax-m3",
           "catalog_id": "fireworks:accounts/fireworks/models/minimax-m3",
           "provider_model": "accounts/fireworks/models/minimax-m3",
           "display_name": "Minimax M3",
           "provider_display_name": "Fireworks",
+          "aliases": [
+            "accounts/fireworks/models/minimax-m3"
+          ],
           "description": "MiniMax-M3 is a native multimodal model with 1M context running ~428B parameters and ~23B activated parameters. It brings native multimodality. enabling deeper semantic fusion across text, image, and video. M3 also introduces MiniMax Sparse Attention (MSA) to improve long context efficiency, achieving frontier-level performance across long-horizon agentic benchmarks, excelling in both coding and cowork.",
           "status": "active",
           "listing": {
-            "order": 20,
+            "order": 32,
             "featured": false,
             "snapshot": false
           },
@@ -1685,7 +2280,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.3",
             "output": "1.2",
             "cache_read_input": "0.06",
             "cache_write_input": "0",
@@ -1711,7 +2306,7 @@
           "description": "Next-generation intelligence for long-running agents",
           "status": "active",
           "listing": {
-            "order": 22,
+            "order": 34,
             "featured": false,
             "snapshot": false
           },
@@ -1782,7 +2377,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "10",
             "output": "50",
             "cache_read_input": "1",
             "cache_write_input": "0",
@@ -1792,7 +2387,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
+        "id": "nemotron-3-ultra",
         "object": "model",
         "created": 1780358400,
         "owned_by": "fireworks",
@@ -1800,15 +2395,19 @@
         "context_length": 262144,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
+          "request_name": "nemotron-3-ultra",
           "catalog_id": "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4",
           "provider_model": "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
           "display_name": "NVIDIA Nemotron 3 Ultra NVFP4",
           "provider_display_name": "Fireworks",
+          "aliases": [
+            "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+            "accounts/fireworks/models/nemotron-3-ultra-nvfp4"
+          ],
           "description": "Nemotron-3-Ultra-550B-A55B-NVFP4 is a frontier-scale large language model (LLM) trained by NVIDIA, designed to deliver strong agentic, reasoning, and conversational capabilities. It is optimized for the most demanding workloads, including complex multi-step agents, long-context analysis, and high-accuracy reasoning over code, math, and science. The model employs a hybrid Latent Mixture-of-Experts (LatentMoE) architecture, utilizing interleaved Mamba-2 and MoE layers, along with select Attention layers. Like the Super model, the Ultra model incorporates Multi-Token Prediction (MTP) layers for faster text generation and improved quality, and it is trained using an NVFP4 pre-training recipe to maximize compute efficiency. The model has 55B active parameters and 550B parameters in total.",
           "status": "active",
           "listing": {
-            "order": 23,
+            "order": 36,
             "featured": false,
             "snapshot": false
           },
@@ -1878,7 +2477,103 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.6",
+            "output": "2.4",
+            "cache_read_input": "0.12",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "nemotron-3-ultra-nvfp4",
+        "object": "model",
+        "created": 1780358400,
+        "owned_by": "fireworks",
+        "display_name": "NVIDIA Nemotron 3 Ultra NVFP4",
+        "context_length": 262144,
+        "router": {
+          "schema_version": 1,
+          "request_name": "nemotron-3-ultra-nvfp4",
+          "catalog_id": "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4",
+          "provider_model": "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
+          "display_name": "NVIDIA Nemotron 3 Ultra NVFP4",
+          "provider_display_name": "Fireworks",
+          "description": "Nemotron-3-Ultra-550B-A55B-NVFP4 is a frontier-scale large language model (LLM) trained by NVIDIA, designed to deliver strong agentic, reasoning, and conversational capabilities. It is optimized for the most demanding workloads, including complex multi-step agents, long-context analysis, and high-accuracy reasoning over code, math, and science. The model employs a hybrid Latent Mixture-of-Experts (LatentMoE) architecture, utilizing interleaved Mamba-2 and MoE layers, along with select Attention layers. Like the Super model, the Ultra model incorporates Multi-Token Prediction (MTP) layers for faster text generation and improved quality, and it is trained using an NVFP4 pre-training recipe to maximize compute efficiency. The model has 55B active parameters and 550B parameters in total.",
+          "status": "active",
+          "listing": {
+            "order": 36,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 262144,
+            "max_input_tokens": null,
+            "max_output_tokens": 262144
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "none",
+                  "description": "Answers without reasoning first"
+                },
+                {
+                  "value": "minimal",
+                  "description": "Reasons briefly before answering"
+                },
+                {
+                  "value": "low",
+                  "description": "Fast responses with lighter reasoning"
+                },
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                }
+              ],
+              "default_effort": "none",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": false,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": false
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "0.6",
             "output": "2.4",
             "cache_read_input": "0.12",
             "cache_write_input": "0",
@@ -1906,7 +2601,7 @@
           ],
           "status": "active",
           "listing": {
-            "order": 24,
+            "order": 37,
             "featured": false,
             "snapshot": false
           },
@@ -1981,7 +2676,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "5",
             "output": "25",
             "cache_read_input": "0.5",
             "cache_write_input": "0",
@@ -1991,7 +2686,86 @@
         }
       },
       {
-        "id": "accounts/fireworks/models/deepseek-v4-flash",
+        "id": "deepseek-v4-pro",
+        "object": "model",
+        "created": 1777075200,
+        "owned_by": "baseten",
+        "display_name": "DeepSeek V4 Pro (Baseten)",
+        "context_length": 1048576,
+        "router": {
+          "schema_version": 1,
+          "request_name": "deepseek-v4-pro",
+          "catalog_id": "baseten:deepseek-ai/DeepSeek-V4-Pro",
+          "provider_model": "deepseek-ai/DeepSeek-V4-Pro",
+          "display_name": "DeepSeek V4 Pro (Baseten)",
+          "provider_display_name": "Baseten",
+          "aliases": [
+            "deepseek-ai/DeepSeek-V4-Pro"
+          ],
+          "description": "DeepSeek V4 Pro served through Baseten Model APIs.",
+          "status": "active",
+          "listing": {
+            "order": 41,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1048576,
+            "max_input_tokens": null,
+            "max_output_tokens": 384000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                }
+              ],
+              "default_effort": "high",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": false,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": false
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "1.74",
+            "output": "3.48",
+            "cache_read_input": "0.145",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "deepseek-v4-flash",
         "object": "model",
         "created": 1776988800,
         "owned_by": "fireworks",
@@ -1999,15 +2773,18 @@
         "context_length": 1048576,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/deepseek-v4-flash",
+          "request_name": "deepseek-v4-flash",
           "catalog_id": "fireworks:accounts/fireworks/models/deepseek-v4-flash",
           "provider_model": "accounts/fireworks/models/deepseek-v4-flash",
           "display_name": "DeepSeek-V4-Flash",
           "provider_display_name": "Fireworks",
+          "aliases": [
+            "accounts/fireworks/models/deepseek-v4-flash"
+          ],
           "description": "DeepSeek-V4-Flash is a streamlined open-source Mixture-of-Experts model optimized for fast, cost-efficient inference while preserving strong reasoning and coding performance at 1M token context scale. It leverages the same hybrid attention innovations as Pro but is tuned for lower latency and higher throughput in real-time applications. It delivers near-Pro reasoning quality under sufficient compute budget, making it ideal for interactive agents and high-volume production workloads.",
           "status": "active",
           "listing": {
-            "order": 28,
+            "order": 42,
             "featured": true,
             "snapshot": false
           },
@@ -2081,7 +2858,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.14",
             "output": "0.28",
             "cache_read_input": "0.028",
             "cache_write_input": "0",
@@ -2107,7 +2884,7 @@
           "description": "GPT-5.5 Pro uses more compute to think harder and provide consistently better answers.",
           "status": "active",
           "listing": {
-            "order": 31,
+            "order": 45,
             "featured": false,
             "snapshot": false
           },
@@ -2178,7 +2955,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "30",
             "output": "180",
             "cache_read_input": "0",
             "cache_write_input": "0",
@@ -2201,10 +2978,10 @@
           "provider_model": "gpt-5.5",
           "display_name": "GPT-5.5",
           "provider_display_name": "OpenAI",
-          "description": "GPT-5.5 is our newest frontier model for the most complex professional work. Learn more in our GPT-5.5 model guidance . Reasoning.effort supports: none, low, medium (default), high and xhigh.",
+          "description": "GPT-5.5 is a flagship model for the most complex professional work. Learn more in our GPT-5.5 model guidance . Reasoning.effort supports: none, low, medium (default), high and xhigh.",
           "status": "active",
           "listing": {
-            "order": 33,
+            "order": 47,
             "featured": false,
             "snapshot": false
           },
@@ -2283,7 +3060,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "5",
             "output": "30",
             "cache_read_input": "0.5",
             "cache_write_input": "0",
@@ -2293,7 +3070,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/models/kimi-k2p6",
+        "id": "kimi-k2p6",
         "object": "model",
         "created": 1776384000,
         "owned_by": "fireworks",
@@ -2301,15 +3078,19 @@
         "context_length": 262144,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/kimi-k2p6",
+          "request_name": "kimi-k2p6",
           "catalog_id": "fireworks:accounts/fireworks/models/kimi-k2p6",
           "provider_model": "accounts/fireworks/models/kimi-k2p6",
           "display_name": "Kimi K2.6",
           "provider_display_name": "Fireworks",
+          "aliases": [
+            "moonshotai/Kimi-K2.6",
+            "accounts/fireworks/models/kimi-k2p6"
+          ],
           "description": "Kimi K2.6 is an open-source, native multimodal agentic model that advances practical capabilities in long-horizon coding, coding-driven design, proactive autonomous execution, and swarm-based task orchestration.",
           "status": "active",
           "listing": {
-            "order": 34,
+            "order": 49,
             "featured": false,
             "snapshot": false
           },
@@ -2380,7 +3161,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.95",
             "output": "4",
             "cache_read_input": "0.16",
             "cache_write_input": "0",
@@ -2406,7 +3187,7 @@
           "description": "Fast, reliable model with strong tool calling and instruction following capabilities.",
           "status": "active",
           "listing": {
-            "order": 36,
+            "order": 51,
             "featured": false,
             "snapshot": false
           },
@@ -2477,7 +3258,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "1.25",
             "output": "2.5",
             "cache_read_input": "0.2",
             "cache_write_input": "0",
@@ -2503,7 +3284,7 @@
           "description": "SpaceXAI's intelligent coding model for agentic software, engineering, and workflow tasks.",
           "status": "active",
           "listing": {
-            "order": 37,
+            "order": 52,
             "featured": false,
             "snapshot": false
           },
@@ -2548,7 +3329,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "1",
             "output": "2",
             "cache_read_input": "0.2",
             "cache_write_input": "0",
@@ -2573,7 +3354,7 @@
           "provider_display_name": "Anthropic",
           "status": "active",
           "listing": {
-            "order": 38,
+            "order": 53,
             "featured": false,
             "snapshot": false
           },
@@ -2648,7 +3429,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "5",
             "output": "25",
             "cache_read_input": "0.5",
             "cache_write_input": "0",
@@ -2662,22 +3443,22 @@
         "object": "model",
         "created": 1773451123,
         "owned_by": "openai",
-        "display_name": "GPT-5.4 mini",
+        "display_name": "GPT-5.4 Mini",
         "context_length": 400000,
         "router": {
           "schema_version": 1,
           "request_name": "gpt-5.4-mini",
           "catalog_id": "openai:gpt-5.4-mini",
           "provider_model": "gpt-5.4-mini",
-          "display_name": "GPT-5.4 mini",
+          "display_name": "GPT-5.4 Mini",
           "provider_display_name": "OpenAI",
           "aliases": [
             "fast-default"
           ],
-          "description": "GPT-5.4 mini brings the strengths of GPT-5.4 to a faster, more efficient model designed for high-volume workloads. Learn more in our Model guidance page. Reasoning.effort supports: none (default), low, medium, high and xhigh.",
+          "description": "GPT-5.4 Mini brings the strengths of GPT-5.4 to a faster, more efficient model designed for high-volume workloads. Learn more in our Model guidance page. Reasoning.effort supports: none (default), low, medium, high and xhigh.",
           "status": "active",
           "listing": {
-            "order": 40,
+            "order": 55,
             "featured": false,
             "snapshot": false
           },
@@ -2756,7 +3537,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.75",
             "output": "4.5",
             "cache_read_input": "0.075",
             "cache_write_input": "0",
@@ -2780,961 +3561,6 @@
           "display_name": "GPT-5.4 nano",
           "provider_display_name": "OpenAI",
           "description": "GPT-5.4 nano is designed for tasks where speed and cost matter most like classification, data extraction, ranking, and sub-agents. Learn more in our Model guidance page. Reasoning.effort supports: none (default), low, medium, high and xhigh.",
-          "status": "active",
-          "listing": {
-            "order": 43,
-            "featured": false,
-            "snapshot": false
-          },
-          "limits": {
-            "context_window": 400000,
-            "max_input_tokens": null,
-            "max_output_tokens": 128000
-          },
-          "capabilities": {
-            "modalities": {
-              "input": [
-                "",
-                ""
-              ],
-              "output": [
-                "text"
-              ]
-            },
-            "tools": {
-              "supported": true,
-              "parallel": null
-            },
-            "structured_outputs": true,
-            "temperature": true,
-            "prompt_caching": true,
-            "reasoning": {
-              "supported": true,
-              "efforts": [
-                {
-                  "value": "none",
-                  "description": "Answers without reasoning first"
-                },
-                {
-                  "value": "low",
-                  "description": "Fast responses with lighter reasoning"
-                },
-                {
-                  "value": "medium",
-                  "description": "Balances speed and reasoning depth"
-                },
-                {
-                  "value": "high",
-                  "description": "Greater reasoning depth"
-                },
-                {
-                  "value": "xhigh",
-                  "description": "Reasons longer than high"
-                }
-              ],
-              "default_effort": "medium",
-              "summary": {
-                "output_supported": true,
-                "request_parameter_supported": true,
-                "values": [
-                  "auto",
-                  "concise",
-                  "detailed"
-                ],
-                "default": "auto"
-              },
-              "continuation": {
-                "request_include": [
-                  "reasoning.encrypted_content"
-                ],
-                "required": true
-              }
-            },
-            "verbosity": {
-              "supported": true,
-              "values": [
-                "low",
-                "medium",
-                "high"
-              ],
-              "default": "medium"
-            }
-          },
-          "pricing": {
-            "input": "",
-            "output": "1.25",
-            "cache_read_input": "0.02",
-            "cache_write_input": "0",
-            "cache_write_input_5m": "0",
-            "cache_write_input_1h": "0"
-          }
-        }
-      },
-      {
-        "id": "grok-4.20-0309-reasoning",
-        "object": "model",
-        "created": 1773014400,
-        "owned_by": "xai",
-        "display_name": "Grok 4.20",
-        "context_length": 1000000,
-        "router": {
-          "schema_version": 1,
-          "request_name": "grok-4.20-0309-reasoning",
-          "catalog_id": "xai:grok-4.20-0309-reasoning",
-          "provider_model": "grok-4.20-0309-reasoning",
-          "display_name": "Grok 4.20",
-          "provider_display_name": "xAI",
-          "description": "Grok 4.20 is a high-performance model with industry-leading speed and agentic tool calling capabilities. It combines the lowest hallucination rate on the market with strict prompt adherence, delivering consistently precise and truthful responses.",
-          "status": "active",
-          "listing": {
-            "order": 45,
-            "featured": false,
-            "snapshot": false
-          },
-          "limits": {
-            "context_window": 1000000,
-            "max_input_tokens": null,
-            "max_output_tokens": 1000000
-          },
-          "capabilities": {
-            "modalities": {
-              "input": [
-                "",
-                ""
-              ],
-              "output": [
-                "text"
-              ]
-            },
-            "tools": {
-              "supported": true,
-              "parallel": null
-            },
-            "structured_outputs": true,
-            "temperature": true,
-            "prompt_caching": true,
-            "reasoning": {
-              "supported": true,
-              "efforts": [],
-              "summary": {
-                "output_supported": true,
-                "request_parameter_supported": false,
-                "values": []
-              },
-              "continuation": {
-                "request_include": [],
-                "required": false
-              }
-            },
-            "verbosity": {
-              "supported": false,
-              "values": []
-            }
-          },
-          "pricing": {
-            "input": "",
-            "output": "2.5",
-            "cache_read_input": "0.2",
-            "cache_write_input": "0",
-            "cache_write_input_5m": "0",
-            "cache_write_input_1h": "0"
-          }
-        }
-      },
-      {
-        "id": "grok-4.20-0309-non-reasoning",
-        "object": "model",
-        "created": 1773014400,
-        "owned_by": "xai",
-        "display_name": "Grok 4.20 (Non-Reasoning)",
-        "context_length": 1000000,
-        "router": {
-          "schema_version": 1,
-          "request_name": "grok-4.20-0309-non-reasoning",
-          "catalog_id": "xai:grok-4.20-0309-non-reasoning",
-          "provider_model": "grok-4.20-0309-non-reasoning",
-          "display_name": "Grok 4.20 (Non-Reasoning)",
-          "provider_display_name": "xAI",
-          "description": "Grok 4.20 is a high-performance model with industry-leading speed and agentic tool calling capabilities. It combines the lowest hallucination rate on the market with strict prompt adherence, delivering consistently precise and truthful responses.",
-          "status": "active",
-          "listing": {
-            "order": 46,
-            "featured": false,
-            "snapshot": false
-          },
-          "limits": {
-            "context_window": 1000000,
-            "max_input_tokens": null,
-            "max_output_tokens": 1000000
-          },
-          "capabilities": {
-            "modalities": {
-              "input": [
-                "",
-                ""
-              ],
-              "output": [
-                "text"
-              ]
-            },
-            "tools": {
-              "supported": true,
-              "parallel": null
-            },
-            "structured_outputs": true,
-            "temperature": true,
-            "prompt_caching": true,
-            "reasoning": {
-              "supported": false,
-              "efforts": [],
-              "summary": {
-                "output_supported": null,
-                "request_parameter_supported": null,
-                "values": []
-              },
-              "continuation": {
-                "request_include": [],
-                "required": null
-              }
-            },
-            "verbosity": {
-              "supported": false,
-              "values": []
-            }
-          },
-          "pricing": {
-            "input": "",
-            "output": "2.5",
-            "cache_read_input": "0.2",
-            "cache_write_input": "0",
-            "cache_write_input_5m": "0",
-            "cache_write_input_1h": "0"
-          }
-        }
-      },
-      {
-        "id": "grok-4.20-multi-agent-0309",
-        "object": "model",
-        "created": 1773014400,
-        "owned_by": "xai",
-        "display_name": "Grok 4.20 Multi-Agent Beta",
-        "context_length": 1000000,
-        "router": {
-          "schema_version": 1,
-          "request_name": "grok-4.20-multi-agent-0309",
-          "catalog_id": "xai:grok-4.20-multi-agent-0309",
-          "provider_model": "grok-4.20-multi-agent-0309",
-          "display_name": "Grok 4.20 Multi-Agent Beta",
-          "provider_display_name": "xAI",
-          "description": "Multiple agents collaborate in parallel to perform deep research tasks.",
-          "status": "active",
-          "listing": {
-            "order": 47,
-            "featured": false,
-            "snapshot": false
-          },
-          "limits": {
-            "context_window": 1000000,
-            "max_input_tokens": null,
-            "max_output_tokens": 1000000
-          },
-          "capabilities": {
-            "modalities": {
-              "input": [
-                "",
-                ""
-              ],
-              "output": [
-                "text"
-              ]
-            },
-            "tools": {
-              "supported": true,
-              "parallel": null
-            },
-            "structured_outputs": true,
-            "temperature": true,
-            "prompt_caching": true,
-            "reasoning": {
-              "supported": true,
-              "efforts": [
-                {
-                  "value": "none",
-                  "description": "Answers without reasoning first"
-                },
-                {
-                  "value": "minimal",
-                  "description": "Reasons briefly before answering"
-                },
-                {
-                  "value": "low",
-                  "description": "Fast responses with lighter reasoning"
-                },
-                {
-                  "value": "medium",
-                  "description": "Balances speed and reasoning depth"
-                },
-                {
-                  "value": "high",
-                  "description": "Greater reasoning depth"
-                },
-                {
-                  "value": "xhigh",
-                  "description": "Reasons longer than high"
-                },
-                {
-                  "value": "max",
-                  "description": "Reasons as long as the model allows"
-                }
-              ],
-              "default_effort": "none",
-              "summary": {
-                "output_supported": true,
-                "request_parameter_supported": false,
-                "values": []
-              },
-              "continuation": {
-                "request_include": [],
-                "required": false
-              }
-            },
-            "verbosity": {
-              "supported": false,
-              "values": []
-            }
-          },
-          "pricing": {
-            "input": "",
-            "output": "2.5",
-            "cache_read_input": "0.2",
-            "cache_write_input": "0",
-            "cache_write_input_5m": "0",
-            "cache_write_input_1h": "0"
-          }
-        }
-      },
-      {
-        "id": "gpt-5.4",
-        "object": "model",
-        "created": 1772691852,
-        "owned_by": "openai",
-        "display_name": "GPT-5.4",
-        "context_length": 1050000,
-        "router": {
-          "schema_version": 1,
-          "request_name": "gpt-5.4",
-          "catalog_id": "openai:gpt-5.4",
-          "provider_model": "gpt-5.4",
-          "display_name": "GPT-5.4",
-          "provider_display_name": "OpenAI",
-          "description": "GPT-5.4 is our frontier model for complex professional work. Learn more in our GPT-5.4 model guidance . Reasoning.effort supports: none (default), low, medium, high and xhigh.",
-          "status": "active",
-          "listing": {
-            "order": 48,
-            "featured": false,
-            "snapshot": false
-          },
-          "limits": {
-            "context_window": 1050000,
-            "max_input_tokens": null,
-            "max_output_tokens": 128000
-          },
-          "capabilities": {
-            "modalities": {
-              "input": [
-                "",
-                ""
-              ],
-              "output": [
-                "text"
-              ]
-            },
-            "tools": {
-              "supported": true,
-              "parallel": null
-            },
-            "structured_outputs": true,
-            "temperature": true,
-            "prompt_caching": true,
-            "reasoning": {
-              "supported": true,
-              "efforts": [
-                {
-                  "value": "none",
-                  "description": "Answers without reasoning first"
-                },
-                {
-                  "value": "low",
-                  "description": "Fast responses with lighter reasoning"
-                },
-                {
-                  "value": "medium",
-                  "description": "Balances speed and reasoning depth"
-                },
-                {
-                  "value": "high",
-                  "description": "Greater reasoning depth"
-                },
-                {
-                  "value": "xhigh",
-                  "description": "Reasons longer than high"
-                }
-              ],
-              "default_effort": "medium",
-              "summary": {
-                "output_supported": true,
-                "request_parameter_supported": true,
-                "values": [
-                  "auto",
-                  "concise",
-                  "detailed"
-                ],
-                "default": "auto"
-              },
-              "continuation": {
-                "request_include": [
-                  "reasoning.encrypted_content"
-                ],
-                "required": true
-              }
-            },
-            "verbosity": {
-              "supported": true,
-              "values": [
-                "low",
-                "medium",
-                "high"
-              ],
-              "default": "medium"
-            }
-          },
-          "pricing": {
-            "input": "",
-            "output": "15",
-            "cache_read_input": "0.25",
-            "cache_write_input": "0",
-            "cache_write_input_5m": "0",
-            "cache_write_input_1h": "0"
-          }
-        }
-      },
-      {
-        "id": "gpt-5.4-pro",
-        "object": "model",
-        "created": 1772659601,
-        "owned_by": "openai",
-        "display_name": "GPT-5.4 Pro",
-        "context_length": 1050000,
-        "router": {
-          "schema_version": 1,
-          "request_name": "gpt-5.4-pro",
-          "catalog_id": "openai:gpt-5.4-pro",
-          "provider_model": "gpt-5.4-pro",
-          "display_name": "GPT-5.4 Pro",
-          "provider_display_name": "OpenAI",
-          "description": "GPT-5.4 Pro uses more compute to think harder and provide consistently better answers.",
-          "status": "active",
-          "listing": {
-            "order": 50,
-            "featured": false,
-            "snapshot": false
-          },
-          "limits": {
-            "context_window": 1050000,
-            "max_input_tokens": null,
-            "max_output_tokens": 128000
-          },
-          "capabilities": {
-            "modalities": {
-              "input": [
-                "",
-                ""
-              ],
-              "output": [
-                "text"
-              ]
-            },
-            "tools": {
-              "supported": true,
-              "parallel": null
-            },
-            "structured_outputs": false,
-            "temperature": false,
-            "prompt_caching": false,
-            "reasoning": {
-              "supported": true,
-              "efforts": [
-                {
-                  "value": "medium",
-                  "description": "Balances speed and reasoning depth"
-                },
-                {
-                  "value": "high",
-                  "description": "Greater reasoning depth"
-                },
-                {
-                  "value": "xhigh",
-                  "description": "Reasons longer than high"
-                }
-              ],
-              "default_effort": "medium",
-              "summary": {
-                "output_supported": true,
-                "request_parameter_supported": true,
-                "values": [
-                  "auto",
-                  "concise",
-                  "detailed"
-                ],
-                "default": "auto"
-              },
-              "continuation": {
-                "request_include": [
-                  "reasoning.encrypted_content"
-                ],
-                "required": true
-              }
-            },
-            "verbosity": {
-              "supported": true,
-              "values": [
-                "low",
-                "medium",
-                "high"
-              ],
-              "default": "medium"
-            }
-          },
-          "pricing": {
-            "input": "",
-            "output": "180",
-            "cache_read_input": "0",
-            "cache_write_input": "0",
-            "cache_write_input_5m": "0",
-            "cache_write_input_1h": "0"
-          }
-        }
-      },
-      {
-        "id": "claude-sonnet-4-6",
-        "object": "model",
-        "created": 1771286400,
-        "owned_by": "anthropic",
-        "display_name": "Claude Sonnet 4.6",
-        "context_length": 1000000,
-        "router": {
-          "schema_version": 1,
-          "request_name": "claude-sonnet-4-6",
-          "catalog_id": "anthropic:claude-sonnet-4-6",
-          "provider_model": "claude-sonnet-4-6",
-          "display_name": "Claude Sonnet 4.6",
-          "provider_display_name": "Anthropic",
-          "aliases": [
-            "sonnet-4.6"
-          ],
-          "status": "active",
-          "listing": {
-            "order": 52,
-            "featured": false,
-            "snapshot": false
-          },
-          "limits": {
-            "context_window": 1000000,
-            "max_input_tokens": 1000000,
-            "max_output_tokens": 128000
-          },
-          "capabilities": {
-            "modalities": {
-              "input": [
-                "",
-                ""
-              ],
-              "output": [
-                "text"
-              ]
-            },
-            "tools": {
-              "supported": true,
-              "parallel": null
-            },
-            "structured_outputs": true,
-            "temperature": true,
-            "prompt_caching": true,
-            "reasoning": {
-              "supported": true,
-              "efforts": [
-                {
-                  "value": "none",
-                  "description": "Answers without reasoning first"
-                },
-                {
-                  "value": "minimal",
-                  "description": "Reasons briefly before answering"
-                },
-                {
-                  "value": "low",
-                  "description": "Fast responses with lighter reasoning"
-                },
-                {
-                  "value": "medium",
-                  "description": "Balances speed and reasoning depth"
-                },
-                {
-                  "value": "high",
-                  "description": "Greater reasoning depth"
-                },
-                {
-                  "value": "xhigh",
-                  "description": "Reasons longer than high"
-                },
-                {
-                  "value": "max",
-                  "description": "Reasons as long as the model allows"
-                }
-              ],
-              "default_effort": "none",
-              "summary": {
-                "output_supported": true,
-                "request_parameter_supported": false,
-                "values": []
-              },
-              "continuation": {
-                "request_include": [],
-                "required": false
-              }
-            },
-            "verbosity": {
-              "supported": false,
-              "values": []
-            }
-          },
-          "pricing": {
-            "input": "",
-            "output": "15",
-            "cache_read_input": "0.3",
-            "cache_write_input": "0",
-            "cache_write_input_5m": "3.75",
-            "cache_write_input_1h": "6"
-          }
-        }
-      },
-      {
-        "id": "gpt-5.3-codex",
-        "object": "model",
-        "created": 1770537915,
-        "owned_by": "openai",
-        "display_name": "GPT-5.3-Codex",
-        "context_length": 400000,
-        "router": {
-          "schema_version": 1,
-          "request_name": "gpt-5.3-codex",
-          "catalog_id": "openai:gpt-5.3-codex",
-          "provider_model": "gpt-5.3-codex",
-          "display_name": "GPT-5.3-Codex",
-          "provider_display_name": "OpenAI",
-          "description": "GPT-5.3-Codex is optimized for agentic coding tasks in Codex or similar environments. GPT-5.3-Codex supports low , medium , high , and xhigh reasoning effort settings. If you want to learn more about prompting GPT-5.3-Codex, refer to our dedicated guide .",
-          "status": "active",
-          "listing": {
-            "order": 54,
-            "featured": false,
-            "snapshot": false
-          },
-          "limits": {
-            "context_window": 400000,
-            "max_input_tokens": null,
-            "max_output_tokens": 128000
-          },
-          "capabilities": {
-            "modalities": {
-              "input": [
-                "",
-                ""
-              ],
-              "output": [
-                "text"
-              ]
-            },
-            "tools": {
-              "supported": true,
-              "parallel": null
-            },
-            "structured_outputs": true,
-            "temperature": true,
-            "prompt_caching": true,
-            "reasoning": {
-              "supported": true,
-              "efforts": [
-                {
-                  "value": "none",
-                  "description": "Answers without reasoning first"
-                },
-                {
-                  "value": "low",
-                  "description": "Fast responses with lighter reasoning"
-                },
-                {
-                  "value": "medium",
-                  "description": "Balances speed and reasoning depth"
-                },
-                {
-                  "value": "high",
-                  "description": "Greater reasoning depth"
-                },
-                {
-                  "value": "xhigh",
-                  "description": "Reasons longer than high"
-                }
-              ],
-              "default_effort": "medium",
-              "summary": {
-                "output_supported": true,
-                "request_parameter_supported": true,
-                "values": [
-                  "auto",
-                  "concise",
-                  "detailed"
-                ],
-                "default": "auto"
-              },
-              "continuation": {
-                "request_include": [
-                  "reasoning.encrypted_content"
-                ],
-                "required": true
-              }
-            },
-            "verbosity": {
-              "supported": true,
-              "values": [
-                "low",
-                "medium",
-                "high"
-              ],
-              "default": "medium"
-            }
-          },
-          "pricing": {
-            "input": "",
-            "output": "14",
-            "cache_read_input": "0.175",
-            "cache_write_input": "0",
-            "cache_write_input_5m": "0",
-            "cache_write_input_1h": "0"
-          }
-        }
-      },
-      {
-        "id": "claude-opus-4-6",
-        "object": "model",
-        "created": 1770163200,
-        "owned_by": "anthropic",
-        "display_name": "Claude Opus 4.6",
-        "context_length": 1000000,
-        "router": {
-          "schema_version": 1,
-          "request_name": "claude-opus-4-6",
-          "catalog_id": "anthropic:claude-opus-4-6",
-          "provider_model": "claude-opus-4-6",
-          "display_name": "Claude Opus 4.6",
-          "provider_display_name": "Anthropic",
-          "status": "active",
-          "listing": {
-            "order": 55,
-            "featured": false,
-            "snapshot": false
-          },
-          "limits": {
-            "context_window": 1000000,
-            "max_input_tokens": 1000000,
-            "max_output_tokens": 128000
-          },
-          "capabilities": {
-            "modalities": {
-              "input": [
-                "",
-                ""
-              ],
-              "output": [
-                "text"
-              ]
-            },
-            "tools": {
-              "supported": true,
-              "parallel": null
-            },
-            "structured_outputs": true,
-            "temperature": true,
-            "prompt_caching": true,
-            "reasoning": {
-              "supported": true,
-              "efforts": [
-                {
-                  "value": "none",
-                  "description": "Answers without reasoning first"
-                },
-                {
-                  "value": "minimal",
-                  "description": "Reasons briefly before answering"
-                },
-                {
-                  "value": "low",
-                  "description": "Fast responses with lighter reasoning"
-                },
-                {
-                  "value": "medium",
-                  "description": "Balances speed and reasoning depth"
-                },
-                {
-                  "value": "high",
-                  "description": "Greater reasoning depth"
-                },
-                {
-                  "value": "xhigh",
-                  "description": "Reasons longer than high"
-                },
-                {
-                  "value": "max",
-                  "description": "Reasons as long as the model allows"
-                }
-              ],
-              "default_effort": "none",
-              "summary": {
-                "output_supported": true,
-                "request_parameter_supported": false,
-                "values": []
-              },
-              "continuation": {
-                "request_include": [],
-                "required": false
-              }
-            },
-            "verbosity": {
-              "supported": false,
-              "values": []
-            }
-          },
-          "pricing": {
-            "input": "",
-            "output": "25",
-            "cache_read_input": "0.5",
-            "cache_write_input": "0",
-            "cache_write_input_5m": "6.25",
-            "cache_write_input_1h": "10"
-          }
-        }
-      },
-      {
-        "id": "gpt-5.2-pro",
-        "object": "model",
-        "created": 1765343983,
-        "owned_by": "openai",
-        "display_name": "GPT-5.2 Pro",
-        "context_length": 400000,
-        "router": {
-          "schema_version": 1,
-          "request_name": "gpt-5.2-pro",
-          "catalog_id": "openai:gpt-5.2-pro",
-          "provider_model": "gpt-5.2-pro",
-          "display_name": "GPT-5.2 Pro",
-          "provider_display_name": "OpenAI",
-          "description": "GPT-5.2 Pro is our previous pro model for complex professional work. We recommend using GPT-5.5 Pro for the latest pro model. GPT-5.2 Pro is available in the Responses API only to enable support for multi-turn model interactions before responding to API requests, and other advanced API features in the future. Since GPT-5.2 Pro is designed to tackle tough problems, some requests may take several minutes to finish. To avoid timeouts, try using background mode. GPT-5.2 Pro supports reasoning.effort: medium, high, xhigh.",
-          "status": "active",
-          "listing": {
-            "order": 56,
-            "featured": false,
-            "snapshot": false
-          },
-          "limits": {
-            "context_window": 400000,
-            "max_input_tokens": null,
-            "max_output_tokens": 128000
-          },
-          "capabilities": {
-            "modalities": {
-              "input": [
-                "",
-                ""
-              ],
-              "output": [
-                "text"
-              ]
-            },
-            "tools": {
-              "supported": true,
-              "parallel": null
-            },
-            "structured_outputs": false,
-            "temperature": false,
-            "prompt_caching": false,
-            "reasoning": {
-              "supported": true,
-              "efforts": [
-                {
-                  "value": "medium",
-                  "description": "Balances speed and reasoning depth"
-                },
-                {
-                  "value": "high",
-                  "description": "Greater reasoning depth"
-                },
-                {
-                  "value": "xhigh",
-                  "description": "Reasons longer than high"
-                }
-              ],
-              "default_effort": "medium",
-              "summary": {
-                "output_supported": true,
-                "request_parameter_supported": true,
-                "values": [
-                  "auto",
-                  "concise",
-                  "detailed"
-                ],
-                "default": "auto"
-              },
-              "continuation": {
-                "request_include": [
-                  "reasoning.encrypted_content"
-                ],
-                "required": true
-              }
-            },
-            "verbosity": {
-              "supported": true,
-              "values": [
-                "low",
-                "medium",
-                "high"
-              ],
-              "default": "medium"
-            }
-          },
-          "pricing": {
-            "input": "",
-            "output": "168",
-            "cache_read_input": "0",
-            "cache_write_input": "0",
-            "cache_write_input_5m": "0",
-            "cache_write_input_1h": "0"
-          }
-        }
-      },
-      {
-        "id": "gpt-5.2",
-        "object": "model",
-        "created": 1765313051,
-        "owned_by": "openai",
-        "display_name": "GPT-5.2",
-        "context_length": 400000,
-        "router": {
-          "schema_version": 1,
-          "request_name": "gpt-5.2",
-          "catalog_id": "openai:gpt-5.2",
-          "provider_model": "gpt-5.2",
-          "display_name": "GPT-5.2",
-          "provider_display_name": "OpenAI",
-          "description": "GPT-5.2 is our previous frontier model for complex professional work. We recommend using the latest GPT-5.6 . Learn more on the Model guidance page. Reasoning.effort supports: none (default), low, medium, high and xhigh.",
           "status": "active",
           "listing": {
             "order": 58,
@@ -3816,7 +3642,1035 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.2",
+            "output": "1.25",
+            "cache_read_input": "0.02",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "grok-4.20-0309-reasoning",
+        "object": "model",
+        "created": 1773014400,
+        "owned_by": "xai",
+        "display_name": "Grok 4.20",
+        "context_length": 1000000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "grok-4.20-0309-reasoning",
+          "catalog_id": "xai:grok-4.20-0309-reasoning",
+          "provider_model": "grok-4.20-0309-reasoning",
+          "display_name": "Grok 4.20",
+          "provider_display_name": "xAI",
+          "description": "Grok 4.20 is a high-performance model with industry-leading speed and agentic tool calling capabilities. It combines the lowest hallucination rate on the market with strict prompt adherence, delivering consistently precise and truthful responses.",
+          "status": "active",
+          "listing": {
+            "order": 60,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1000000,
+            "max_input_tokens": null,
+            "max_output_tokens": 1000000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [],
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": false,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": false
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "1.25",
+            "output": "2.5",
+            "cache_read_input": "0.2",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "grok-4.20-0309-non-reasoning",
+        "object": "model",
+        "created": 1773014400,
+        "owned_by": "xai",
+        "display_name": "Grok 4.20 (Non-Reasoning)",
+        "context_length": 1000000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "grok-4.20-0309-non-reasoning",
+          "catalog_id": "xai:grok-4.20-0309-non-reasoning",
+          "provider_model": "grok-4.20-0309-non-reasoning",
+          "display_name": "Grok 4.20 (Non-Reasoning)",
+          "provider_display_name": "xAI",
+          "description": "Grok 4.20 is a high-performance model with industry-leading speed and agentic tool calling capabilities. It combines the lowest hallucination rate on the market with strict prompt adherence, delivering consistently precise and truthful responses.",
+          "status": "active",
+          "listing": {
+            "order": 61,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1000000,
+            "max_input_tokens": null,
+            "max_output_tokens": 1000000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": false,
+              "efforts": [],
+              "summary": {
+                "output_supported": null,
+                "request_parameter_supported": null,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": null
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "1.25",
+            "output": "2.5",
+            "cache_read_input": "0.2",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "grok-4.20-multi-agent-0309",
+        "object": "model",
+        "created": 1773014400,
+        "owned_by": "xai",
+        "display_name": "Grok 4.20 Multi-Agent Beta",
+        "context_length": 1000000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "grok-4.20-multi-agent-0309",
+          "catalog_id": "xai:grok-4.20-multi-agent-0309",
+          "provider_model": "grok-4.20-multi-agent-0309",
+          "display_name": "Grok 4.20 Multi-Agent Beta",
+          "provider_display_name": "xAI",
+          "description": "Multiple agents collaborate in parallel to perform deep research tasks.",
+          "status": "active",
+          "listing": {
+            "order": 62,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1000000,
+            "max_input_tokens": null,
+            "max_output_tokens": 1000000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "none",
+                  "description": "Answers without reasoning first"
+                },
+                {
+                  "value": "minimal",
+                  "description": "Reasons briefly before answering"
+                },
+                {
+                  "value": "low",
+                  "description": "Fast responses with lighter reasoning"
+                },
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                },
+                {
+                  "value": "max",
+                  "description": "Reasons as long as the model allows"
+                }
+              ],
+              "default_effort": "none",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": false,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": false
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "1.25",
+            "output": "2.5",
+            "cache_read_input": "0.2",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "gpt-5.4",
+        "object": "model",
+        "created": 1772691852,
+        "owned_by": "openai",
+        "display_name": "GPT-5.4",
+        "context_length": 1050000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "gpt-5.4",
+          "catalog_id": "openai:gpt-5.4",
+          "provider_model": "gpt-5.4",
+          "display_name": "GPT-5.4",
+          "provider_display_name": "OpenAI",
+          "description": "GPT-5.4 is a flagship model for complex professional work. Learn more in our GPT-5.4 model guidance . Reasoning.effort supports: none (default), low, medium, high and xhigh.",
+          "status": "active",
+          "listing": {
+            "order": 63,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1050000,
+            "max_input_tokens": null,
+            "max_output_tokens": 128000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "none",
+                  "description": "Answers without reasoning first"
+                },
+                {
+                  "value": "low",
+                  "description": "Fast responses with lighter reasoning"
+                },
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                }
+              ],
+              "default_effort": "medium",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": true,
+                "values": [
+                  "auto",
+                  "concise",
+                  "detailed"
+                ],
+                "default": "auto"
+              },
+              "continuation": {
+                "request_include": [
+                  "reasoning.encrypted_content"
+                ],
+                "required": true
+              }
+            },
+            "verbosity": {
+              "supported": true,
+              "values": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "default": "medium"
+            }
+          },
+          "pricing": {
+            "input": "2.5",
+            "output": "15",
+            "cache_read_input": "0.25",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "gpt-5.4-pro",
+        "object": "model",
+        "created": 1772659601,
+        "owned_by": "openai",
+        "display_name": "GPT-5.4 Pro",
+        "context_length": 1050000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "gpt-5.4-pro",
+          "catalog_id": "openai:gpt-5.4-pro",
+          "provider_model": "gpt-5.4-pro",
+          "display_name": "GPT-5.4 Pro",
+          "provider_display_name": "OpenAI",
+          "description": "GPT-5.4 Pro uses more compute to think harder and provide consistently better answers.",
+          "status": "active",
+          "listing": {
+            "order": 65,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1050000,
+            "max_input_tokens": null,
+            "max_output_tokens": 128000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": false,
+            "temperature": false,
+            "prompt_caching": false,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                }
+              ],
+              "default_effort": "medium",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": true,
+                "values": [
+                  "auto",
+                  "concise",
+                  "detailed"
+                ],
+                "default": "auto"
+              },
+              "continuation": {
+                "request_include": [
+                  "reasoning.encrypted_content"
+                ],
+                "required": true
+              }
+            },
+            "verbosity": {
+              "supported": true,
+              "values": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "default": "medium"
+            }
+          },
+          "pricing": {
+            "input": "30",
+            "output": "180",
+            "cache_read_input": "0",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "claude-sonnet-4-6",
+        "object": "model",
+        "created": 1771286400,
+        "owned_by": "anthropic",
+        "display_name": "Claude Sonnet 4.6",
+        "context_length": 1000000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "claude-sonnet-4-6",
+          "catalog_id": "anthropic:claude-sonnet-4-6",
+          "provider_model": "claude-sonnet-4-6",
+          "display_name": "Claude Sonnet 4.6",
+          "provider_display_name": "Anthropic",
+          "aliases": [
+            "sonnet-4.6"
+          ],
+          "status": "active",
+          "listing": {
+            "order": 67,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1000000,
+            "max_input_tokens": 1000000,
+            "max_output_tokens": 128000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "none",
+                  "description": "Answers without reasoning first"
+                },
+                {
+                  "value": "minimal",
+                  "description": "Reasons briefly before answering"
+                },
+                {
+                  "value": "low",
+                  "description": "Fast responses with lighter reasoning"
+                },
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                },
+                {
+                  "value": "max",
+                  "description": "Reasons as long as the model allows"
+                }
+              ],
+              "default_effort": "none",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": false,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": false
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "3",
+            "output": "15",
+            "cache_read_input": "0.3",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "3.75",
+            "cache_write_input_1h": "6"
+          }
+        }
+      },
+      {
+        "id": "gpt-5.3-codex",
+        "object": "model",
+        "created": 1770537915,
+        "owned_by": "openai",
+        "display_name": "GPT-5.3-Codex",
+        "context_length": 400000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "gpt-5.3-codex",
+          "catalog_id": "openai:gpt-5.3-codex",
+          "provider_model": "gpt-5.3-codex",
+          "display_name": "GPT-5.3-Codex",
+          "provider_display_name": "OpenAI",
+          "description": "GPT-5.3-Codex is optimized for agentic coding tasks in Codex or similar environments. GPT-5.3-Codex supports low , medium , high , and xhigh reasoning effort settings. If you want to learn more about prompting GPT-5.3-Codex, refer to our dedicated guide .",
+          "status": "active",
+          "listing": {
+            "order": 69,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 400000,
+            "max_input_tokens": null,
+            "max_output_tokens": 128000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "none",
+                  "description": "Answers without reasoning first"
+                },
+                {
+                  "value": "low",
+                  "description": "Fast responses with lighter reasoning"
+                },
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                }
+              ],
+              "default_effort": "medium",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": true,
+                "values": [
+                  "auto",
+                  "concise",
+                  "detailed"
+                ],
+                "default": "auto"
+              },
+              "continuation": {
+                "request_include": [
+                  "reasoning.encrypted_content"
+                ],
+                "required": true
+              }
+            },
+            "verbosity": {
+              "supported": true,
+              "values": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "default": "medium"
+            }
+          },
+          "pricing": {
+            "input": "1.75",
+            "output": "14",
+            "cache_read_input": "0.175",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "claude-opus-4-6",
+        "object": "model",
+        "created": 1770163200,
+        "owned_by": "anthropic",
+        "display_name": "Claude Opus 4.6",
+        "context_length": 1000000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "claude-opus-4-6",
+          "catalog_id": "anthropic:claude-opus-4-6",
+          "provider_model": "claude-opus-4-6",
+          "display_name": "Claude Opus 4.6",
+          "provider_display_name": "Anthropic",
+          "status": "active",
+          "listing": {
+            "order": 70,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 1000000,
+            "max_input_tokens": 1000000,
+            "max_output_tokens": 128000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "none",
+                  "description": "Answers without reasoning first"
+                },
+                {
+                  "value": "minimal",
+                  "description": "Reasons briefly before answering"
+                },
+                {
+                  "value": "low",
+                  "description": "Fast responses with lighter reasoning"
+                },
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                },
+                {
+                  "value": "max",
+                  "description": "Reasons as long as the model allows"
+                }
+              ],
+              "default_effort": "none",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": false,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": false
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "5",
+            "output": "25",
+            "cache_read_input": "0.5",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "6.25",
+            "cache_write_input_1h": "10"
+          }
+        }
+      },
+      {
+        "id": "glm-4p7",
+        "object": "model",
+        "created": 1766448000,
+        "owned_by": "baseten",
+        "display_name": "GLM 4.7 (Baseten)",
+        "context_length": 200000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "glm-4p7",
+          "catalog_id": "baseten:zai-org/GLM-4.7",
+          "provider_model": "zai-org/GLM-4.7",
+          "display_name": "GLM 4.7 (Baseten)",
+          "provider_display_name": "Baseten",
+          "aliases": [
+            "zai-org/GLM-4.7"
+          ],
+          "description": "GLM 4.7 served through Baseten Model APIs.",
+          "status": "active",
+          "listing": {
+            "order": 71,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 200000,
+            "max_input_tokens": null,
+            "max_output_tokens": 200000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": false,
+            "reasoning": {
+              "supported": false,
+              "efforts": [],
+              "summary": {
+                "output_supported": null,
+                "request_parameter_supported": null,
+                "values": []
+              },
+              "continuation": {
+                "request_include": [],
+                "required": null
+              }
+            },
+            "verbosity": {
+              "supported": false,
+              "values": []
+            }
+          },
+          "pricing": {
+            "input": "0.6",
+            "output": "2.2",
+            "cache_read_input": "0.6",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "gpt-5.2-pro",
+        "object": "model",
+        "created": 1765343983,
+        "owned_by": "openai",
+        "display_name": "GPT-5.2 Pro",
+        "context_length": 400000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "gpt-5.2-pro",
+          "catalog_id": "openai:gpt-5.2-pro",
+          "provider_model": "gpt-5.2-pro",
+          "display_name": "GPT-5.2 Pro",
+          "provider_display_name": "OpenAI",
+          "description": "GPT-5.2 Pro is our previous pro model for complex professional work. We recommend using GPT-5.5 Pro for the latest pro model. GPT-5.2 Pro is available in the Responses API only to enable support for multi-turn model interactions before responding to API requests, and other advanced API features in the future. Since GPT-5.2 Pro is designed to tackle tough problems, some requests may take several minutes to finish. To avoid timeouts, try using background mode. GPT-5.2 Pro supports reasoning.effort: medium, high, xhigh.",
+          "status": "active",
+          "listing": {
+            "order": 72,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 400000,
+            "max_input_tokens": null,
+            "max_output_tokens": 128000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": false,
+            "temperature": false,
+            "prompt_caching": false,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                }
+              ],
+              "default_effort": "medium",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": true,
+                "values": [
+                  "auto",
+                  "concise",
+                  "detailed"
+                ],
+                "default": "auto"
+              },
+              "continuation": {
+                "request_include": [
+                  "reasoning.encrypted_content"
+                ],
+                "required": true
+              }
+            },
+            "verbosity": {
+              "supported": true,
+              "values": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "default": "medium"
+            }
+          },
+          "pricing": {
+            "input": "21",
+            "output": "168",
+            "cache_read_input": "0",
+            "cache_write_input": "0",
+            "cache_write_input_5m": "0",
+            "cache_write_input_1h": "0"
+          }
+        }
+      },
+      {
+        "id": "gpt-5.2",
+        "object": "model",
+        "created": 1765313051,
+        "owned_by": "openai",
+        "display_name": "GPT-5.2",
+        "context_length": 400000,
+        "router": {
+          "schema_version": 1,
+          "request_name": "gpt-5.2",
+          "catalog_id": "openai:gpt-5.2",
+          "provider_model": "gpt-5.2",
+          "display_name": "GPT-5.2",
+          "provider_display_name": "OpenAI",
+          "description": "GPT-5.2 is our previous flagship model for complex professional work. We recommend using the latest GPT-6 Astra . Learn more on the Model guidance page. Reasoning.effort supports: none (default), low, medium, high and xhigh.",
+          "status": "active",
+          "listing": {
+            "order": 74,
+            "featured": false,
+            "snapshot": false
+          },
+          "limits": {
+            "context_window": 400000,
+            "max_input_tokens": null,
+            "max_output_tokens": 128000
+          },
+          "capabilities": {
+            "modalities": {
+              "input": [
+                "",
+                ""
+              ],
+              "output": [
+                "text"
+              ]
+            },
+            "tools": {
+              "supported": true,
+              "parallel": null
+            },
+            "structured_outputs": true,
+            "temperature": true,
+            "prompt_caching": true,
+            "reasoning": {
+              "supported": true,
+              "efforts": [
+                {
+                  "value": "none",
+                  "description": "Answers without reasoning first"
+                },
+                {
+                  "value": "low",
+                  "description": "Fast responses with lighter reasoning"
+                },
+                {
+                  "value": "medium",
+                  "description": "Balances speed and reasoning depth"
+                },
+                {
+                  "value": "high",
+                  "description": "Greater reasoning depth"
+                },
+                {
+                  "value": "xhigh",
+                  "description": "Reasons longer than high"
+                }
+              ],
+              "default_effort": "medium",
+              "summary": {
+                "output_supported": true,
+                "request_parameter_supported": true,
+                "values": [
+                  "auto",
+                  "concise",
+                  "detailed"
+                ],
+                "default": "auto"
+              },
+              "continuation": {
+                "request_include": [
+                  "reasoning.encrypted_content"
+                ],
+                "required": true
+              }
+            },
+            "verbosity": {
+              "supported": true,
+              "values": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "default": "medium"
+            }
+          },
+          "pricing": {
+            "input": "1.75",
             "output": "14",
             "cache_read_input": "0.175",
             "cache_write_input": "0",
@@ -3842,7 +4696,7 @@
           "description": "GPT-5.1 is our flagship model for coding and agentic tasks with configurable reasoning and non-reasoning effort. Learn more in our GPT-5.1 model guidance . Reasoning.effort supports: none (default), low, medium, and high.",
           "status": "active",
           "listing": {
-            "order": 61,
+            "order": 77,
             "featured": false,
             "snapshot": false
           },
@@ -3917,7 +4771,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "1.25",
             "output": "10",
             "cache_read_input": "0.125",
             "cache_write_input": "0",
@@ -3943,7 +4797,7 @@
           "description": "GPT-5 Pro uses more compute to think harder and provide consistently better answers.",
           "status": "active",
           "listing": {
-            "order": 65,
+            "order": 81,
             "featured": false,
             "snapshot": false
           },
@@ -4006,7 +4860,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "15",
             "output": "120",
             "cache_read_input": "0",
             "cache_write_input": "0",
@@ -4032,7 +4886,7 @@
           "description": "GPT-5 Nano is our fastest, cheapest version of GPT-5. It's great for summarization and classification tasks. For most new speed- and cost-sensitive workloads, we recommend starting with GPT-5.6 Luna . Learn more in our Model guidance page.",
           "status": "active",
           "listing": {
-            "order": 69,
+            "order": 85,
             "featured": false,
             "snapshot": false
           },
@@ -4107,7 +4961,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.05",
             "output": "0.4",
             "cache_read_input": "0.005",
             "cache_write_input": "0",
@@ -4121,19 +4975,19 @@
         "object": "model",
         "created": 1754425928,
         "owned_by": "openai",
-        "display_name": "GPT-5 mini",
+        "display_name": "GPT-5 Mini",
         "context_length": 400000,
         "router": {
           "schema_version": 1,
           "request_name": "gpt-5-mini",
           "catalog_id": "openai:gpt-5-mini",
           "provider_model": "gpt-5-mini",
-          "display_name": "GPT-5 mini",
+          "display_name": "GPT-5 Mini",
           "provider_display_name": "OpenAI",
-          "description": "GPT-5 mini is a faster, more cost-efficient version of GPT-5. It's great for well-defined tasks and precise prompts. For most new low-latency, high-volume workloads, we recommend starting with GPT-5.6 Terra .",
+          "description": "GPT-5 Mini is a faster, more cost-efficient version of GPT-5. It's great for well-defined tasks and precise prompts. For most new low-latency, high-volume workloads, we recommend starting with GPT-5.6 Terra .",
           "status": "active",
           "listing": {
-            "order": 71,
+            "order": 87,
             "featured": false,
             "snapshot": false
           },
@@ -4208,7 +5062,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.25",
             "output": "2",
             "cache_read_input": "0.025",
             "cache_write_input": "0",
@@ -4231,10 +5085,10 @@
           "provider_model": "gpt-5",
           "display_name": "GPT-5",
           "provider_display_name": "OpenAI",
-          "description": "GPT-5 is our previous model for coding, reasoning, and agentic tasks across domains. We recommend using the latest GPT-5.6 . Learn more on the Model guidance page. Reasoning.effort supports: minimal, low, medium, and high.",
+          "description": "GPT-5 is our previous model for coding, reasoning, and agentic tasks across domains. We recommend using the latest GPT-6 Astra . Learn more on the Model guidance page. Reasoning.effort supports: minimal, low, medium, and high.",
           "status": "active",
           "listing": {
-            "order": 73,
+            "order": 89,
             "featured": false,
             "snapshot": false
           },
@@ -4309,7 +5163,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "1.25",
             "output": "10",
             "cache_read_input": "0.125",
             "cache_write_input": "0",
@@ -4319,7 +5173,7 @@
         }
       },
       {
-        "id": "accounts/fireworks/models/gpt-oss-120b",
+        "id": "gpt-oss-120b",
         "object": "model",
         "created": 1754265600,
         "owned_by": "fireworks",
@@ -4327,15 +5181,19 @@
         "context_length": 131072,
         "router": {
           "schema_version": 1,
-          "request_name": "accounts/fireworks/models/gpt-oss-120b",
+          "request_name": "gpt-oss-120b",
           "catalog_id": "fireworks:accounts/fireworks/models/gpt-oss-120b",
           "provider_model": "accounts/fireworks/models/gpt-oss-120b",
           "display_name": "OpenAI gpt-oss-120b",
           "provider_display_name": "Fireworks",
+          "aliases": [
+            "openai/gpt-oss-120b",
+            "accounts/fireworks/models/gpt-oss-120b"
+          ],
           "description": "Welcome to the gpt-oss series, OpenAI's open-weight models designed for powerful reasoning, agentic tasks, and versatile developer use cases. gpt-oss-120b is used for production, general purpose, high reasoning use-cases that fits into a single H100 GPU.",
           "status": "active",
           "listing": {
-            "order": 74,
+            "order": 91,
             "featured": false,
             "snapshot": false
           },
@@ -4401,7 +5259,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.15",
             "output": "0.6",
             "cache_read_input": "0.015",
             "cache_write_input": "0",
@@ -4427,7 +5285,7 @@
           "description": "The o-series of models are trained with reinforcement learning to think before they answer and perform complex reasoning. The o3-pro model uses more compute to think harder and provide consistently better answers.",
           "status": "active",
           "listing": {
-            "order": 81,
+            "order": 98,
             "featured": false,
             "snapshot": false
           },
@@ -4493,7 +5351,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "20",
             "output": "80",
             "cache_read_input": "0",
             "cache_write_input": "0",
@@ -4519,7 +5377,7 @@
           "description": "GPT-4.1 nano excels at instruction following and tool calling. It features a 1M token context window, and low latency without a reasoning step.",
           "status": "deprecated",
           "listing": {
-            "order": 82,
+            "order": 99,
             "featured": false,
             "snapshot": false
           },
@@ -4564,7 +5422,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.1",
             "output": "0.4",
             "cache_read_input": "0.025",
             "cache_write_input": "0",
@@ -4578,19 +5436,19 @@
         "object": "model",
         "created": 1744318173,
         "owned_by": "openai",
-        "display_name": "GPT-4.1 mini",
+        "display_name": "GPT-4.1 Mini",
         "context_length": 1047576,
         "router": {
           "schema_version": 1,
           "request_name": "gpt-4.1-mini",
           "catalog_id": "openai:gpt-4.1-mini",
           "provider_model": "gpt-4.1-mini",
-          "display_name": "GPT-4.1 mini",
+          "display_name": "GPT-4.1 Mini",
           "provider_display_name": "OpenAI",
-          "description": "GPT-4.1 mini excels at instruction following and tool calling. It features a 1M token context window, and low latency without a reasoning step.",
+          "description": "GPT-4.1 Mini excels at instruction following and tool calling. It features a 1M token context window, and low latency without a reasoning step.",
           "status": "active",
           "listing": {
-            "order": 84,
+            "order": 101,
             "featured": false,
             "snapshot": false
           },
@@ -4635,7 +5493,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.4",
             "output": "1.6",
             "cache_read_input": "0.1",
             "cache_write_input": "0",
@@ -4661,7 +5519,7 @@
           "description": "GPT-4.1 excels at instruction following and tool calling, with broad knowledge across domains. It features a 1M token context window, and low latency without a reasoning step.",
           "status": "active",
           "listing": {
-            "order": 86,
+            "order": 103,
             "featured": false,
             "snapshot": false
           },
@@ -4706,7 +5564,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "2",
             "output": "8",
             "cache_read_input": "0.5",
             "cache_write_input": "0",
@@ -4729,10 +5587,10 @@
           "provider_model": "o4-mini",
           "display_name": "o4-mini",
           "provider_display_name": "OpenAI",
-          "description": "o4-mini is our latest small o-series model. It's optimized for fast, effective reasoning with exceptionally efficient performance in coding and visual tasks. It's succeeded by GPT-5 mini .",
+          "description": "o4-mini is our latest small o-series model. It's optimized for fast, effective reasoning with exceptionally efficient performance in coding and visual tasks. It's succeeded by GPT-5 Mini .",
           "status": "deprecated",
           "listing": {
-            "order": 88,
+            "order": 105,
             "featured": false,
             "snapshot": false
           },
@@ -4798,7 +5656,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "1.1",
             "output": "4.4",
             "cache_read_input": "0.275",
             "cache_write_input": "0",
@@ -4824,7 +5682,7 @@
           "description": "o3 is a well-rounded and powerful model across domains. It sets a new standard for math, science, coding, and visual reasoning tasks. It also excels at technical writing and instruction-following. Use it to think through multi-step problems that involve analysis across text, code, and images.",
           "status": "active",
           "listing": {
-            "order": 89,
+            "order": 106,
             "featured": false,
             "snapshot": false
           },
@@ -4890,7 +5748,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "2",
             "output": "8",
             "cache_read_input": "0.5",
             "cache_write_input": "0",
@@ -4916,7 +5774,7 @@
           "description": "o3-mini is our newest small reasoning model, providing high intelligence at the same cost and latency targets of o1-mini. o3-mini supports key developer features, like Structured Outputs, function calling, and Batch API.",
           "status": "deprecated",
           "listing": {
-            "order": 94,
+            "order": 111,
             "featured": false,
             "snapshot": false
           },
@@ -4981,7 +5839,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "1.1",
             "output": "4.4",
             "cache_read_input": "0.55",
             "cache_write_input": "0",
@@ -5007,7 +5865,7 @@
           "description": "The o1 series of models are trained with reinforcement learning to perform complex reasoning. o1 models think before they answer, producing a long internal chain of thought before responding to the user.",
           "status": "deprecated",
           "listing": {
-            "order": 95,
+            "order": 112,
             "featured": false,
             "snapshot": false
           },
@@ -5073,7 +5931,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "15",
             "output": "60",
             "cache_read_input": "7.5",
             "cache_write_input": "0",
@@ -5087,19 +5945,19 @@
         "object": "model",
         "created": 1721172741,
         "owned_by": "openai",
-        "display_name": "GPT-4o mini",
+        "display_name": "GPT-4o Mini",
         "context_length": 128000,
         "router": {
           "schema_version": 1,
           "request_name": "gpt-4o-mini",
           "catalog_id": "openai:gpt-4o-mini",
           "provider_model": "gpt-4o-mini",
-          "display_name": "GPT-4o mini",
+          "display_name": "GPT-4o Mini",
           "provider_display_name": "OpenAI",
-          "description": "GPT-4o mini (“o” for “omni”) is a fast, affordable small model for focused tasks. It accepts both text and image inputs, and produces text outputs (including Structured Outputs). It is ideal for fine-tuning, and model outputs from a larger model like GPT-4o can be distilled to GPT-4o-mini to produce similar results at lower cost and latency.",
+          "description": "GPT-4o Mini (\u201co\u201d for \u201comni\u201d) is a fast, affordable small model for focused tasks. It accepts both text and image inputs, and produces text outputs (including Structured Outputs). It is ideal for fine-tuning, and model outputs from a larger model like GPT-4o can be distilled to GPT-4o-Mini to produce similar results at lower cost and latency.",
           "status": "active",
           "listing": {
-            "order": 98,
+            "order": 115,
             "featured": false,
             "snapshot": false
           },
@@ -5144,7 +6002,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.15",
             "output": "0.6",
             "cache_read_input": "0.075",
             "cache_write_input": "0",
@@ -5167,10 +6025,10 @@
           "provider_model": "gpt-4o",
           "display_name": "GPT-4o",
           "provider_display_name": "OpenAI",
-          "description": "GPT-4o (“o” for “omni”) is our versatile, high-intelligence flagship model. It accepts both text and image inputs, and produces text outputs (including Structured Outputs). It is the best model for most tasks, and is our most capable model outside of our o-series models.",
+          "description": "GPT-4o (\u201co\u201d for \u201comni\u201d) is our versatile, high-intelligence flagship model. It accepts both text and image inputs, and produces text outputs (including Structured Outputs). It is the best model for most tasks, and is our most capable model outside of our o-series models.",
           "status": "active",
           "listing": {
-            "order": 100,
+            "order": 117,
             "featured": false,
             "snapshot": false
           },
@@ -5215,7 +6073,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "2.5",
             "output": "10",
             "cache_read_input": "1.25",
             "cache_write_input": "0",
@@ -5241,7 +6099,7 @@
           "description": "GPT-4 Turbo is the next generation of GPT-4, an older high-intelligence GPT model. It was designed to be a cheaper, better version of GPT-4. Today, we recommend using a newer model like GPT-4o.",
           "status": "deprecated",
           "listing": {
-            "order": 101,
+            "order": 118,
             "featured": false,
             "snapshot": false
           },
@@ -5286,7 +6144,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "10",
             "output": "30",
             "cache_read_input": "0",
             "cache_write_input": "0",
@@ -5312,7 +6170,7 @@
           "description": "GPT-4 is an older version of a high-intelligence GPT model, usable in Chat Completions.",
           "status": "deprecated",
           "listing": {
-            "order": 102,
+            "order": 119,
             "featured": false,
             "snapshot": false
           },
@@ -5356,7 +6214,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "30",
             "output": "60",
             "cache_read_input": "0",
             "cache_write_input": "0",
@@ -5382,7 +6240,7 @@
           "description": "GPT-3.5 Turbo models can understand and generate natural language or code and have been optimized for chat using the Chat Completions API but work well for non-chat tasks as well. As of July 2024, use gpt-4o-mini in place of GPT-3.5 Turbo, as it is cheaper, more capable, multimodal, and just as fast. GPT-3.5 Turbo is still available for use in the API.",
           "status": "deprecated",
           "listing": {
-            "order": 103,
+            "order": 120,
             "featured": false,
             "snapshot": false
           },
@@ -5426,7 +6284,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "0.5",
             "output": "1.5",
             "cache_read_input": "0",
             "cache_write_input": "0",
@@ -5452,7 +6310,7 @@
           "description": "The fastest model with near-frontier intelligence",
           "status": "active",
           "listing": {
-            "order": 104,
+            "order": 121,
             "featured": false,
             "snapshot": false
           },
@@ -5523,7 +6381,7 @@
             }
           },
           "pricing": {
-            "input": "",
+            "input": "1",
             "output": "5",
             "cache_read_input": "0.1",
             "cache_write_input": "0",

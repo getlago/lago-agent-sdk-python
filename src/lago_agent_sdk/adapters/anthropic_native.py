@@ -13,6 +13,10 @@ Not exposed by Anthropic (folded into output_tokens):
   reasoning_tokens — even with extended thinking enabled
 
 Unknown usage fields (service_tier, inference_geo, server_tool_use, …) land in extras.
+
+Ramp Router's `/v1/messages` surface answers in this exact shape for EVERY vendor it
+fronts, so the same extractor serves it — with a `provider_hint` from the wrapper, since
+nothing in the body says Router was in the path (see RAMP_ROUTER_MESSAGES_API).
 """
 
 from __future__ import annotations
@@ -20,6 +24,26 @@ from __future__ import annotations
 from typing import Any, cast
 
 from ..canonical import CanonicalUsage
+from .openai_native import RAMP_ROUTER_PROVIDER
+
+#: `api` stamped on a Router call that arrived through `/v1/messages`.
+#:
+#: Distinct from the Responses surface's stamp ("ramp_router", which sits in
+#: OPENAI_SHAPED_APIS) because the two surfaces report the SAME vendor's numbers under
+#: DIFFERENT conventions. Measured 2026-09-04 and 2026-09-07 against a live account:
+#: `/v1/messages` keeps Anthropic's additive shape for every vendor — haiku reports
+#: `input_tokens: 16` beside `cache_read_input_tokens: 20113`; an xAI model reports
+#: `input_tokens: 65` beside `cache_read_input_tokens: 128` and `thinking_tokens: 200`
+#: INSIDE `output_tokens: 201` — while `/v1/responses` folds the cached block inside
+#: `input_tokens`. Token semantics key on the surface, so this stamp must stay OUT of
+#: OPENAI_SHAPED_APIS: the provider-keyed sets do not name "ramp_router", which leaves
+#: the all-additive default, the measured answer here. Putting the Responses stamp on
+#: this surface would subtract a cached block that was never inside `input`.
+#:
+#: The write count Router's Responses surface cannot report for Anthropic models IS
+#: reported here (`cache_creation_input_tokens`, with the 5m/1h split), and reconciled
+#: exactly against the dashboard — the reason this surface is worth detecting at all.
+RAMP_ROUTER_MESSAGES_API = "ramp_router_messages"
 
 _KNOWN_USAGE_FIELDS = {
     "input_tokens",
@@ -67,13 +91,24 @@ def _resolve_model(response_model: Any, requested_model: str) -> str:
     return requested_model or ""
 
 
-def extract_anthropic_native(response: Any, model_id: str = "") -> CanonicalUsage:
+def extract_anthropic_native(response: Any, model_id: str = "", provider_hint: str = "") -> CanonicalUsage:
     """Translate an Anthropic native response (Message or dict) → CanonicalUsage.
 
     Accepts the SDK's pydantic Message object, a dict (e.g. captured fixture),
     or a synthetic `{"usage": {...}}` blob produced by the streaming wrapper.
+
+    `provider_hint` is the wrapper's word that the client was pointed at a gateway; only
+    the wrapper can know, because the body never says. Today the one value it takes is
+    RAMP_ROUTER_PROVIDER, which stamps the call as Router traffic on the Messages
+    surface. The served tier needs no special handling: Router puts `service_tier`
+    INSIDE `usage` on this surface (buffered, and on both `message_start` and
+    `message_delta` when streamed — measured), so the drift sweep below already lands it
+    in `extras["service_tier"]`, where the price-mode tier gate reads it.
     """
     resp = _to_dict(response) if not isinstance(response, dict) else response
+    provider, api = "anthropic", "native"
+    if provider_hint == RAMP_ROUTER_PROVIDER:
+        provider, api = RAMP_ROUTER_PROVIDER, RAMP_ROUTER_MESSAGES_API
 
     usage = _safe_dict(resp.get("usage"))
     cache_creation = _safe_dict(usage.get("cache_creation"))
@@ -99,7 +134,7 @@ def extract_anthropic_native(response: Any, model_id: str = "") -> CanonicalUsag
         cache_write_1h=_safe_int(cache_creation.get("ephemeral_1h_input_tokens")),
         tool_calls=tool_calls,
         model=_resolve_model(resp.get("model"), model_id),
-        provider="anthropic",
-        api="native",
+        provider=provider,
+        api=api,
         extras=extras,
     )

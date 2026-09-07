@@ -33,7 +33,6 @@ kwargs before forwarding so OpenAI's strict validation doesn't reject it.
 from __future__ import annotations
 
 import logging
-import urllib.parse
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
@@ -46,6 +45,7 @@ from ..adapters.openai_native import RAMP_ROUTER_PROVIDER
 # format that would drift without an error. The module is pure (canonical-only imports,
 # no I/O), so this pulls nothing heavy into the wrap() path.
 from ..gateway.adapters.snowflake_cortex import SNOWFLAKE_EVENT_ID_PREFIX, snowflake_event_id
+from .ramp_router import is_ramp_router_base_url
 
 logger = logging.getLogger("lago_agent_sdk.wrappers.openai")
 
@@ -170,14 +170,10 @@ _PROVIDER_BY_BASE_URL_PATH: tuple[tuple[str, str], ...] = (
 
 # Ramp Router cannot be a row in the path table above: it serves every provider it
 # fronts through one dedicated host with no distinguishing path, so the HOST is the
-# signal — and it must be the PARSED host, never a substring test. A substring row
-# ("api.router.com") also matches `https://evil.example.com/api.router.com/v1`, which
-# would stamp an unrelated endpoint's traffic as Router-served. The `.router.com`
-# suffix arm covers a regional or staging host without widening to arbitrary domains —
-# `evilrouter.com` does not end in `.router.com`. The path table keeps first say: its
-# rows are more specific, and no Snowflake or Databricks URL lives under router.com.
-_RAMP_ROUTER_HOST = "api.router.com"
-_RAMP_ROUTER_DOMAIN = ".router.com"
+# signal. The match itself lives in `wrappers/ramp_router.py`, because the Anthropic
+# wrapper needs the identical answer for Router's `/v1/messages` surface. The path table
+# keeps first say: its rows are more specific, and no Snowflake or Databricks URL lives
+# under router.com.
 
 
 def _provider_hint_for(client: Any) -> str:
@@ -205,12 +201,7 @@ def _provider_hint_for(client: Any) -> str:
     for path, provider in _PROVIDER_BY_BASE_URL_PATH:
         if path in base_url:
             return provider
-    try:
-        host = urllib.parse.urlsplit(base_url).hostname or ""
-    except ValueError:
-        # A relative or malformed base_url is not a gateway. Never throw out of wrap().
-        return ""
-    if host == _RAMP_ROUTER_HOST or host.endswith(_RAMP_ROUTER_DOMAIN):
+    if is_ramp_router_base_url(base_url):
         return RAMP_ROUTER_PROVIDER
     return ""
 
@@ -300,19 +291,34 @@ def wrap_openai_client(
         lists, so price mode missed and silently degraded to token events. It
         matters most on a gateway, where the resolved name is what decides which
         price table the call is even looked up in.
+
+        `service_tier` rides along for the same reason. The adapter reads it off the
+        response's top level to record which tier SERVED the call, and on Ramp Router
+        that decides whether the call prices at all — a non-default tier is a reported
+        miss. The terminal `response.completed` event carries it (fixture
+        04_real_streamed.json: `flex`), but a usage-and-model-only payload dropped it,
+        so every streamed Router call reached price mode tier-less and missed.
         """
         if not isinstance(payload, dict):
             return None
         usage = payload.get("usage")
         if isinstance(usage, dict) and usage:
-            return {"usage": usage, "model": payload.get("model")}
+            return {
+                "usage": usage,
+                "model": payload.get("model"),
+                "service_tier": payload.get("service_tier"),
+            }
         # Responses API stream events nest usage under `.response.usage` — and the
         # resolved model under `.response.model`, not at the event's top level.
         response = payload.get("response")
         if isinstance(response, dict):
             nested = response.get("usage")
             if isinstance(nested, dict) and nested:
-                return {"usage": nested, "model": response.get("model")}
+                return {
+                    "usage": nested,
+                    "model": response.get("model"),
+                    "service_tier": response.get("service_tier"),
+                }
         return None
 
     def _make_sync_create(original: Any, raw_create: Any | None, is_responses_api: bool = False) -> Any:

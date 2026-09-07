@@ -113,20 +113,25 @@ _CONTENT_KEYS = frozenset(
 )
 
 
-def _scrub(value: Any, key: str = "") -> Any:
+def _scrub(value: Any, key: str = "", parent: str = "") -> Any:
     """Deep-scrub a captured payload.
 
     Content keys are blanked to "" rather than deleted, so the shape a test reads is the
     shape Router really sent — deleting entries would change what the fixture proves.
+
+    `parent` exists because a content key is only content in a content position. The
+    catalog's `router.pricing.input` is a RATE, and blanking it shipped a fixture whose
+    every input rate read "" — which was then taken for Router's own data and cited as
+    a reason price mode could not be built. Nothing under `pricing` is ever content.
     """
     if isinstance(value, str):
-        if key in _CONTENT_KEYS:
+        if key in _CONTENT_KEYS and parent != "pricing":
             return ""
         return _scrub_string(value)
     if isinstance(value, list):
-        return [_scrub(v, key) for v in value]
+        return [_scrub(v, key, parent) for v in value]
     if isinstance(value, dict):
-        return {k: _scrub(v, k) for k, v in value.items() if k.lower() not in _DROP_HEADERS}
+        return {k: _scrub(v, k, key) for k, v in value.items() if k.lower() not in _DROP_HEADERS}
     return value
 
 
@@ -163,7 +168,9 @@ def save(name: str, probe: str, question: str, payload: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def call(method: str, path: str, body: Any | None = None) -> dict[str, Any]:
+def call(
+    method: str, path: str, body: Any | None = None, extra_headers: dict[str, str] | None = None
+) -> dict[str, Any]:
     """One request, captured whole.
 
     The body is parsed as JSON when it is JSON and kept as text when it is not:
@@ -178,6 +185,7 @@ def call(method: str, path: str, body: Any | None = None) -> dict[str, Any]:
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json",
             "User-Agent": "lago-agent-sdk-capture/0.2.0",
+            **(extra_headers or {}),
         },
         data=None if body is None else json.dumps(body).encode(),
     )
@@ -195,9 +203,13 @@ def call(method: str, path: str, body: Any | None = None) -> dict[str, Any]:
     return {"_status": status, "_headers": header_map, "_body": parsed, "_body_was_json": was_json}
 
 
-def call_stream(body: Any) -> dict[str, Any]:
-    """A streamed request, captured as the ordered list of SSE events."""
-    captured = call("POST", "/responses", body)
+def call_stream(
+    body: Any, path: str = "/responses", extra_headers: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """A streamed request, captured as the ordered list of SSE events. Anthropic's SSE
+    prefixes each `data:` line with an `event:` line; only the data lines are kept, which
+    is also all the wrapper reads."""
+    captured = call("POST", path, body, extra_headers=extra_headers)
     raw = captured["_body"] if isinstance(captured["_body"], str) else ""
     events: list[Any] = []
     for line in raw.split("\n"):
@@ -241,6 +253,81 @@ def candidate_id(models: list[dict[str, Any]], model_id: str | None) -> str | No
     return None
 
 
+# ---------------------------------------------------------------------------
+# P11-P15: Router's SECOND surface, `POST /v1/messages` (Anthropic-shaped), reached with an
+# Anthropic client. Captured because it is the only surface that reports an
+# Anthropic-served cache WRITE — `/v1/responses` has no field for it — and because nothing
+# in these bodies says Router was in the path, so these fixtures are what the Anthropic
+# wrapper's provider hint is tested against. Run alone with `--messages-only`.
+# ---------------------------------------------------------------------------
+# Required on this surface (a request without it is rejected, measured 2026-09-04).
+_MESSAGES_HEADERS = {"anthropic-version": "2023-06-01"}
+
+
+def _cache_prefix(n_lines: int = 220) -> str:
+    """~2.6k tokens of synthetic ledger lines: above Haiku's 2,048-token minimum cacheable
+    prefix, and cheap to write (a few tenths of a cent)."""
+    return " ".join(
+        f"Ledger entry {i}: account ACC-{(i * 7) % 9973:05d}, debit {(i * 11) % 503}.{(i * 13) % 100:02d} EUR, "
+        f"memo 'batch {i // 12} settlement', region {chr(65 + (i * 5) % 26)}."
+        for i in range(n_lines)
+    )
+
+
+def _probe_messages(cheap: str | None, anthropic: str | None) -> None:
+    def messages_call(body: dict[str, Any]) -> dict[str, Any]:
+        return call("POST", "/messages", body, extra_headers=_MESSAGES_HEADERS)
+
+    user = [{"role": "user", "content": PROMPT}]
+    if anthropic:
+        print("[P11] /v1/messages, plain call, Anthropic-served")
+        save(
+            "11_real_messages_plain.json",
+            "P11",
+            "does the Anthropic-shaped surface report usage in Anthropic's native shape, service_tier inside usage?",
+            messages_call({"model": anthropic, "max_tokens": MAX_OUTPUT_TOKENS, "messages": user}),
+        )
+        cached = {
+            "model": anthropic,
+            "max_tokens": MAX_OUTPUT_TOKENS,
+            "system": [{"type": "text", "text": _cache_prefix(), "cache_control": {"type": "ephemeral"}}],
+            "messages": user,
+        }
+        print("[P12] /v1/messages, cache_control cold — is the WRITE count reported here?")
+        save(
+            "12_real_messages_cache_control_cold.json",
+            "P12",
+            "does a cold cache_control write report cache_creation_input_tokens, with the 5m/1h split?",
+            messages_call(cached),
+        )
+        print("[P13] /v1/messages, cache_control warm")
+        save(
+            "13_real_messages_cache_control_warm.json",
+            "P13",
+            "warm repeat of P12 — cache_read_input_tokens beside input_tokens (additive)?",
+            messages_call(cached),
+        )
+        print("[P14] /v1/messages, streamed")
+        save(
+            "14_real_messages_streamed.json",
+            "P14",
+            "where do usage and service_tier land across message_start / message_delta?",
+            call_stream(
+                {"model": anthropic, "max_tokens": MAX_OUTPUT_TOKENS, "stream": True, "messages": user},
+                path="/messages",
+                extra_headers=_MESSAGES_HEADERS,
+            ),
+        )
+    if cheap:
+        print("[P15] /v1/messages, OpenAI-served model")
+        save(
+            "15_real_messages_openai_served.json",
+            "P15",
+            "does a non-Anthropic vendor's usage arrive in Anthropic's additive shape on this surface?",
+            messages_call({"model": cheap, "max_tokens": MAX_OUTPUT_TOKENS, "messages": user}),
+        )
+
+
 def main() -> None:
     # ---- P1: the catalog. Does it publish prices? ----------------------------------
     print("[P1] GET /v1/models")
@@ -279,6 +366,10 @@ def main() -> None:
         catalog, ["openai"], ["o4-mini", "o3-mini", "o3", "gpt-5"]
     )
     print(f"  using: cheap={cheap} anthropic={anthropic} reasoning={reasoning}")
+
+    if "--messages-only" in sys.argv:
+        _probe_messages(cheap, anthropic)
+        return
 
     # ---- P2: requested alias, or served candidate? ----------------------------------
     if cheap:

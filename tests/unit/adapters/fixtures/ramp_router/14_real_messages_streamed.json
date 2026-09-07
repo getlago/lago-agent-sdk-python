@@ -1,0 +1,95 @@
+{
+  "_probe": "P14",
+  "_question": "where do usage and service_tier land across message_start / message_delta?",
+  "_captured": "real capture against a live Ramp Router account",
+  "_scrubbed": "credentials, emails, IPs, dashboard URLs; prompt and completion text blanked to \"\"",
+  "_status": 200,
+  "_headers": {
+    "date": "Mon, 07 Sep 2026 10:46:53 GMT",
+    "content-type": "text/event-stream",
+    "transfer-encoding": "chunked",
+    "connection": "close",
+    "cache-control": "no-store",
+    "request-id": "006ebb53-a396-4642-8d08-dd1e51bcf344",
+    "vary": "Origin",
+    "x-request-id": "006ebb53-a396-4642-8d08-dd1e51bcf344",
+    "x-trace-id": "006ebb53-a396-4642-8d08-dd1e51bcf344",
+    "cf-cache-status": "DYNAMIC",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "x-content-type-options": "nosniff",
+    "server": "cloudflare",
+    "cf-ray": "a37521d4fd702c4e-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  },
+  "_body": null,
+  "_body_was_json": false,
+  "_events": [
+    {
+      "message": {
+        "content": [],
+        "id": "msg_011CeowoEXjqGsKxgZ4vhTeL",
+        "model": "claude-haiku-4-5-20251001",
+        "role": "assistant",
+        "stop_reason": null,
+        "stop_sequence": null,
+        "type": "message",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 16,
+          "output_tokens": 4,
+          "service_tier": "standard"
+        }
+      },
+      "type": "message_start"
+    },
+    {
+      "content_block": {
+        "text": "",
+        "type": "text"
+      },
+      "index": 0,
+      "type": "content_block_start"
+    },
+    {
+      "delta": {
+        "text": "",
+        "type": "text_delta"
+      },
+      "index": 0,
+      "type": "content_block_delta"
+    },
+    {
+      "index": 0,
+      "type": "content_block_stop"
+    },
+    {
+      "delta": {
+        "stop_reason": "end_turn",
+        "stop_sequence": null
+      },
+      "type": "message_delta",
+      "usage": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 16,
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "service_tier": "standard"
+      }
+    },
+    {
+      "type": "message_stop"
+    }
+  ]
+}

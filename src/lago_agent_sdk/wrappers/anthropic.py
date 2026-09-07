@@ -32,6 +32,8 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 from ..adapters import extract_anthropic_native
+from ..adapters.openai_native import RAMP_ROUTER_PROVIDER
+from .ramp_router import client_points_at_ramp_router
 
 logger = logging.getLogger("lago_agent_sdk.wrappers.anthropic")
 
@@ -135,6 +137,13 @@ def wrap_anthropic_client(
     raw_create = getattr(getattr(messages, "with_raw_response", None), "create", None)
     original_stream = getattr(messages, "stream", None)
     is_async = type(client).__name__.startswith("Async")
+    # Resolved once, here, and threaded through every emit path below — including the
+    # stream manager, which builds its own adapter call. An Anthropic client pointed at
+    # Ramp Router's `/v1/messages` answers in Anthropic's exact schema, so the base URL
+    # is the only thing that says Router was in the path. Without it the call billed as
+    # native Anthropic: OpenRouter's rate instead of Router's catalog, no Router key
+    # learned, and events stamped provider=anthropic.
+    provider_hint = RAMP_ROUTER_PROVIDER if client_points_at_ramp_router(client) else ""
 
     def _resolve_opts(lago_opts: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -146,7 +155,7 @@ def wrap_anthropic_client(
 
     def _emit_from(payload: Any, model_id: str, opts: dict[str, Any]) -> None:
         try:
-            usage = extract_anthropic_native(payload, model_id=model_id)
+            usage = extract_anthropic_native(payload, model_id=model_id, provider_hint=provider_hint)
             sdk.emit(usage, **opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: anthropic emit failed: %s", exc)
@@ -243,7 +252,7 @@ def wrap_anthropic_client(
         model_id = kwargs.get("model", "")
         opts = _resolve_opts(lago_opts)
         inner = original_stream(*args, **kwargs)
-        return _LagoStreamManager(inner, sdk, model_id, opts, is_async=is_async)
+        return _LagoStreamManager(inner, sdk, model_id, opts, is_async=is_async, provider_hint=provider_hint)
 
     if original_create is not None:
         messages.create = _create_async if is_async else _create
@@ -269,6 +278,7 @@ class _LagoStreamManager:
         opts: dict[str, Any],
         *,
         is_async: bool,
+        provider_hint: str = "",
     ) -> None:
         self._inner = inner
         self._sdk = sdk
@@ -276,6 +286,7 @@ class _LagoStreamManager:
         self._opts = opts
         self._stream: Any = None
         self._is_async = is_async
+        self._provider_hint = provider_hint
 
     # ----- sync -----
     def __enter__(self) -> Any:
@@ -310,7 +321,9 @@ class _LagoStreamManager:
             if final is not None:
                 from ..adapters import extract_anthropic_native
 
-                usage = extract_anthropic_native(final, model_id=self._model_id)
+                usage = extract_anthropic_native(
+                    final, model_id=self._model_id, provider_hint=self._provider_hint
+                )
                 self._sdk.emit(usage, **self._opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: anthropic stream-manager emit failed: %s", exc)
@@ -330,7 +343,9 @@ class _LagoStreamManager:
             if final is not None:
                 from ..adapters import extract_anthropic_native
 
-                usage = extract_anthropic_native(final, model_id=self._model_id)
+                usage = extract_anthropic_native(
+                    final, model_id=self._model_id, provider_hint=self._provider_hint
+                )
                 self._sdk.emit(usage, **self._opts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("lago: anthropic async stream-manager emit failed: %s", exc)

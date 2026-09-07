@@ -241,6 +241,88 @@
       "base": "0.00423",
       "total": "0.00423",
       "total_cents": "0.423"
+    },
+    {
+      "name": "ramp_router: OpenAI-served cache write at the catalog write rate (gpt-5.6-luna, 2026-09-07; Router billed 1.1x this \u2014 documented mismatch, not corrected)",
+      "provider": "ramp_router",
+      "api": "ramp_router",
+      "prices": {
+        "input": "0.0000002",
+        "output": "0.0000012",
+        "cache_read": "0.00000002",
+        "cache_write": "0.00000025"
+      },
+      "counts": {
+        "input": 4493,
+        "cache_write": 4490,
+        "output": 5
+      },
+      "markup": "1",
+      "base": "0.0011291",
+      "total": "0.0011291",
+      "total_cents": "0.11291"
+    },
+    {
+      "name": "ramp_router: cache read inside input (grok-build-0.1, dashboard-reconciled 2026-09-04)",
+      "provider": "ramp_router",
+      "api": "ramp_router",
+      "prices": {
+        "input": "0.000001",
+        "output": "0.000002",
+        "cache_read": "0.0000002"
+      },
+      "counts": {
+        "input": 194,
+        "cache_read": 192,
+        "output": 134
+      },
+      "markup": "1",
+      "base": "0.0003084",
+      "total": "0.0003084",
+      "total_cents": "0.03084"
+    },
+    {
+      "name": "ramp_router /v1/messages: Anthropic cache write at the 5m TTL rate (claude-haiku-4-5, dashboard-reconciled 2026-09-04)",
+      "provider": "ramp_router",
+      "api": "ramp_router_messages",
+      "prices": {
+        "input": "0.000001",
+        "output": "0.000005",
+        "cache_read": "0.0000001",
+        "cache_write_5m": "0.00000125",
+        "cache_write_1h": "0.000002"
+      },
+      "counts": {
+        "input": 16,
+        "cache_write": 20113,
+        "cache_write_5m": 20113,
+        "output": 5
+      },
+      "markup": "1",
+      "base": "0.02518225",
+      "total": "0.02518225",
+      "total_cents": "2.518225"
+    },
+    {
+      "name": "ramp_router /v1/messages: Anthropic cache read beside input (claude-haiku-4-5, dashboard-reconciled 2026-09-04)",
+      "provider": "ramp_router",
+      "api": "ramp_router_messages",
+      "prices": {
+        "input": "0.000001",
+        "output": "0.000005",
+        "cache_read": "0.0000001",
+        "cache_write_5m": "0.00000125",
+        "cache_write_1h": "0.000002"
+      },
+      "counts": {
+        "input": 16,
+        "cache_read": 20113,
+        "output": 5
+      },
+      "markup": "1",
+      "base": "0.0020523",
+      "total": "0.0020523",
+      "total_cents": "0.20523"
     }
   ],
   "precomputed_cases": [

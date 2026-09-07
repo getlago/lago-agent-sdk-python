@@ -1,0 +1,52 @@
+{
+  "_probe": "P11",
+  "_question": "does the Anthropic-shaped surface report usage in Anthropic's native shape, service_tier inside usage?",
+  "_captured": "real capture against a live Ramp Router account",
+  "_scrubbed": "credentials, emails, IPs, dashboard URLs; prompt and completion text blanked to \"\"",
+  "_status": 200,
+  "_headers": {
+    "date": "Mon, 07 Sep 2026 10:46:49 GMT",
+    "content-type": "application/json",
+    "transfer-encoding": "chunked",
+    "connection": "close",
+    "request-id": "f5398bf7-e0dd-499b-b4be-904429e3badb",
+    "vary": "Origin",
+    "x-request-id": "f5398bf7-e0dd-499b-b4be-904429e3badb",
+    "x-trace-id": "f5398bf7-e0dd-499b-b4be-904429e3badb",
+    "cf-cache-status": "DYNAMIC",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "x-content-type-options": "nosniff",
+    "server": "cloudflare",
+    "cf-ray": "a37521bb5974fe58-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  },
+  "_body": {
+    "content": [
+      {
+        "text": "",
+        "type": "text"
+      }
+    ],
+    "id": "msg_011Ceownws8VxtE9rrkSEu3i",
+    "model": "claude-haiku-4-5-20251001",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 16,
+      "output_tokens": 5,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "service_tier": "standard"
+    }
+  },
+  "_body_was_json": true
+}

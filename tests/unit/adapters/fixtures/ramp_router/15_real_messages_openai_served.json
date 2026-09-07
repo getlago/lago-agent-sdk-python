@@ -1,0 +1,53 @@
+{
+  "_probe": "P15",
+  "_question": "does a non-Anthropic vendor's usage arrive in Anthropic's additive shape on this surface?",
+  "_captured": "real capture against a live Ramp Router account",
+  "_scrubbed": "credentials, emails, IPs, dashboard URLs; prompt and completion text blanked to \"\"",
+  "_status": 200,
+  "_headers": {
+    "date": "Mon, 07 Sep 2026 10:46:54 GMT",
+    "content-type": "application/json",
+    "transfer-encoding": "chunked",
+    "connection": "close",
+    "request-id": "600e95e4-f964-4a32-9a49-370d2f7dd574",
+    "vary": "Origin",
+    "x-request-id": "600e95e4-f964-4a32-9a49-370d2f7dd574",
+    "x-trace-id": "600e95e4-f964-4a32-9a49-370d2f7dd574",
+    "cf-cache-status": "DYNAMIC",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "x-content-type-options": "nosniff",
+    "server": "cloudflare",
+    "cf-ray": "a37521dc3d76a8b3-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  },
+  "_body": {
+    "content": [
+      {
+        "text": "",
+        "type": "text"
+      }
+    ],
+    "id": "msg_0c9b66cc00585c74006a9e961e3ad487d1872cedbe0c57efe5",
+    "model": "gpt-5.4-nano-2026-03-17",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "inference_geo": "us",
+      "input_tokens": 14,
+      "output_tokens": 5,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "service_tier": "default"
+    }
+  },
+  "_body_was_json": true
+}
