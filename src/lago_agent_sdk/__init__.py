@@ -35,4 +35,4 @@ __all__ = [
     "compute_cost",
     "TOKEN_BILLED_PROVIDERS",
 ]
-__version__ = "0.2.0"
+__version__ = "0.4.0"
