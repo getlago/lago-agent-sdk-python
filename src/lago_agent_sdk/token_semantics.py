@@ -153,10 +153,10 @@ OPENAI_SHAPED_APIS = frozenset(
         # reported input_tokens unchanged (18825) with cached_tokens 18810 INSIDE it,
         # total = input + output exactly (06b_real_cache_control_warm.json); reasoning
         # came back inside output (128 of 169, total = input + output,
-        # 07_real_reasoning.json). cache_write is inferred from the same normalization
-        # rather than measured — every observed write reported cache_write_tokens: 0
-        # while the warm read proved the cache existed, and the arithmetic keeps the
-        # write inside input — re-verify the day a nonzero write appears in a capture.
+        # 07_real_reasoning.json). cache_write follows the same convention, confirmed
+        # by measurement on 2026-09-07: an OpenAI-served cold write reported
+        # input_tokens_details.cache_write_tokens 4490 INSIDE input_tokens 4493, with
+        # total = input + output — so the write stays inside input here too.
         #
         # Router's OTHER surface, `/v1/messages` (stamped "ramp_router_messages" by the
         # Anthropic adapter), is deliberately ABSENT. It keeps Anthropic's additive
