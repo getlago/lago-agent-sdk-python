@@ -194,6 +194,9 @@ def test_auto_prime_is_a_noop_in_token_mode():
 
 
 class _RouterCallCountingFetcher(HttpPricingFetcher):
+    def fetch_cloudflare_gateway_cost(self, model: str) -> ModelPrice | None:
+        return None
+
     def __init__(self):
         super().__init__()
         self.router_keys: list[str | None] = []

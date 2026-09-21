@@ -243,7 +243,7 @@
       "total_cents": "0.423"
     },
     {
-      "name": "ramp_router: OpenAI-served cache write at the catalog write rate (gpt-5.6-luna, 2026-09-07; Router billed 1.1x this \u2014 documented mismatch, not corrected)",
+      "name": "ramp_router: OpenAI-served cache write at the catalog write rate (gpt-5.6-luna, 2026-09-07; Router billed 1.1x this — documented mismatch, not corrected)",
       "provider": "ramp_router",
       "api": "ramp_router",
       "prices": {
@@ -323,6 +323,24 @@
       "base": "0.0020523",
       "total": "0.0020523",
       "total_cents": "0.20523"
+    },
+    {
+      "name": "workers-ai partner model typesafe/jev via ai-gateway/costs: $0.042/M input, free output — equals the gateway's own log `cost` 1.8732e-05 (2026-09-21)",
+      "provider": "workers-ai",
+      "api": "workers_ai_run",
+      "prices": {
+        "input": "0.000000042",
+        "output": "0",
+        "cache_read": "0"
+      },
+      "counts": {
+        "input": 446,
+        "output": 73
+      },
+      "markup": "1",
+      "base": "0.000018732",
+      "total": "0.000018732",
+      "total_cents": "0.0018732"
     }
   ],
   "precomputed_cases": [

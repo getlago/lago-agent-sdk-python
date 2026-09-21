@@ -276,3 +276,57 @@ def test_databricks_gateway_token_details_drift_survives_the_json_string_path() 
     u = extract_databricks_log(row)
     assert u.reasoning == 9
     assert u.extras["token_details.output_audio_tokens"] == "42"
+
+
+# ----------------------------------------------------------------------------------
+# Workers AI `/ai/run` — the model-in-body route, two usage vocabularies on one endpoint
+# ----------------------------------------------------------------------------------
+def test_workers_ai_unknown_usage_key_reaches_extras() -> None:
+    from lago_agent_sdk.adapters import extract_workers_ai_native
+
+    resp = {
+        "result": {
+            "model": "@cf/meta/llama-3.2-3b-instruct-v2",
+            "usage": {
+                "prompt_tokens": 41,
+                "completion_tokens": 34,
+                "total_tokens": 75,
+                "neurons": 1.22,
+                "future_counter": 9,
+                "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 3},
+            },
+        },
+        "success": True,
+    }
+    u = extract_workers_ai_native(resp, model_id="@cf/meta/llama-3.2-3b-instruct")
+    assert u.input == 41 and u.output == 34
+    assert u.extras["usage"] == {"future_counter": 9, "prompt_tokens_details": {"audio_tokens": 3}}
+    assert u.extras["neurons"] == 1.22  # Cloudflare's billing unit is kept, never counted as tokens
+
+
+def test_workers_ai_mapped_keys_do_not_pollute_extras() -> None:
+    from lago_agent_sdk.adapters import extract_workers_ai_native
+
+    resp = {
+        "result": {
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 2,
+                "total_tokens": 3,
+                "prompt_tokens_details": {"cached_tokens": 1},
+            }
+        }
+    }
+    u = extract_workers_ai_native(resp, model_id="@cf/x/y")
+    assert "usage" not in u.extras
+    assert u.cache_read == 1
+
+
+def test_workers_ai_jev_vocabulary_is_known_not_drift() -> None:
+    from lago_agent_sdk.adapters import extract_workers_ai_native
+
+    u = extract_workers_ai_native(
+        {"result": {"answers": {}, "usage": {"input_tokens": 5, "output_tokens": 7}}}, model_id="typesafe/jev"
+    )
+    assert (u.input, u.output) == (5, 7)
+    assert u.extras == {}

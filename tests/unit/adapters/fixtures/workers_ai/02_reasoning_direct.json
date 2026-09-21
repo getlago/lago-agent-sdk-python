@@ -1,0 +1,24 @@
+{
+  "_model_id": "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+  "_status": 200,
+  "_headers": {
+    "Content-Type": "application/json"
+  },
+  "_response": {
+    "result": {
+      "response": "<think>\nOkay, so the user wants me to write one sentence about dolphins. Let me think about what's most interesting and accurate. Dolphins are intelligent, right? They have those big brains and they communicate. Maybe I should mention their intelligence and social behavior. Also, they're mammals, so they",
+      "usage": {
+        "prompt_tokens": 13,
+        "completion_tokens": 60,
+        "total_tokens": 73,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "neurons": 27.212594786540038
+      }
+    },
+    "success": true,
+    "errors": [],
+    "messages": []
+  }
+}

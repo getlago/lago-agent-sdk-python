@@ -71,6 +71,15 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
 AWS_PRICING_HOST = "https://pricing.us-east-1.amazonaws.com"
 AWS_BEDROCK_REGION_INDEX = f"{AWS_PRICING_HOST}/offers/v1.0/aws/AmazonBedrock/current/region_index.json"
 CLOUDFLARE_MODELS_URL_TEMPLATE = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search"
+# AI Gateway's own price list — every provider the gateway fronts, including the partner
+# models Workers AI serves under a bare `vendor/model` id (`typesafe/jev`), which the
+# `/ai/models/search` catalog above does not list at all. Measured 2026-09-21: 2,839 rows,
+# `per_page` capped at 100, `search=` filters by model id; the `typesafe/jev` row is
+# `token_pricing: {input_tokens: 0.042, input_cached_tokens: 0, output_tokens: 0}` (USD per
+# 1M) and 446 x 0.042e-6 is exactly the `cost` the gateway stamped on that call's log entry.
+CLOUDFLARE_GATEWAY_COSTS_URL_TEMPLATE = (
+    "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai-gateway/costs"
+)
 MISTRAL_MODELS_URL = "https://api.mistral.ai/v1/models"
 RAMP_ROUTER_MODELS_URL = "https://api.router.com/v1/models"
 
@@ -188,6 +197,16 @@ RAMP_ROUTER_BASE_RATE_TIERS = frozenset({"default", "standard"})
 # catalog of 64.
 _CF_PER_PAGE = 50
 _CF_MAX_PAGES = 40
+# `token_pricing` keys on an `ai-gateway/costs` row → ModelPrice fields (USD per 1M tokens).
+# The sibling `cost_in` / `cost_out` per-token fields are NOT used: on the same row they are
+# frequently 0 where `token_pricing` is not (typesafe/jev, every Fireworks entry), and the
+# gateway's own `cost` on a log entry reconciles against `token_pricing`, not against them.
+_CF_COSTS_FIELD_MAP = {
+    "input_tokens": "input",
+    "output_tokens": "output",
+    "input_cached_tokens": "cache_read",
+    "input_cache_creation_tokens": "cache_write",
+}
 
 # Bedrock cross-region inference prefix -> a representative AWS region.
 _BEDROCK_REGION_PREFIX = {
@@ -846,6 +865,52 @@ def lookup_cloudflare_workers_ai(table: dict[str, ModelPrice], model: str) -> Mo
     return None
 
 
+def parse_cloudflare_gateway_cost(rows: Any, model: str) -> ModelPrice | None:
+    """One `ai-gateway/costs?search=<model>` response → the price of exactly `model`, or None.
+
+    Only rows whose `model` equals the requested id and whose `cost_type` is `tokens`
+    count. The same id can appear under several providers at DIFFERENT rates
+    (`stealth/union-alpha` is listed by openrouter, unbiased and stealth), so when more
+    than one row matches, the row whose `provider` is the id's own namespace
+    (`typesafe/jev` → `typesafe`) wins; failing that, rows that all agree are one price
+    and rows that disagree are a refused lookup — the honest miss, same rule as Ramp
+    Router's foreign-backend aliases. A published 0 is kept as a real $0 rate (Jev's
+    output and cached input are free), not turned into "no rate": the gateway bills the
+    row literally, and so must we.
+    """
+    if not isinstance(rows, list):
+        return None
+    matches: list[dict[str, Any]] = []
+    for r in rows:
+        if not isinstance(r, dict) or r.get("model") != model or r.get("cost_type") != "tokens":
+            continue
+        if isinstance(r.get("token_pricing"), dict):
+            matches.append(r)
+    if not matches:
+        return None
+    namespace = model.split("/", 1)[0] if "/" in model else None
+    own = [r for r in matches if namespace and r.get("provider") == namespace]
+    candidates = own or matches
+
+    def _fields(row: dict[str, Any]) -> dict[str, Decimal]:
+        out: dict[str, Decimal] = {}
+        for key, field in _CF_COSTS_FIELD_MAP.items():
+            if key not in row["token_pricing"]:
+                continue
+            per_million = _parse_price(row["token_pricing"][key])
+            if per_million is None:
+                continue
+            out[field] = (per_million / Decimal(1_000_000)).quantize(_Q, rounding=ROUND_DOWN)
+        return out
+
+    first = _fields(candidates[0])
+    if any(_fields(r) != first for r in candidates[1:]):
+        return None
+    if not first:
+        return None
+    return ModelPrice(source="cloudflare_gateway_costs", **first)
+
+
 # ----------------------------------------------------------------------
 # Ramp Router parsing + matching
 #
@@ -1168,6 +1233,7 @@ class PricingFetcher(Protocol):
     def fetch_openrouter(self) -> dict[str, Any]: ...
     def fetch_bedrock(self, region: str) -> dict[str, ModelPrice]: ...
     def fetch_cloudflare_workers_ai(self) -> dict[str, ModelPrice]: ...
+    def fetch_cloudflare_gateway_cost(self, model: str) -> ModelPrice | None: ...
     def fetch_mistral_aliases(self, api_key: str | None = None) -> dict[str, str]: ...
     def fetch_ramp_router(self, api_key: str | None = None) -> dict[str, ModelPrice]: ...
 
@@ -1271,6 +1337,27 @@ class HttpPricingFetcher:
             page += 1
         return parse_cloudflare_workers_ai(models)
 
+    def fetch_cloudflare_gateway_cost(self, model: str) -> ModelPrice | None:
+        """The gateway's own rate for one model id, or None when it lists none.
+
+        One request per model, on demand — the full table is 2,839 rows across every
+        provider, and the only ids that reach this path are partner models the Workers AI
+        catalog omits, a handful per account. Same credentials as the catalog fetch.
+        """
+        import requests
+
+        if not self._cf_account_id or not self._cf_api_token:
+            return None
+        params: dict[str, str | int] = {"search": model, "per_page": 100}
+        resp = requests.get(
+            CLOUDFLARE_GATEWAY_COSTS_URL_TEMPLATE.format(account_id=self._cf_account_id),
+            headers={"Authorization": f"Bearer {self._cf_api_token}"},
+            params=params,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return parse_cloudflare_gateway_cost(resp.json().get("result"), model)
+
     def fetch_mistral_aliases(self, api_key: str | None = None) -> dict[str, str]:
         import requests
 
@@ -1340,6 +1427,14 @@ class PricingProvider:
         self._cloudflare_workers_ai: dict[str, ModelPrice] | None = None
         self._cloudflare_fetched = 0.0
         self._cloudflare_stale = False
+        # Partner models on Workers AI (`typesafe/jev`), priced from AI Gateway's own cost
+        # table one model at a time. Reactive like Bedrock: a miss in `lookup()` queues the
+        # id here, `maybe_refresh()` fetches it on the next tick, and every later call hits.
+        # A None value is a remembered "the gateway lists no rate" — kept for the TTL so an
+        # unpriced id does not cost one HTTP request per flush tick.
+        self._cf_gateway_costs: dict[str, ModelPrice | None] = {}
+        self._cf_gateway_costs_fetched: dict[str, float] = {}
+        self._cf_gateway_pending: set[str] = set()
         self._mistral_aliases: dict[str, str] | None = None
         self._mistral_fetched = 0.0
         self._mistral_stale = False
@@ -1375,7 +1470,7 @@ class PricingProvider:
             self._ramp_router_stale = self._ramp_router is not None or self._ramp_router_stale
             self._refreshing = set()
 
-    def prime(self, providers: Iterable[str] = ()) -> None:
+    def prime(self, providers: Iterable[str] = (), *, workers_ai_models: Iterable[str] = ()) -> None:
         """Flag OpenRouter for an eager background warm (used when price mode
         is the global default) to shrink the cold-start window.
 
@@ -1413,6 +1508,17 @@ class PricingProvider:
         with self._lock:
             if self._is_cold(self._openrouter, self._openrouter_fetched):
                 self._openrouter_stale = True
+            # Partner models on Workers AI are priced one row at a time from the gateway's
+            # cost table, and the SDK only learns an id when a call for it arrives — so the
+            # first call to each such model in a process is a cold miss. Naming the ids here
+            # (via `warm_pricing(workers_ai_models=[...])`) fetches their rows up front, the
+            # way `providers=["workers-ai"]` fetches the catalog, so even the first call
+            # prices. Same "only if cold" gate as everything else in this method.
+            for m in workers_ai_models:
+                if m and not m.startswith("@") and not m.startswith(WORKERS_AI_COMPAT_PREFIX):
+                    fetched_at = self._cf_gateway_costs_fetched.get(m)
+                    if fetched_at is None or (time.time() - fetched_at) >= self._ttl:
+                        self._cf_gateway_pending.add(m)
             for p in providers:
                 key = (p or "").lower()
                 if key == "workers-ai":
@@ -1512,7 +1618,20 @@ class PricingProvider:
                     fresh_cf = table_cf is not None and (time.time() - self._cloudflare_fetched) < self._ttl
                     if not fresh_cf:
                         self._cloudflare_stale = True
-                return lookup_cloudflare_workers_ai(table_cf, model) if table_cf is not None else None
+                hit = lookup_cloudflare_workers_ai(table_cf, model) if table_cf is not None else None
+                if hit is not None or model.startswith("@") or model.startswith(WORKERS_AI_COMPAT_PREFIX):
+                    return hit
+                # A bare `vendor/model` id the catalog does not list: a partner model. Its
+                # rate lives in the gateway's cost table — fetched per id, in the background.
+                with self._lock:
+                    fetched_at = self._cf_gateway_costs_fetched.get(model)
+                    if fetched_at is None or (time.time() - fetched_at) >= self._ttl:
+                        # Cold or past the TTL: queue a (re)fetch for the next tick. A row we
+                        # already hold keeps serving meanwhile — stale-while-revalidate, the
+                        # same as the catalog table — so a TTL expiry never bills a call as
+                        # tokens. Only a genuinely cold id (never fetched) misses.
+                        self._cf_gateway_pending.add(model)
+                    return self._cf_gateway_costs.get(model)
             resolved_model = model
             is_mistral = (provider or "").lower() == "mistral"
             with self._lock:
@@ -1549,6 +1668,7 @@ class PricingProvider:
             and not self._cloudflare_stale
             and not self._mistral_stale
             and not self._ramp_router_stale
+            and not self._cf_gateway_pending
         ):
             return
         with self._lock:
@@ -1589,6 +1709,13 @@ class PricingProvider:
             ]
             for r in regions:
                 self._refreshing.add(f"bedrock:{r}")
+            partner_models = [
+                m
+                for m in self._cf_gateway_pending
+                if f"cf_costs:{m}" not in self._refreshing and _ready(f"cf_costs:{m}")
+            ]
+            for m in partner_models:
+                self._refreshing.add(f"cf_costs:{m}")
 
         if do_openrouter:
             try:
@@ -1619,6 +1746,21 @@ class PricingProvider:
             finally:
                 with self._lock:
                     self._refreshing.discard("cloudflare_workers_ai")
+
+        for m in partner_models:
+            try:
+                price = self._fetcher.fetch_cloudflare_gateway_cost(m)
+                with self._lock:
+                    self._cf_gateway_costs[m] = price
+                    self._cf_gateway_costs_fetched[m] = time.time()
+                    self._cf_gateway_pending.discard(m)
+                self._note_success(f"cf_costs:{m}")
+            except Exception as exc:  # noqa: BLE001
+                self._note_failure(f"cf_costs:{m}")
+                self._report(exc, "pricing.fetch_cloudflare_gateway_cost")
+            finally:
+                with self._lock:
+                    self._refreshing.discard(f"cf_costs:{m}")
 
         if do_mistral:
             try:

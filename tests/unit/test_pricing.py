@@ -36,6 +36,7 @@ from lago_agent_sdk.pricing import (
     lookup_ramp_router,
     parse_bedrock_offer,
     parse_bedrock_region,
+    parse_cloudflare_gateway_cost,
     parse_cloudflare_workers_ai,
     parse_mistral_aliases,
     parse_openrouter,
@@ -66,6 +67,8 @@ class StubFetcher:
         self.openrouter_calls = 0
         self.bedrock_calls: list[str] = []
         self.cloudflare_workers_ai_calls = 0
+        self.cloudflare_gateway_cost_calls: list[str] = []
+        self._cloudflare_gateway_costs: dict[str, ModelPrice | None] = {}
         self.mistral_aliases_calls = 0
         self.last_mistral_api_key: str | None = None
         self.ramp_router_calls = 0
@@ -82,6 +85,10 @@ class StubFetcher:
     def fetch_cloudflare_workers_ai(self) -> dict[str, ModelPrice]:
         self.cloudflare_workers_ai_calls += 1
         return self._cloudflare_workers_ai
+
+    def fetch_cloudflare_gateway_cost(self, model: str) -> ModelPrice | None:
+        self.cloudflare_gateway_cost_calls.append(model)
+        return self._cloudflare_gateway_costs.get(model)
 
     def fetch_mistral_aliases(self, api_key: str | None = None) -> dict[str, str]:
         self.mistral_aliases_calls += 1
@@ -2697,3 +2704,234 @@ def test_ttl_split_is_inert_without_split_rates_openrouter_anthropic_unchanged()
     assert set(b.fields) == {"input", "cache_write"}
     assert b.fields["cache_write"]["tokens"] == "20113"
     assert b.base == "0.02515725"
+
+
+# ----------------------------------------------------------------------
+# Partner models on Workers AI — priced from AI Gateway's own cost table
+# ----------------------------------------------------------------------
+# The real `ai-gateway/costs?search=jev` row, captured 2026-09-21. `cost_in`/`cost_out` are 0
+# on it while `token_pricing` is not — the gateway's log `cost` (446 x 0.042e-6) proves which
+# one it bills by.
+_CF_COSTS_JEV_ROW = {
+    "id": "a5a44d54-d13a-405e-8dba-6911dc681300",
+    "provider": "typesafe",
+    "model": "typesafe/jev",
+    "model_rule": "equals",
+    "cost_type": "tokens",
+    "cost_in": 0,
+    "cost_out": 0,
+    "token_pricing": {"input_tokens": 0.042, "input_cached_tokens": 0, "output_tokens": 0},
+}
+
+
+def test_parse_gateway_cost_reads_token_pricing_per_million_and_keeps_published_zeros() -> None:
+    price = parse_cloudflare_gateway_cost([_CF_COSTS_JEV_ROW], "typesafe/jev")
+    assert price is not None
+    assert price.source == "cloudflare_gateway_costs"
+    assert price.input == Decimal("0.000000042")
+    assert price.output == Decimal("0")  # free output is a real $0 rate, not "no rate"
+    assert price.cache_read == Decimal("0")
+    assert price.cache_write is None
+
+
+def test_parse_gateway_cost_ignores_other_models_and_non_token_rows() -> None:
+    rows = [
+        {**_CF_COSTS_JEV_ROW, "model": "typesafe/jev-mini"},
+        {**_CF_COSTS_JEV_ROW, "cost_type": "per_request"},
+        {**_CF_COSTS_JEV_ROW, "token_pricing": None},
+    ]
+    assert parse_cloudflare_gateway_cost(rows, "typesafe/jev") is None
+    assert parse_cloudflare_gateway_cost("not a list", "typesafe/jev") is None
+    assert parse_cloudflare_gateway_cost([], "typesafe/jev") is None
+
+
+def test_parse_gateway_cost_prefers_the_ids_own_namespace_when_providers_disagree() -> None:
+    """`stealth/union-alpha` is listed by three providers at different rates; the id's own
+    vendor is the one Workers AI serves it through."""
+    rows = [
+        {
+            "provider": "openrouter",
+            "model": "stealth/union-alpha",
+            "cost_type": "tokens",
+            "token_pricing": {"input_tokens": 1, "output_tokens": 2},
+        },
+        {
+            "provider": "stealth",
+            "model": "stealth/union-alpha",
+            "cost_type": "tokens",
+            "token_pricing": {"input_tokens": 3, "output_tokens": 4},
+        },
+    ]
+    price = parse_cloudflare_gateway_cost(rows, "stealth/union-alpha")
+    assert price is not None and price.input == Decimal("0.000003") and price.output == Decimal("0.000004")
+
+
+def test_parse_gateway_cost_refuses_disagreeing_rows_without_an_own_namespace_match() -> None:
+    rows = [
+        {
+            "provider": "openrouter",
+            "model": "x/y",
+            "cost_type": "tokens",
+            "token_pricing": {"input_tokens": 1, "output_tokens": 2},
+        },
+        {
+            "provider": "groq",
+            "model": "x/y",
+            "cost_type": "tokens",
+            "token_pricing": {"input_tokens": 5, "output_tokens": 2},
+        },
+    ]
+    assert parse_cloudflare_gateway_cost(rows, "x/y") is None
+    agree = [rows[0], {**rows[0], "provider": "groq"}]
+    assert parse_cloudflare_gateway_cost(agree, "x/y") is not None
+
+
+def test_partner_model_is_reactive_miss_then_hit_and_never_refetched_within_ttl() -> None:
+    fetcher = StubFetcher(
+        cloudflare_workers_ai={
+            "@cf/meta/llama-3.2-3b-instruct": ModelPrice(
+                source="cloudflare_workers_ai", input=Decimal("0.00000005"), output=Decimal("0.0000003")
+            )
+        }
+    )
+    fetcher._cloudflare_gateway_costs["typesafe/jev"] = parse_cloudflare_gateway_cost(
+        [_CF_COSTS_JEV_ROW], "typesafe/jev"
+    )
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p.prime(["workers-ai"])
+    p.maybe_refresh()
+    assert fetcher.cloudflare_workers_ai_calls == 1
+    # 1st lookup: catalog has no partner ids -> miss, id queued; nothing fetched on the hot path.
+    assert p.lookup("workers-ai", "typesafe/jev", "workers_ai_run") is None
+    assert fetcher.cloudflare_gateway_cost_calls == []
+    p.maybe_refresh()
+    assert fetcher.cloudflare_gateway_cost_calls == ["typesafe/jev"]
+    hit = p.lookup("workers-ai", "typesafe/jev", "workers_ai_run")
+    assert hit is not None and hit.input == Decimal("0.000000042") and hit.output == Decimal("0")
+    # Warm: neither the catalog nor the cost row is fetched again.
+    p.maybe_refresh()
+    p.lookup("workers-ai", "typesafe/jev", "workers_ai_run")
+    p.maybe_refresh()
+    assert fetcher.cloudflare_gateway_cost_calls == ["typesafe/jev"]
+    assert fetcher.cloudflare_workers_ai_calls == 1
+    # A catalog model never takes the partner path.
+    assert p.lookup("workers-ai", "@cf/meta/llama-3.2-3b-instruct", "workers_ai_run") is not None
+    assert p.lookup("workers-ai", "@cf/nobody/unlisted", "workers_ai_run") is None
+    p.maybe_refresh()
+    assert fetcher.cloudflare_gateway_cost_calls == ["typesafe/jev"]
+
+
+def test_partner_model_the_gateway_does_not_price_is_remembered_as_a_miss() -> None:
+    """One HTTP request per unpriced id per TTL — not one per flush tick."""
+    fetcher = StubFetcher(cloudflare_workers_ai={})
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600)
+    p.prime(["workers-ai"])
+    p.maybe_refresh()
+    assert p.lookup("workers-ai", "acme/unknown", "workers_ai_run") is None
+    p.maybe_refresh()
+    assert fetcher.cloudflare_gateway_cost_calls == ["acme/unknown"]
+    for _ in range(3):
+        assert p.lookup("workers-ai", "acme/unknown", "workers_ai_run") is None
+        p.maybe_refresh()
+    assert fetcher.cloudflare_gateway_cost_calls == ["acme/unknown"]
+
+
+def test_partner_model_fetch_failure_is_reported_and_backed_off() -> None:
+    errors: list[str] = []
+
+    class _Boom(StubFetcher):
+        def fetch_cloudflare_gateway_cost(self, model: str) -> ModelPrice | None:
+            self.cloudflare_gateway_cost_calls.append(model)
+            raise RuntimeError("HTTP 500")
+
+    fetcher = _Boom(cloudflare_workers_ai={})
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=3600, on_error=lambda e, w: errors.append(w))
+    p.prime(["workers-ai"])
+    p.maybe_refresh()
+    p.lookup("workers-ai", "typesafe/jev", "workers_ai_run")
+    p.maybe_refresh()
+    p.maybe_refresh()  # inside the 1s backoff — no second attempt
+    assert fetcher.cloudflare_gateway_cost_calls == ["typesafe/jev"]
+    assert errors == ["pricing.fetch_cloudflare_gateway_cost"]
+
+
+def test_http_fetcher_queries_costs_by_model_and_parses_the_real_row() -> None:
+    import responses as _responses
+
+    with _responses.RequestsMock() as rsps:
+        rsps.get(
+            "https://api.cloudflare.com/client/v4/accounts/acct/ai-gateway/costs",
+            json={
+                "success": True,
+                "result": [_CF_COSTS_JEV_ROW],
+                "result_info": {"count": 1, "total_count": 1},
+            },
+        )
+        f = HttpPricingFetcher(cloudflare_account_id="acct", cloudflare_api_token="tok")
+        price = f.fetch_cloudflare_gateway_cost("typesafe/jev")
+        assert price is not None and price.input == Decimal("0.000000042")
+        req = rsps.calls[0].request
+        assert "search=typesafe%2Fjev" in req.url and "per_page=100" in req.url
+        assert req.headers["Authorization"] == "Bearer tok"
+    assert (
+        HttpPricingFetcher().fetch_cloudflare_gateway_cost("typesafe/jev") is None
+    )  # no credentials -> no request
+
+
+def test_jev_end_to_end_cost_matches_the_gateway_log() -> None:
+    """446 in / 73 out at the gateway's rate = 0.000018732 USD — the `cost` Cloudflare itself
+    stamped on the live log entry (2026-09-21)."""
+    price = parse_cloudflare_gateway_cost([_CF_COSTS_JEV_ROW], "typesafe/jev")
+    assert price is not None
+    usage = CanonicalUsage(
+        model="typesafe/jev", provider="workers-ai", api="workers_ai_run", input=446, output=73
+    )
+    b = compute_cost(usage, price, Decimal("1"))
+    assert b.total == "0.000018732"
+    assert b.total_cents == "0.0018732"
+
+
+def test_partner_model_row_keeps_serving_past_the_ttl_while_it_refetches() -> None:
+    """Stale-while-revalidate, same as the catalog table: a TTL expiry must never bill a call
+    as tokens. Only a never-fetched id misses."""
+    fetcher = StubFetcher(cloudflare_workers_ai={})
+    fetcher._cloudflare_gateway_costs["typesafe/jev"] = parse_cloudflare_gateway_cost(
+        [_CF_COSTS_JEV_ROW], "typesafe/jev"
+    )
+    p = PricingProvider(fetcher=fetcher, ttl_seconds=0.05)
+    p.prime(["workers-ai"])
+    p.maybe_refresh()
+    assert p.lookup("workers-ai", "typesafe/jev", "workers_ai_run") is None  # cold: the one honest miss
+    p.maybe_refresh()
+    assert p.lookup("workers-ai", "typesafe/jev", "workers_ai_run") is not None
+    time.sleep(0.08)  # past the TTL
+    stale_hit = p.lookup("workers-ai", "typesafe/jev", "workers_ai_run")
+    assert stale_hit is not None and stale_hit.input == Decimal("0.000000042")  # still served
+    p.maybe_refresh()  # ... and refetched in the background
+    assert fetcher.cloudflare_gateway_cost_calls == ["typesafe/jev", "typesafe/jev"]
+
+
+def test_warm_pricing_by_partner_model_id_prices_the_very_first_call() -> None:
+    fetcher = StubFetcher(cloudflare_workers_ai={})
+    fetcher._cloudflare_gateway_costs["typesafe/jev"] = parse_cloudflare_gateway_cost(
+        [_CF_COSTS_JEV_ROW], "typesafe/jev"
+    )
+    sdk = LagoSDK(
+        api_key="k",
+        default_subscription_id="sub",
+        config=LagoConfig(
+            api_key="k", pricing_mode="price", pricing_provider=PricingProvider(fetcher=fetcher)
+        ),
+    )
+    try:
+        sdk.warm_pricing(["workers-ai"], workers_ai_models=["typesafe/jev", "@cf/meta/llama-3.2-3b-instruct"])
+        # The catalog id is ignored here (it is in the catalog); only the partner id was fetched.
+        assert fetcher.cloudflare_gateway_cost_calls == ["typesafe/jev"]
+        assert fetcher.cloudflare_workers_ai_calls == 1
+        hit = sdk._pricing.lookup("workers-ai", "typesafe/jev", "workers_ai_run")
+        assert hit is not None and hit.input == Decimal("0.000000042")
+        # Warm: a second warm_pricing for the same id fetches nothing.
+        sdk.warm_pricing(["workers-ai"], workers_ai_models=["typesafe/jev"])
+        assert fetcher.cloudflare_gateway_cost_calls == ["typesafe/jev"]
+    finally:
+        sdk.shutdown(timeout=1.0)
