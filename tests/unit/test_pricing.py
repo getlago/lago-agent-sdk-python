@@ -709,6 +709,13 @@ def _run_cf_fetch(pages: list[dict]) -> tuple[int, list[int]]:
             return self._b
 
     def fake(url, **kw):
+        # `requests.get` is swapped module-wide, and another test's SDK may still have a
+        # queue thread refreshing prices in the background. Count only the catalog's own
+        # URL and hand anything else to the real function (which pytest-socket blocks), or
+        # one stray background call lands in `seen` and the page count is off by one —
+        # observed once in CI on ubuntu/py3.10 (41 pages where the loop fetched 40).
+        if "/ai/models/search" not in str(url):
+            return orig(url, **kw)
         page = int((kw.get("params") or {}).get("page", 1))
         seen.append(page)
         return _Resp(pages[page - 1] if page - 1 < len(pages) else {"result": [], "result_info": {}})
