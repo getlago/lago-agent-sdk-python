@@ -29,6 +29,12 @@ from lago_agent_sdk.gateway.adapters import extract_cloudflare_log, resolve_subs
 for entry in fetch_gateway_logs():  # GET .../ai-gateway/gateways/{id}/logs
     usage = extract_cloudflare_log(entry)
     sub = resolve_subscription(entry) or "sub_default"  # from the call's cf-aig-metadata, if set
+    if usage.extras.get("byok"):
+        # Served with the customer's own provider key (BYOK): Cloudflare charged nothing and the
+        # partner bills them directly, yet `cost` still carries Cloudflare's list price. Bill the
+        # tokens, never that number.
+        sdk.emit(usage, subscription=sub, mode="tokens", event_id=f"cf_{entry['id']}")
+        continue
     sdk.emit(usage, subscription=sub, mode="price", usd_cost=entry.get("cost") or 0, event_id=f"cf_{entry['id']}")
 sdk.flush()
 ```
