@@ -4,6 +4,7 @@ from .bedrock_invoke import extract_bedrock_invoke, pick_invoke_adapter
 from .gemini_native import extract_gemini_native
 from .mistral_native import extract_mistral_native
 from .openai_native import extract_openai_native
+from .workers_ai_native import extract_workers_ai_native
 
 __all__ = [
     "extract_anthropic_native",
@@ -13,4 +14,5 @@ __all__ = [
     "extract_gemini_native",
     "extract_mistral_native",
     "extract_openai_native",
+    "extract_workers_ai_native",
 ]

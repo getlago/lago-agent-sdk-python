@@ -16,6 +16,7 @@ from lago_agent_sdk.adapters.openai_native import RAMP_ROUTER_PROVIDER, extract_
 from lago_agent_sdk.exceptions import PricingUnavailableError
 from lago_agent_sdk.pricing import (
     TOKEN_BILLED_PROVIDERS,
+    ModelPrice,
     PricingProvider,
     lookup_ramp_router,
     parse_openrouter,
@@ -475,6 +476,9 @@ class _StubFetcher:
 
     def fetch_cloudflare_workers_ai(self) -> dict[str, Any]:
         return {}
+
+    def fetch_cloudflare_gateway_cost(self, model: str) -> ModelPrice | None:
+        return None
 
     def fetch_mistral_aliases(self, api_key: str | None = None) -> dict[str, str]:
         return {}

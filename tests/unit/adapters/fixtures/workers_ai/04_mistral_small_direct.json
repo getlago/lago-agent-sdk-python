@@ -1,0 +1,53 @@
+{
+  "_model_id": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+  "_status": 200,
+  "_headers": {
+    "Content-Type": "application/json"
+  },
+  "_response": {
+    "result": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "annotations": null,
+            "audio": null,
+            "content": "Dolphins are highly intelligent marine mammals known for their playful behavior and complex social structures.",
+            "function_call": null,
+            "reasoning": null,
+            "refusal": null,
+            "role": "assistant",
+            "tool_calls": []
+          },
+          "stop_reason": null,
+          "token_ids": null
+        }
+      ],
+      "created": 1789987523,
+      "id": "chatcmpl-94af9498-eea6-4b55-bce8-1e0678ed6bbe",
+      "kv_transfer_params": null,
+      "model": "@cf/mistralai/mistral-small-3.1-24b-v2",
+      "object": "chat.completion",
+      "prompt_logprobs": null,
+      "prompt_token_ids": null,
+      "response": "Dolphins are highly intelligent marine mammals known for their playful behavior and complex social structures.",
+      "service_tier": null,
+      "system_fingerprint": null,
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 10,
+        "completion_tokens": 19,
+        "total_tokens": 29,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "neurons": 1.2780319452285767
+      }
+    },
+    "success": true,
+    "errors": [],
+    "messages": []
+  }
+}

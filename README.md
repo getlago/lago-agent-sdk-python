@@ -148,6 +148,14 @@ client = sdk.wrap(Anthropic(
 ))
 ```
 
+Models with no client to wrap — every Workers AI model, including partner models like `typesafe/jev` that are not chat-shaped — go through the SDK's own one-method client. Store the partner's key under the gateway's **Provider Keys** (BYOK) and name the gateway; Cloudflare then bills nothing and the partner bills you:
+
+```python
+ai = sdk.workers_ai(account_id, cf_api_token, gateway_id=gateway_id, gateway_auth=gateway_auth)
+out = ai.run("typesafe/jev", {"state": ticket_text, "questions": {...}}, extra_lago={"subscription": "sub_acme"})
+out = ai.run("@cf/meta/llama-3.2-3b-instruct", {"messages": [{"role": "user", "content": "Hello"}]})
+```
+
 Full guide, including backfill from the gateway's Logs API: [docs/cloudflare.md](docs/cloudflare.md).
 
 ### Databricks AI Gateway

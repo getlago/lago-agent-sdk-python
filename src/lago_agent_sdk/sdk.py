@@ -8,11 +8,14 @@ import time
 import uuid
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .canonical import CanonicalUsage
 from .config import LagoConfig
 from .detector import detect_client_kind
+
+if TYPE_CHECKING:
+    from .workers_ai import WorkersAI
 from .exceptions import PricingUnavailableError, UnknownClientError
 from .gateway.adapters.snowflake_cortex import SNOWFLAKE_EVENT_ID_PREFIX
 from .lago_client import LagoClient
@@ -324,6 +327,43 @@ class LagoSDK:
         raise UnknownClientError(
             f"Client kind '{kind}' is not yet supported. "
             "Implemented: 'bedrock', 'mistral', 'anthropic', 'openai', 'gemini'."
+        )
+
+    def workers_ai(
+        self,
+        account_id: str,
+        api_token: str,
+        *,
+        gateway_id: str | None = None,
+        gateway_auth: str | None = None,
+        timeout: float = 60.0,
+        dimensions: dict[str, Any] | None = None,
+        subscription: str | None = None,
+    ) -> WorkersAI:
+        """Build an instrumented Workers AI client — the one provider with no client to wrap.
+
+        Reaches every Workers AI model through the model-in-body `/ai/run` route, including
+        partner models (`typesafe/jev`) that neither the path-style route nor the gateway's
+        OpenAI-compatible `/compat` endpoint can address. Pass `gateway_id` + `gateway_auth`
+        to go through an AI Gateway: cache hits are then skipped and each call carries a
+        `cf_log_id` dimension for reconciliation against the Logs API. See `workers_ai.py`.
+        """
+        from .workers_ai import WorkersAI
+
+        if self.config.pricing_mode == "price":
+            # Same warm-up wrap() gives an OpenAI client pointed at the gateway: prime the
+            # Workers AI catalog now, in memory only, so the first call is not a cold miss.
+            self._pricing.prime(["workers-ai"])
+            self._queue.wake()
+        return WorkersAI(
+            self,
+            account_id,
+            api_token,
+            gateway_id=gateway_id,
+            gateway_auth=gateway_auth,
+            timeout=timeout,
+            dimensions=dimensions,
+            subscription=subscription,
         )
 
     # ------------------------------------------------------------------
@@ -675,7 +715,7 @@ class LagoSDK:
                 pass
         logger.warning("lago %s failed: %s", where, exc)
 
-    def warm_pricing(self, providers: Iterable[str] = ()) -> None:
+    def warm_pricing(self, providers: Iterable[str] = (), *, workers_ai_models: Iterable[str] = ()) -> None:
         """Block until the given price table(s) are fetched, instead of
         waiting for the queue's background thread to pick them up on its
         next tick (up to `flush_interval` seconds later, by default ~1s).
@@ -705,8 +745,16 @@ class LagoSDK:
         say so and skip that one-time cost too: `providers=["mistral"]`
         and/or `["workers-ai"]`. A no-op for any source that isn't stale
         (e.g. the SDK isn't in price mode, was already warmed, or the
-        provider name wasn't recognized)."""
-        self._pricing.prime(providers)
+        provider name wasn't recognized).
+
+        `workers_ai_models`: partner models on Workers AI (`typesafe/jev` — any id
+        without the `@cf/` prefix) are priced from the gateway's cost table one row per
+        id, and the SDK only learns an id when a call for it arrives, so the first call
+        to each in a process bills tokens. Name the ids you are about to call here to
+        fetch their rows now, so even that first call prices — the client's `run()` for
+        them then has a warm row from the start.
+        """
+        self._pricing.prime(providers, workers_ai_models=workers_ai_models)
         self._pricing.maybe_refresh()
 
     def backfill_databricks(

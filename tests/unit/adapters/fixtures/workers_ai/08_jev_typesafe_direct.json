@@ -1,0 +1,44 @@
+{
+  "_model_id": "typesafe/jev",
+  "_status": 200,
+  "_headers": {},
+  "_source": "POST https://api.typesafe.ai/v1/systemone (model=jev-latest)",
+  "_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "is_urgent": {
+        "type": "noul",
+        "noul": 0.97
+      },
+      "department": {
+        "type": "choice",
+        "choice": "billing",
+        "confidence": 1.0,
+        "probabilities": {
+          "sales": 0.0,
+          "technical": 0.0,
+          "billing": 1.0
+        }
+      },
+      "frustration": {
+        "type": "score",
+        "score": 1.0,
+        "confidence": 0.99,
+        "legend": {
+          "0": "Calm",
+          "1": "Frustrated",
+          "2": "Very angry"
+        },
+        "probabilities": {
+          "0": 0.01,
+          "1": 0.99,
+          "2": 0.0
+        }
+      }
+    },
+    "usage": {
+      "input_tokens": 446,
+      "output_tokens": 73
+    }
+  }
+}

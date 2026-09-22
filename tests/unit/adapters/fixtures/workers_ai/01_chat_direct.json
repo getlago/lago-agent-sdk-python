@@ -1,0 +1,55 @@
+{
+  "_model_id": "@cf/meta/llama-3.2-3b-instruct",
+  "_status": 200,
+  "_headers": {
+    "Content-Type": "application/json"
+  },
+  "_response": {
+    "result": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "annotations": null,
+            "audio": null,
+            "content": "Dolphins are highly intelligent, social marine mammals known for their playful and curious nature, often observed swimming and interacting with each other in complex behaviors.",
+            "function_call": null,
+            "reasoning": null,
+            "refusal": null,
+            "role": "assistant"
+          },
+          "routed_experts": null,
+          "stop_reason": null,
+          "token_ids": null
+        }
+      ],
+      "created": 1789987074,
+      "ec_transfer_params": null,
+      "id": "chatcmpl-c205f782-079c-4867-a46e-a332a008834c",
+      "kv_transfer_params": null,
+      "metrics": null,
+      "model": "@cf/meta/llama-3.2-3b-instruct-v2",
+      "object": "chat.completion",
+      "prompt_logprobs": null,
+      "prompt_text": null,
+      "prompt_token_ids": null,
+      "response": "Dolphins are highly intelligent, social marine mammals known for their playful and curious nature, often observed swimming and interacting with each other in complex behaviors.",
+      "service_tier": null,
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 31,
+        "total_tokens": 72,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "neurons": 1.1343257427215576
+      }
+    },
+    "success": true,
+    "errors": [],
+    "messages": []
+  }
+}

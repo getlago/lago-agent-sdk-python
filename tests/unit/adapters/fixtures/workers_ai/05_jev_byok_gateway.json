@@ -1,0 +1,56 @@
+{
+  "_model_id": "typesafe/jev",
+  "_status": 200,
+  "_headers": {
+    "Content-Type": "application/json"
+  },
+  "_response": {
+    "result": {
+      "state": "Completed",
+      "result": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "is_urgent": {
+            "type": "noul",
+            "noul": 0.97
+          },
+          "department": {
+            "type": "choice",
+            "choice": "billing",
+            "probabilities": {
+              "billing": 1,
+              "sales": 0,
+              "technical": 0
+            },
+            "confidence": 1
+          },
+          "frustration": {
+            "type": "score",
+            "score": 1,
+            "legend": {
+              "0": "Calm",
+              "1": "Frustrated",
+              "2": "Very angry"
+            },
+            "probabilities": {
+              "0": 0.01,
+              "1": 0.99,
+              "2": 0
+            },
+            "confidence": 0.99
+          }
+        },
+        "usage": {
+          "input_tokens": 446,
+          "output_tokens": 73
+        }
+      },
+      "gatewayMetadata": {
+        "keySource": "BYOK"
+      }
+    },
+    "success": true,
+    "errors": [],
+    "messages": []
+  }
+}

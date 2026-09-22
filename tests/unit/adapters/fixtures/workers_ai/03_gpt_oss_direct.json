@@ -1,0 +1,54 @@
+{
+  "_model_id": "@cf/openai/gpt-oss-120b",
+  "_status": 200,
+  "_headers": {
+    "Content-Type": "application/json"
+  },
+  "_response": {
+    "result": {
+      "choices": [
+        {
+          "finish_reason": "length",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "annotations": null,
+            "audio": null,
+            "content": "Dolphins are highly intelligent, social marine mammals known for their",
+            "function_call": null,
+            "reasoning": "User asks: \"Write one sentence about dolphins.\" Straightforward. Provide a single sentence.",
+            "reasoning_content": "User asks: \"Write one sentence about dolphins.\" Straightforward. Provide a single sentence.",
+            "refusal": null,
+            "role": "assistant"
+          },
+          "routed_experts": null,
+          "stop_reason": null,
+          "token_ids": null
+        }
+      ],
+      "created": 1789987522,
+      "ec_transfer_params": null,
+      "id": "chatcmpl-46141cfa-6441-4f51-b214-ad73ec255ec0",
+      "kv_transfer_params": null,
+      "metrics": null,
+      "model": "@cf/openai/gpt-oss-120b",
+      "object": "chat.completion",
+      "prompt_logprobs": null,
+      "prompt_text": null,
+      "prompt_token_ids": null,
+      "service_tier": null,
+      "usage": {
+        "prompt_tokens": 73,
+        "completion_tokens": 40,
+        "total_tokens": 113,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "neurons": 5.049985885620117
+      }
+    },
+    "success": true,
+    "errors": [],
+    "messages": []
+  }
+}

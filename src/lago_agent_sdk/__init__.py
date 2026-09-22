@@ -17,9 +17,12 @@ from .pricing import (
     compute_cost,
 )
 from .sdk import LagoSDK
+from .workers_ai import WorkersAI, WorkersAIError
 
 __all__ = [
     "LagoSDK",
+    "WorkersAI",
+    "WorkersAIError",
     "LagoConfig",
     "CanonicalUsage",
     "LagoApiError",

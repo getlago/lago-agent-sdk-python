@@ -553,7 +553,7 @@ def test_drift_omits_the_key_entirely_when_there_is_none() -> None:
             },
         }
     )
-    assert u.extras == {"cached": False, "step": 0, "log_id": "log_3"}
+    assert u.extras == {"cached": False, "step": 0, "log_id": "log_3", "byok": None}
     assert "usage_metadata" not in u.extras
 
 
@@ -612,3 +612,13 @@ def test_drift_no_captured_fixture_loses_a_counter() -> None:
             assert key in _MAPPED_USAGE_KEYS or key in swept, (
                 f"{path.name}: {key!r} is neither mapped nor swept into extras"
             )
+
+
+def test_byok_key_source_reaches_extras_on_every_entry():
+    """A row served under BYOK still carries Cloudflare's list-price `cost` although it charged
+    nothing (measured 2026-09-21, `typesafe/jev`: 446 in x $0.042/M = 1.8732e-05 with
+    byok="default"). The poller needs the field to not bill that."""
+    from lago_agent_sdk.gateway.adapters import extract_cloudflare_log
+
+    assert extract_cloudflare_log({"id": "x", "byok": "default"}).extras["byok"] == "default"
+    assert extract_cloudflare_log({"id": "x"}).extras["byok"] is None
