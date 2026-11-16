@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
 import pathlib
+import signal
 import subprocess
 import sys
 import threading
@@ -717,3 +720,150 @@ def test_a_requeued_batch_is_not_left_counted_as_in_flight() -> None:
             assert q._in_flight == 0
     finally:
         q._stopping.set()
+
+
+# ----------------------------------------------------------------------
+# SIGTERM and SIGHUP skip atexit. A buffered event used to die with the
+# process — `docker stop`, Kubernetes, a terminal closing. The handler
+# drains, then re-raises only when the caller had no handler of their own.
+# ----------------------------------------------------------------------
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+_SIGNAL_DRAIN_SCRIPT = """
+import json, signal, sys
+from pathlib import Path
+from lago_agent_sdk.queue import EventQueue
+
+out = Path(sys.argv[1])
+signum = int(sys.argv[2])
+
+def sender(batch):
+    out.write_text(json.dumps(batch))
+
+q = EventQueue(sender, flush_interval=30.0, max_batch_size=50)
+q.push({"n": 1})
+signal.raise_signal(signum)
+Path(sys.argv[3]).write_text("alive")
+"""
+
+
+def _run_script(source: str, *args: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(_REPO_ROOT / "src")
+    return subprocess.run(
+        [sys.executable, "-c", source, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        cwd=_REPO_ROOT,
+        env=env,
+    )
+
+
+def test_sigterm_drains_buffered_events(tmp_path: pathlib.Path) -> None:
+    out = tmp_path / "sent.json"
+    alive = tmp_path / "alive"
+    proc = _run_script(_SIGNAL_DRAIN_SCRIPT, str(out), str(signal.SIGTERM), str(alive))
+    detail = f"rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}"
+    assert out.is_file(), f"SIGTERM dropped the buffer\n{detail}"
+    assert json.loads(out.read_text()) == [{"n": 1}]
+    assert proc.returncode == -signal.SIGTERM, f"default action did not run\n{detail}"
+    assert not alive.exists(), f"SIGTERM was swallowed\n{detail}"
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="platform has no SIGHUP")
+def test_sighup_drains_buffered_events(tmp_path: pathlib.Path) -> None:
+    out = tmp_path / "sent.json"
+    alive = tmp_path / "alive"
+    proc = _run_script(_SIGNAL_DRAIN_SCRIPT, str(out), str(signal.SIGHUP), str(alive))
+    detail = f"rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}"
+    assert out.is_file(), f"SIGHUP dropped the buffer\n{detail}"
+    assert json.loads(out.read_text()) == [{"n": 1}]
+    assert proc.returncode == -signal.SIGHUP, f"default action did not run\n{detail}"
+    assert not alive.exists(), f"SIGHUP was swallowed\n{detail}"
+
+
+def test_sigterm_preserves_a_user_handler() -> None:
+    saved = signal.getsignal(signal.SIGTERM)
+    called: list[int] = []
+    sent: list[dict[str, Any]] = []
+
+    def user(signum: int, _frame: object) -> None:
+        called.append(signum)
+
+    def later(signum: int, _frame: object) -> None:
+        called.append(signum)
+
+    signal.signal(signal.SIGTERM, user)
+    q = EventQueue(sender=lambda batch: sent.extend(batch), flush_interval=30.0, max_batch_size=50)
+    try:
+        q.push({"n": 1})
+        signal.raise_signal(signal.SIGTERM)
+        assert sent == [{"n": 1}]
+        assert called == [signal.SIGTERM]
+        # Installed after the queue. shutdown() must not put the old handler back.
+        signal.signal(signal.SIGTERM, later)
+        q.shutdown(timeout=1.0)
+        assert signal.getsignal(signal.SIGTERM) is later
+    finally:
+        q.shutdown(timeout=1.0)
+        signal.signal(signal.SIGTERM, saved)
+
+
+_ATEXIT_SCRIPT = """
+import atexit, sys
+from pathlib import Path
+from lago_agent_sdk.queue import EventQueue
+
+calls = []
+
+class CountingQueue(EventQueue):
+    def shutdown(self, timeout=5.0):
+        calls.append(1)
+        super().shutdown(timeout=timeout)
+
+def record():
+    # Registered before the queues, so it runs after their exit hooks.
+    Path(sys.argv[1]).write_text(str(len(calls)))
+
+atexit.register(record)
+queues = [CountingQueue(lambda batch: None, flush_interval=30.0, max_batch_size=50) for _ in range(4)]
+for q in queues:
+    q.shutdown(timeout=1.0)
+queues[0].shutdown(timeout=1.0)
+"""
+
+
+def test_shutdown_unregisters_atexit_hook(tmp_path: pathlib.Path) -> None:
+    """`_ncallbacks()` does not shrink on unregister; the callback has to not run."""
+    out = tmp_path / "calls.txt"
+    proc = _run_script(_ATEXIT_SCRIPT, str(out))
+    assert proc.returncode == 0, proc.stderr
+    # Four queues shut down, plus one repeated call. A hook that is still
+    # registered runs shutdown a fifth-through-eighth time on the way out.
+    assert out.read_text() == "5", f"got {out.read_text()!r}\n{proc.stderr}"
+
+
+def test_sigterm_reraises_after_the_drain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same drain as the subprocess test, with os.kill stubbed so the runner survives.
+
+    Before the handler exists, SIGTERM is still the default and this does not
+    raise it — that would kill the runner instead of failing the test.
+    """
+    saved = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    killed: list[tuple[int, int]] = []
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr("lago_agent_sdk.queue.os.kill", lambda pid, sig: killed.append((pid, sig)))
+    q = EventQueue(sender=lambda batch: sent.extend(batch), flush_interval=30.0, max_batch_size=50)
+    try:
+        q.push({"n": 1})
+        current = signal.getsignal(signal.SIGTERM)
+        if current not in (signal.SIG_DFL, signal.SIG_IGN):
+            signal.raise_signal(signal.SIGTERM)
+        assert sent == [{"n": 1}]
+        assert killed == [(os.getpid(), signal.SIGTERM)]
+    finally:
+        q.shutdown(timeout=1.0)
+        signal.signal(signal.SIGTERM, saved)
