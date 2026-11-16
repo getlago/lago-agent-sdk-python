@@ -13,6 +13,10 @@ All notable changes to this project will be documented here. Format follows [Kee
   - **The requested id is the billing key for Workers AI, not the served name.** Cloudflare's price catalog is keyed by the id you request, and the served name drifts past the catalog's version-strip fallback: `@cf/mistralai/mistral-small-3.1-24b-instruct` answers as `...-24b-v2`, which misses the catalog while the requested id prices. The served name is kept in `extras["served_model"]`.
   - **Cloudflare gateway log entries now surface `byok` in `extras`.** A row served under BYOK still carries Cloudflare's list-price `cost` (measured: 446 in × $0.042/M on `typesafe/jev`) although Cloudflare charged nothing — the partner bills the customer directly. A backfill that bills `cost` for such a row double-charges; this is the field that lets it not.
 
+### Fixed
+
+- **`flush()` returned `False` when delivery landed during its last poll sleep.** The loop sleeps 10ms and only then looks at the clock, so that sleep can start inside the budget and finish past it. The batch is already in Lago; `flush()` still reported a timeout. It now re-checks the buffer and the in-flight count under the lock before giving up, the same post-deadline check as the JS SDK (`getlago/lago-agent-sdk-js#45`).
+
 ## [0.3.1] - 2026-09-07
 
 ### Added

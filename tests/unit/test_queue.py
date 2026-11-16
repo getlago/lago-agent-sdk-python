@@ -717,3 +717,63 @@ def test_a_requeued_batch_is_not_left_counted_as_in_flight() -> None:
             assert q._in_flight == 0
     finally:
         q._stopping.set()
+
+
+def test_flush_counts_a_delivery_that_lands_during_the_final_poll_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The last poll sleeps 10ms even when less than that is left, so it can start
+    inside the deadline and finish past it. A delivery that lands in that sleep is
+    already in Lago; `flush()` used to return False anyway.
+
+    The send stays blocked until `time.sleep` inside `flush()`, then settles, and
+    that sleep does not return until the deadline is behind us. On the bare
+    `return False` this fails."""
+    entered, release = threading.Event(), threading.Event()
+    delivered: list[dict[str, Any]] = []
+
+    def sender(batch: list[dict[str, Any]]) -> None:
+        entered.set()
+        assert release.wait(timeout=5), "flush never reached its poll sleep"
+        delivered.extend(batch)
+
+    q = EventQueue(sender=sender, flush_interval=30.0, max_batch_size=1, max_buffer_size=100)
+    timeout = 0.2
+    started = time.monotonic()
+    sleeps = {"n": 0}
+    real_sleep = time.sleep
+
+    def poll_sleep(seconds: float) -> None:
+        sleeps["n"] += 1
+        if sleeps["n"] == 1:
+            # This is the sleep that straddles the deadline. Land the delivery
+            # inside it, and do not return until the deadline is in the past.
+            release.set()
+            limit = time.monotonic() + 2.0
+            while time.monotonic() < limit:
+                with q._lock:
+                    settled = not q._buffer and q._in_flight == 0
+                if settled and time.monotonic() >= started + timeout + 0.05:
+                    return
+                real_sleep(0.001)
+            raise AssertionError("delivery never landed inside the final poll sleep")
+        real_sleep(seconds)
+
+    monkeypatch.setattr("lago_agent_sdk.queue.time.sleep", poll_sleep)
+    try:
+        q.push({"i": 1})
+        assert entered.wait(timeout=3), "sender never picked the batch up"
+        with q._lock:
+            assert list(q._buffer) == []
+            assert q._in_flight == 1
+
+        result = q.flush(timeout=timeout)
+        assert sleeps["n"] == 1, "flush returned without taking the poll sleep that straddles the deadline"
+        assert result is True
+        assert delivered == [{"i": 1}]
+        with q._lock:
+            assert not q._buffer
+            assert q._in_flight == 0
+    finally:
+        release.set()
+        q.shutdown(timeout=1.0)
