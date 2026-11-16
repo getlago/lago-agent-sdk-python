@@ -218,7 +218,10 @@ class EventQueue:
                 return True
             self._wake.set()
             time.sleep(0.01)
-        return False
+        # Re-checked rather than a bare `False`: the last sleep can straddle the deadline
+        # and the delivery it was waiting for may have landed inside it.
+        with self._lock:
+            return not self._buffer and self._in_flight == 0
 
     def shutdown(self, timeout: float = 5.0) -> None:
         self.flush(timeout=timeout)
