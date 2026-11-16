@@ -13,6 +13,10 @@ All notable changes to this project will be documented here. Format follows [Kee
   - **The requested id is the billing key for Workers AI, not the served name.** Cloudflare's price catalog is keyed by the id you request, and the served name drifts past the catalog's version-strip fallback: `@cf/mistralai/mistral-small-3.1-24b-instruct` answers as `...-24b-v2`, which misses the catalog while the requested id prices. The served name is kept in `extras["served_model"]`.
   - **Cloudflare gateway log entries now surface `byok` in `extras`.** A row served under BYOK still carries Cloudflare's list-price `cost` (measured: 446 in × $0.042/M on `typesafe/jev`) although Cloudflare charged nothing — the partner bills the customer directly. A backfill that bills `cost` for such a row double-charges; this is the field that lets it not.
 
+### Fixed
+
+- **Buffered events were dropped on SIGTERM and SIGHUP.** The queue's only exit hook was `atexit`, and CPython does not run atexit handlers for SIGTERM's default action — the route Kubernetes, `docker stop` and systemd take. SIGHUP, what a closing terminal sends, took the same path. SIGINT was already covered: the interpreter turns it into `KeyboardInterrupt` and atexit runs. Both signals now drain, then re-raise only when the process had no handler of its own. A handler installed first is called after the drain; a handler installed later is left in place. `shutdown()` unregisters `_atexit_shutdown` and restores the signal handlers it installed, so a queue that has already shut down does not stay reachable for the rest of the process or drain a second time at exit. A second `shutdown()` is a no-op.
+
 ## [0.3.1] - 2026-09-07
 
 ### Added

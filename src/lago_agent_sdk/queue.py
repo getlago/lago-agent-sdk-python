@@ -23,10 +23,12 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import signal
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from types import FrameType
 from typing import Any
 
 from .exceptions import LagoApiError
@@ -97,6 +99,115 @@ def _is_permanent_failure(exc: Exception) -> bool:
 
 logger = logging.getLogger("lago_agent_sdk.queue")
 
+# SIGINT is already covered: CPython raises KeyboardInterrupt and atexit runs.
+# SIGTERM and SIGHUP are not. Their default action kills the process, and
+# atexit handlers do not run — which is how `docker stop`, Kubernetes and a
+# closing terminal drop whatever is still buffered.
+_EXIT_SIGNUMS: tuple[int, ...] = tuple(
+    sig for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)) if isinstance(sig, int)
+)
+
+
+def _reraise_or_chain(signum: int, frame: FrameType | None, previous: Any) -> None:
+    """After the drain: re-raise only when the caller had no handler of their own.
+
+    A callable installed before ours is that handler — call it, and do not kill
+    the process out from under it. ``SIG_IGN`` counts as one too.
+    """
+    if previous is None or previous == signal.SIG_DFL:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+        return
+    if callable(previous):
+        previous(signum, frame)
+
+
+class _ExitSignalHook:
+    """One process-wide handler per signal, shared by every live queue.
+
+    ``signal.signal`` replaces; it does not append. Installing per queue would
+    drop the previous queue and any handler the application had put in place.
+    """
+
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        self._lock = threading.Lock()
+        self._queues: list[EventQueue] = []
+        self._installed = False
+        self._original: Any = None
+        self._handling = False
+        # A bound method looked up twice is a different object, so `getsignal`
+        # would never match it. Keep the one we actually installed.
+        self._callback = self._on_signal
+
+    def add(self, queue: EventQueue) -> None:
+        with self._lock:
+            if queue in self._queues:
+                return
+            current = signal.getsignal(self.signum)
+            if self._installed and current is self._callback:
+                self._queues.append(queue)
+                return
+            try:
+                previous = signal.signal(self.signum, self._callback)
+            except (ValueError, OSError):
+                return
+            # Re-installing over our own callback means the bookkeeping was
+            # cleared while the handler was still in place. Keep the real
+            # previous handler; chaining to ourselves would recurse.
+            if previous is not self._callback:
+                self._original = previous
+            elif self._original is None:
+                self._original = signal.SIG_DFL
+            self._installed = True
+            self._queues.append(queue)
+
+    def discard(self, queue: EventQueue) -> None:
+        with self._lock:
+            try:
+                self._queues.remove(queue)
+            except ValueError:
+                return
+            if self._queues or not self._installed:
+                return
+            if threading.current_thread() is not threading.main_thread():
+                return
+            try:
+                current = signal.getsignal(self.signum)
+            except (ValueError, OSError):
+                return
+            # A handler installed after ours owns the signal now. Putting the
+            # old one back would clobber it.
+            if current is self._callback:
+                restored: Any = signal.SIG_DFL if self._original is None else self._original
+                try:
+                    signal.signal(self.signum, restored)
+                except (ValueError, OSError):
+                    return
+            self._installed = False
+            self._original = None
+
+    def _on_signal(self, signum: int, frame: FrameType | None) -> None:
+        with self._lock:
+            if self._handling:
+                return
+            self._handling = True
+            original = self._original
+            queues = list(self._queues)
+        try:
+            for queue in queues:
+                try:
+                    queue.shutdown(timeout=2.0)
+                except Exception:  # noqa: BLE001 — still re-raise or chain afterwards
+                    pass
+            _reraise_or_chain(signum, frame, original)
+        finally:
+            with self._lock:
+                self._handling = False
+
+
+_EXIT_HOOKS: dict[int, _ExitSignalHook] = {sig: _ExitSignalHook(sig) for sig in _EXIT_SIGNUMS}
+
 
 class EventQueue:
     def __init__(
@@ -134,6 +245,11 @@ class EventQueue:
         self._thread = threading.Thread(target=self._run, name="lago-queue", daemon=True)
         self._thread.start()
         atexit.register(self._atexit_shutdown)
+        # Main thread only. `signal.signal` raises off it; atexit still covers
+        # a normal exit for a queue built in the background.
+        if threading.current_thread() is threading.main_thread():
+            for hook in _EXIT_HOOKS.values():
+                hook.add(self)
 
         # After fork the daemon thread is gone in the child. Recreate it with fresh
         # sync primitives; the parent's buffer is dropped rather than inherited (see
@@ -225,6 +341,15 @@ class EventQueue:
         self._stopping.set()
         self._wake.set()
         self._thread.join(timeout=timeout)
+        # The queue is finished. Left registered, `_atexit_shutdown` keeps this
+        # object — and its buffer — reachable until the process exits, and runs
+        # a second shutdown then. Same for the signal handlers.
+        self._release_exit_hooks()
+
+    def _release_exit_hooks(self) -> None:
+        atexit.unregister(self._atexit_shutdown)
+        for hook in _EXIT_HOOKS.values():
+            hook.discard(self)
 
     def _atexit_shutdown(self) -> None:
         try:
